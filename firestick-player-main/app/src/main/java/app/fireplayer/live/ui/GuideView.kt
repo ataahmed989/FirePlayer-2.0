@@ -53,12 +53,21 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     var playingKey: ChannelKey? = null
         set(v) { field = v; invalidate() }
 
+    /** Playlists whose guide is still being loaded for the first time: their empty rows say so. */
+    var loadingPlaylists: Set<String> = emptySet()
+        set(v) { if (field != v) { field = v; for (r in rows.values) r.cells.forEach { it.cachedText = null }; invalidate() } }
+
+    private fun noInfo(ch: Channel) = if (ch.playlistId in loadingPlaylists) "Loading the guide…" else "No information"
+
     // ---- Geometry (dp from the density reference: ~10–12 rows with the preview above) -----------------------------
     private val headerH = t.dpf(28f)
     private val rowH = t.dpf(32f)
     private val gap = t.dpf(2f)
     private val radius = t.dpf(5f)
     private val numberW = t.dpf(34f)
+    private val markerW = t.dpf(8f)
+    /** Where channel numbers end: wider than [numberW] for long numbers, so the ▶ marker fits before them. */
+    private var numberRight = numberW
     private val logoW = t.dpf(38f)
     private val logoH = t.dpf(22f)
     private val channelW = t.dpf(196f)
@@ -103,6 +112,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     private fun fontScale() = resources.configuration.fontScale.coerceIn(0.85f, 1.3f)
 
+    /** Five-digit provider numbers (29342) are wider than the usual column: it grows so the marker never overlaps. */
+    private fun measureNumbers() {
+        val digits = channels.maxOfOrNull { it.number.toString().length } ?: 1
+        numberRight = maxOf(numberW, t.dpf(4f) + markerW + t.dpf(5f) + numberPaint.measureText("8".repeat(digits)))
+    }
+
     // ---- Data -----------------------------------------------------------------------------------------------------
 
     /** Shows [list]; focus goes to [focus] (or stays on the same channel, or the first). */
@@ -110,6 +125,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         animator?.cancel()
         val keep = focus ?: channels.getOrNull(focusRow)?.key
         channels = list
+        measureNumbers()
         focusRow = list.indexOfFirst { it.key == keep }.coerceAtLeast(0)
         // The time window catches up with now (it may have been opened a while ago), unless the viewer had moved
         // ahead into later programmes.
@@ -159,6 +175,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         animator?.cancel()
         val key = focusedChannel()?.key
         channels = list
+        measureNumbers()
         val i = list.indexOfFirst { it.key == key }
         focusRow = if (i >= 0) i else focusRow.coerceAtMost((list.size - 1).coerceAtLeast(0))
         scrollY = targetScroll(focusRow) * rowH
@@ -179,7 +196,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     // ---- Keys -----------------------------------------------------------------------------------------------------
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (channels.isEmpty()) return super.onKeyDown(keyCode, event)
+        if (channels.isEmpty()) {
+            // Nothing listed here (an empty group, no favorites yet): Left goes back to the groups column.
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) { callbacks?.onLeaveLeft(); return true }
+            return super.onKeyDown(keyCode, event)
+        }
         val fast = event.repeatCount > 0
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> { if (focusRow > 0) moveTo(focusRow - 1, !fast) else return true }
@@ -291,7 +312,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         contentDescription = buildString {
             append(ch.number).append(' ').append(ch.name).append(". ")
             if (p != null) append(p.title).append(", ").append(timeFormat.format(Date(p.start))).append(" to ").append(timeFormat.format(Date(p.stop)))
-            else append("No information")
+            else append(noInfo(ch))
         }
         val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
         if (am?.isEnabled == true && isFocused) sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED)
@@ -397,18 +418,19 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             rect.set(t.dpf(2f), top + gap / 2, channelW - gap, top + rowH - gap / 2)
             canvas.drawRoundRect(rect, radius, radius, fill)
         }
+        val number = ch.number.toString()
         if (playing) {
-            // A small blue play marker: this is the channel playing.
+            // A small blue play marker just before the number: this is the channel playing.
             val s = t.dpf(5f)
-            val x = t.dpf(6f)
+            val x = (numberRight - numberPaint.measureText(number) - t.dpf(5f) - markerW).coerceAtLeast(t.dpf(4f))
             marker.reset()
             marker.moveTo(x, cy - s); marker.lineTo(x + s * 1.6f, cy); marker.lineTo(x, cy + s); marker.close()
             fill.color = t.accent
             canvas.drawPath(marker, fill)
         }
         numberPaint.color = if (playing) t.accent else t.textMuted
-        canvas.drawText(ch.number.toString(), numberW, baseline(cy, numberPaint), numberPaint)
-        val lx = numberW + t.dpf(8f)
+        canvas.drawText(number, numberRight, baseline(cy, numberPaint), numberPaint)
+        val lx = numberRight + t.dpf(8f)
         rect.set(lx, cy - logoH / 2, lx + logoW, cy + logoH / 2)
         val bmp = ch.logo?.let { callbacks?.logo(it) }
         if (bmp != null) {
@@ -462,7 +484,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
                 rim.color = 0x1FFFFFFF
                 canvas.drawRoundRect(rect, radius, radius, rim)
             }
-            val title = cell.programme?.title?.takeIf { it.isNotEmpty() } ?: if (cell.programme == null) "No information" else "Untitled"
+            val title = cell.programme?.title?.takeIf { it.isNotEmpty() } ?: if (cell.programme == null) noInfo(ch) else "Untitled"
             textPaint.typeface = if (focused || onAir) t.semibold else t.regular
             textPaint.color = when {
                 focused -> t.accent

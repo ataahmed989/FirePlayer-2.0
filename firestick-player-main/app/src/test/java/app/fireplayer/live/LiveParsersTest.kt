@@ -189,4 +189,28 @@ class LiveParsersTest {
         }
         assertNull(GuideScope.decode("x|y"))
     }
+
+    @Test
+    fun fastXmltvTimesMatchTheDateFormatter() {
+        // The digit-by-digit reader must agree with the formatter it replaces, across years, leap days, month ends,
+        // offsets in both spellings and both directions, and with or without seconds.
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        fun reference(body: String, pattern: String, offsetMin: Int): Long =
+            java.text.SimpleDateFormat(pattern, java.util.Locale.US).apply { timeZone = utc; isLenient = false }.parse(body)!!.time - offsetMin * 60_000L
+        val dates = listOf("19991231", "20000229", "20240229", "20260101", "20261117", "20261231", "20380119", "21000301")
+        val clocks = listOf("000000", "235959", "120000", "093015")
+        val offsets = listOf("" to 0, " +0000" to 0, " -0500" to -300, "+0530" to 330, " +05:30" to 330, " -1200" to -720, " Z" to 0, "Z" to 0)
+        for (d in dates) for (c in clocks) for ((o, min) in offsets) {
+            val text = d + c + o
+            assertEquals(text, reference(d + c, "yyyyMMddHHmmss", min), XmltvReader.epoch(text))
+            val short = d + c.substring(0, 4) + o
+            assertEquals(short, reference(d + c.substring(0, 4), "yyyyMMddHHmm", min), XmltvReader.epoch(short))
+        }
+        // Impossible dates aren't times (the formatter isn't lenient either), nor is trailing junk.
+        assertEquals(0L, XmltvReader.epoch("20260230120000 +0000"))
+        assertEquals(0L, XmltvReader.epoch("20261317120000 +0000"))
+        assertEquals(0L, XmltvReader.epoch("20261117120000 +0000 x"))
+        // Other spellings still go the long way.
+        assertEquals(reference("2026-11-17T12:00:00", "yyyy-MM-dd'T'HH:mm:ss", 60), XmltvReader.epoch("2026-11-17T12:00:00+01:00"))
+    }
 }

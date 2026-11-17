@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.os.SystemClock
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedInputStream
@@ -132,16 +133,20 @@ class LiveSync private constructor(context: Context) {
                         return
                     }
                     // Both lists or nothing: a failed or garbled answer is a failed update, never "no channels".
+                    val t0 = SystemClock.elapsedRealtime()
                     val cats = api.get("get_live_categories")
                     val streams = api.get("get_live_streams")
+                    val t1 = SystemClock.elapsedRealtime()
                     val result = if (cats != null && streams != null) XtreamParser.live(p.id, cats, streams) { id, _ -> api.streamUrl(id) } else null
+                    Log.i(TAG, "Playlist \"${p.name}\": lists ${(streams?.length ?: 0) / 1024} KB in ${t1 - t0} ms, read in ${SystemClock.elapsedRealtime() - t1} ms")
                     if (result == null) {
                         db.setPlaylistStatus(p.id, "Couldn't load the channel list", syncedAt = null, expiresAt = account.expiresAt, maxConnections = account.maxConnections)
                         return
                     }
+                    val t2 = SystemClock.elapsedRealtime()
                     val removed = db.applySync(p.id, result)
                     db.setPlaylistStatus(p.id, "Updated: ${result.channels.size} channels", now, account.expiresAt, account.maxConnections)
-                    Log.i(TAG, "Playlist \"${p.name}\": ${result.channels.size} channels, ${result.groups.size} groups, $removed removed")
+                    Log.i(TAG, "Playlist \"${p.name}\": ${result.channels.size} channels, ${result.groups.size} groups, $removed removed; stored in ${SystemClock.elapsedRealtime() - t2} ms")
                     return
                 }
                 PlaylistKind.M3U -> {
@@ -186,8 +191,10 @@ class LiveSync private constructor(context: Context) {
                 db.setEpgStatus(p.id, url, "Couldn't load the EPG", now)
                 return
             }
+            val t0 = SystemClock.elapsedRealtime()
             try {
-                val count = conn.second.use { input ->
+                val counted = CountingInputStream(conn.second)
+                val count = counted.use { input ->
                     val parser = Xml.newPullParser()
                     parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
                     parser.setInput(input, null)
@@ -195,7 +202,7 @@ class LiveSync private constructor(context: Context) {
                         XmltvReader.read(parser, wanted, now - PAST_KEEP_MS, now + FUTURE_KEEP_MS) { item -> put(item.channel, item.programme) }
                     }
                 }
-                Log.i(TAG, "EPG for \"${p.name}\": $count programmes")
+                Log.i(TAG, "EPG for \"${p.name}\": $count programmes for ${wanted.size} ids from ${counted.count / 1024} KB in ${SystemClock.elapsedRealtime() - t0} ms")
             } finally {
                 conn.first.disconnect()
             }
@@ -308,4 +315,14 @@ object Http {
         input.reset()
         return a == 0x1f && b == 0x8b
     }
+}
+
+/** Counts the bytes read through it (how big an EPG download was, for the log). */
+private class CountingInputStream(private val inner: InputStream) : java.io.FilterInputStream(inner) {
+    var count = 0L
+        private set
+
+    override fun read(): Int = super.read().also { if (it >= 0) count++ }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count += it }
 }

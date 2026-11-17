@@ -21,6 +21,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.media3.common.VideoSize
+import androidx.media3.common.text.Cue
+import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.ui.LivePage
@@ -30,6 +32,7 @@ import app.fireplayer.shell.NavRail
 import app.fireplayer.shell.Tokens
 import app.fireplayer.shell.WallpaperView
 import app.fireplayer.subs.SubtitlePresets
+import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.titles.TitleService
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
@@ -64,6 +67,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private lateinit var liveSettings: LiveSettings
     private lateinit var root: FrameLayout
     private lateinit var surface: SurfaceView
+    private lateinit var captions: SubtitleView
+    private val captionStyler by lazy { SubtitleStyler(this) }
     private lateinit var wallpaper: WallpaperView
     private lateinit var pages: FrameLayout
     private lateinit var rail: NavRail
@@ -87,6 +92,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         setContentView(R.layout.activity_home)
         root = findViewById(R.id.home_root)
         surface = findViewById(R.id.live_surface)
+        captions = findViewById(R.id.live_captions)
         pages = findViewById(R.id.page_container)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
@@ -345,6 +351,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun placeVideo(rect: RectF?, radius: Float, full: Boolean) {
         videoTarget = rect?.let { RectF(it) }
+        // Captions follow the Subtitle style setting, read again each time full screen opens.
+        if (full && !videoFull) captionStyler.apply(captions, SubtitlePresets(Prefs(this)).active())
         videoFull = full
         videoRadius = radius
         layoutVideo()
@@ -362,6 +370,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             lp.width = 1; lp.height = 1; lp.leftMargin = 0; lp.topMargin = 0
             surface.layoutParams = lp
             surface.visibility = View.INVISIBLE
+            captions.visibility = View.GONE
             return
         }
         val size = player.status().videoSize
@@ -377,6 +386,16 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         surface.layoutParams = lp
         surface.visibility = View.VISIBLE
         wallpaper.setHole(target, if (videoFull) 0f else videoRadius, full = videoFull)
+        // Captions only over the full-screen picture (in the miniature they'd be too small to read).
+        if (videoFull) {
+            captions.layoutParams = FrameLayout.LayoutParams(lp.width, lp.height).apply {
+                leftMargin = lp.leftMargin; topMargin = lp.topMargin; gravity = Gravity.TOP or Gravity.START
+            }
+            captions.visibility = View.VISIBLE
+        } else {
+            captions.setCues(emptyList())
+            captions.visibility = View.GONE
+        }
     }
 
     private var lastSize: VideoSize = VideoSize.UNKNOWN
@@ -389,6 +408,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
                 lastSize = status.videoSize
                 layoutVideo()
             }
+        }
+
+        override fun onLiveCues(cues: List<Cue>) {
+            captions.setCues(if (videoFull) captionStyler.normalize(cues) else emptyList())
         }
     }
 

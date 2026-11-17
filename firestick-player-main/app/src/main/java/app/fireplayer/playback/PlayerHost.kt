@@ -16,6 +16,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.text.Cue
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import app.fireplayer.data.Prefs
@@ -55,6 +57,8 @@ class PlayerHost private constructor(context: Context) {
 
     interface Listener {
         fun onLiveStatus(status: Status)
+        /** The captions to show now (empty when off or between lines). */
+        fun onLiveCues(cues: List<Cue>) {}
     }
 
     private val app = context.applicationContext
@@ -65,6 +69,10 @@ class PlayerHost private constructor(context: Context) {
     private var surface: SurfaceView? = null
     private var retries = 0
     private var error: String? = null
+    /** Captions the viewer turned on stay on from channel to channel (the kind chosen, CC1 or digital, first). */
+    private var captionsOn = false
+    private var captionsMime: String? = null
+    private var cues: List<Cue> = emptyList()
 
     private val engine = object : LiveSession.Engine {
         override fun open(source: LiveSession.Source) = openStream(source)
@@ -79,6 +87,7 @@ class PlayerHost private constructor(context: Context) {
     fun addListener(l: Listener) {
         listeners += l
         l.onLiveStatus(status())
+        l.onLiveCues(cues)
     }
 
     fun removeListener(l: Listener) { listeners -= l }
@@ -188,13 +197,36 @@ class PlayerHost private constructor(context: Context) {
         val p = player ?: return
         val b = p.trackSelectionParameters.buildUpon()
         if (track == null) {
+            captionsOn = false
             b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            setCues(emptyList())
         } else {
             val group = p.currentTracks.groups.getOrNull(track.groupIndex) ?: return
+            captionsOn = true
+            captionsMime = group.getTrackFormat(track.trackIndex).sampleMimeType
             b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, track.trackIndex))
         }
         p.trackSelectionParameters = b.build()
+    }
+
+    /** A new channel's tracks: captions that were on are turned on again there (the same kind when it has it). */
+    private fun keepCaptions(p: ExoPlayer, tracks: Tracks) {
+        if (!captionsOn) return
+        val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        if (text.isEmpty() || text.any { it.isSelected }) return
+        val pick = text.flatMap { g -> (0 until g.length).filter { g.isTrackSupported(it) }.map { g to it } }
+            .let { all -> all.firstOrNull { (g, i) -> g.getTrackFormat(i).sampleMimeType == captionsMime } ?: all.firstOrNull() } ?: return
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(TrackSelectionOverride(pick.first.mediaTrackGroup, pick.second))
+            .build()
+    }
+
+    private fun setCues(list: List<Cue>) {
+        if (list.isEmpty() && cues.isEmpty()) return
+        cues = list
+        for (l in listeners.toList()) l.onLiveCues(list)
     }
 
     fun selectAudio(track: Track) {
@@ -215,6 +247,7 @@ class PlayerHost private constructor(context: Context) {
         paused = false
         behind = false
         val p = playerFor(source.headers)
+        setCues(emptyList())
         p.setMediaItem(mediaItem(source))
         p.prepare()
         p.playWhenReady = true
@@ -233,6 +266,7 @@ class PlayerHost private constructor(context: Context) {
         error = null
         paused = false
         behind = false
+        setCues(emptyList())
     }
 
     private fun playerFor(headers: Map<String, String>): ExoPlayer {
@@ -240,8 +274,8 @@ class PlayerHost private constructor(context: Context) {
         if (existing != null && builtHeaders == headers) return existing
         existing?.let { it.removeListener(playerListener); it.release() }
         val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough)
-        // Captions start off; the viewer turns them on from the Captions button.
-        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+        // Captions start off; the viewer turns them on from the Captions button (and they then stay on).
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)
         surface?.let { p.setVideoSurfaceView(it) }
         player = p
@@ -273,6 +307,12 @@ class PlayerHost private constructor(context: Context) {
 
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = publish()
+
+        override fun onTracksChanged(tracks: Tracks) {
+            player?.let { keepCaptions(it, tracks) }
+        }
+
+        override fun onCues(cueGroup: CueGroup) = setCues(if (captionsOn) cueGroup.cues else emptyList())
 
         override fun onPlayerError(e: PlaybackException) {
             val p = player ?: return
@@ -344,10 +384,17 @@ class PlayerHost private constructor(context: Context) {
             for (ti in 0 until g.length) {
                 if (!g.isTrackSupported(ti)) continue
                 val f = g.getTrackFormat(ti)
-                val label = f.label ?: f.language?.let { java.util.Locale(it).displayLanguage.takeIf { d -> d.isNotBlank() } } ?: "Track ${size + 1}"
+                val label = f.label ?: captionName(f) ?: f.language?.let { java.util.Locale(it).displayLanguage.takeIf { d -> d.isNotBlank() } } ?: "Track ${size + 1}"
                 add(Track(gi, ti, label, g.isTrackSelected(ti)))
             }
         }
+    }
+
+    /** TV closed captions found in the picture (the extractor drops the labels they were declared with). */
+    private fun captionName(f: Format): String? = when (f.sampleMimeType) {
+        MimeTypes.APPLICATION_CEA608, MimeTypes.APPLICATION_MP4CEA608 -> "CC" + (if (f.accessibilityChannel in 1..4) f.accessibilityChannel else 1)
+        MimeTypes.APPLICATION_CEA708 -> "Digital captions"
+        else -> null
     }
 
     companion object {

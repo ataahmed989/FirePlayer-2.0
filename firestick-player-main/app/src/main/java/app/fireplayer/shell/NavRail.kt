@@ -96,17 +96,44 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
                 isDuplicateParentStateEnabled = true
             }, LayoutParams(t.dp(22), t.dp(22)))
             addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(14) })
-            setOnClickListener { onTab?.invoke(tab) }
+            setOnClickListener { open(tab) }
+            // The rail moves its own focus: the expanded rail is drawn over the page, so Android's nearest-view
+            // search found the page (the guide) below a tab before the next tab, which sits further down.
             setOnKeyListener { _, keyCode, event ->
-                if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                    if (tab != selected) onTab?.invoke(tab)
-                    onEnterPage?.invoke()
-                    true
-                } else {
-                    false
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener isRailKey(keyCode)
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { open(tab); true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { step(tab, +1); true }
+                    KeyEvent.KEYCODE_DPAD_UP -> { step(tab, -1); true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> true // nothing to the left of the rail
+                    else -> false
                 }
             }
         }
+    }
+
+    private fun isRailKey(keyCode: Int) = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+        keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+
+    /** OK or Right on a tab: show its page and go into it. */
+    private fun open(tab: Tab) {
+        if (tab != selected) onTab?.invoke(tab)
+        onEnterPage?.invoke()
+    }
+
+    /** Up/Down: the previous or next tab; at the first or last tab focus stays where it is. */
+    private fun step(from: Tab, by: Int) {
+        val tabs = items.keys.toList()
+        tabs.getOrNull(tabs.indexOf(from) + by)?.let { items[it]?.requestFocus() }
+    }
+
+    /**
+     * Seen from the page, the rail is one target, the selected tab: Left from the page (or the guide's column) comes
+     * back to the tab you came from, not to whichever tab happens to be nearest on screen.
+     */
+    override fun addFocusables(views: ArrayList<View>, direction: Int, focusableMode: Int) {
+        if (hasFocus()) return super.addFocusables(views, direction, focusableMode)
+        items[selected]?.let { if (it.isShown && it.isFocusable) views.add(it) }
     }
 
     fun setSelected(tab: Tab) {
@@ -125,10 +152,23 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         brandText.visibility = if (on) VISIBLE else GONE
         for (l in labels) l.visibility = if (on) VISIBLE else GONE
         layoutParams = layoutParams.apply { width = if (on) expandedWidth else collapsedWidth }
+        applyLook()
     }
 
     fun applyLook() {
-        Glass.background(this, Glass.Kind.PANEL)
+        if (expanded && !Glass.on) {
+            // Widened over the page: the classic panel's slight see-through let the groups column's names show
+            // through the labels. Same colour, opaque.
+            val l = paddingLeft; val tp = paddingTop; val r = paddingRight; val b = paddingBottom
+            background = GradientDrawable().apply {
+                setColor(0xFA0B0E12.toInt())
+                setStroke(t.dp(1), 0x1FFFFFFF)
+                cornerRadius = t.dpf(15f)
+            }
+            setPadding(l, tp, r, b)
+        } else {
+            Glass.background(this, Glass.Kind.PANEL)
+        }
     }
 
     override fun generateDefaultLayoutParams(): LayoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)

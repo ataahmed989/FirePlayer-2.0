@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.SystemClock
+import android.util.Log
 
 /**
  * Live TV storage (`live.db`): playlists, groups, channels, favorites, recent channels and EPG programmes.
@@ -21,6 +23,15 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
 
     init {
         setWriteAheadLoggingEnabled(true)
+    }
+
+    override fun onConfigure(db: SQLiteDatabase) {
+        // Android turns auto-vacuum on by default: every EPG swap then moved pages around to shrink the file,
+        // writing hundreds of MB. Without it, freed pages are reused by the next import (only new databases; an
+        // existing one keeps its setting until it is rebuilt).
+        db.rawQuery("PRAGMA auto_vacuum = NONE", null).use { it.moveToFirst() }
+        // The write-ahead log shrinks back after a big import instead of keeping its largest size on disk.
+        db.rawQuery("PRAGMA journal_size_limit = ${8 * 1024 * 1024}", null).use { it.moveToFirst() }
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -46,7 +57,6 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             "CREATE TABLE program(source TEXT NOT NULL, epg_ref TEXT NOT NULL, start INTEGER NOT NULL, stop INTEGER NOT NULL, " +
                 "title TEXT NOT NULL, description TEXT, category TEXT, PRIMARY KEY(source, epg_ref, start)) WITHOUT ROWID",
         )
-        db.execSQL("CREATE INDEX program_ref_idx ON program(epg_ref, start)")
         db.execSQL("CREATE TABLE epg_status(source TEXT PRIMARY KEY, url TEXT NOT NULL, last_sync INTEGER NOT NULL, status TEXT NOT NULL, programmes INTEGER NOT NULL) WITHOUT ROWID")
     }
 
@@ -57,7 +67,11 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 db.execSQL("DROP TABLE IF EXISTS $t")
             }
             onCreate(db)
+            return
         }
+        // Version 3: the epg_ref index was never used by a query (every read gives the source), yet every imported
+        // programme paid for it.
+        if (oldVersion < 3) db.execSQL("DROP INDEX IF EXISTS program_ref_idx")
     }
 
     // ---- Playlists --------------------------------------------------------------------------------------------
@@ -216,6 +230,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         var inBatch = 0
+        val t0 = SystemClock.elapsedRealtime()
         db.beginTransaction()
         try {
             val count = fill { ref, p ->
@@ -232,6 +247,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             }
             db.setTransactionSuccessful()
             db.endTransaction()
+            val t1 = SystemClock.elapsedRealtime()
             db.beginTransaction()
             db.delete("program", "source = ?", arrayOf(source))
             db.execSQL("UPDATE program SET source = ? WHERE source = ?", arrayOf(source, staging))
@@ -241,6 +257,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             }
             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()
+            db.endTransaction()
+            Log.i(TAG, "EPG stored: $count programmes; read + insert ${t1 - t0} ms, swap ${SystemClock.elapsedRealtime() - t1} ms")
             return count
         } catch (t: Throwable) {
             // A failed download leaves the old listings as they were; its partial staging rows go.
@@ -393,7 +411,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     )
 
     companion object {
-        private const val VERSION = 2
+        private const val VERSION = 3
+        private const val TAG = "FirePlayerLive"
         const val RECENT_KEEP = 10
         private const val STAGING = "#new"
         private const val BATCH = 2_000

@@ -9,6 +9,7 @@ import android.os.Looper
 import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.KeyEvent
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -103,6 +104,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private val logos = LogoCache(t.dp(76)) { guide.invalidate(); refreshControls() }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
+    /** The viewer's own changes (favorites) are stored here, not queued behind the guide's reads. */
+    private val writes = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuideWrites") }
 
     private var playlists: List<Playlist> = emptyList()
     private var scope: GuideScope = prefs.scope ?: GuideScope.AllPlaylists
@@ -216,9 +219,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     prefs.scope = scope
                     loadChannels(focus = null, enterGrid = enter)
                 } else if (enter) {
-                    // The same scope again: reload it and go in only if it has channels (a preview load may still be
-                    // on its way with the old list).
-                    loadChannels(focus = guide.focusedChannel()?.key, enterGrid = true)
+                    // The same scope again. Already shown (no load on its way): straight in; reloading it first took
+                    // seconds with a big playlist. Otherwise go in once its list has arrived, if it has channels.
+                    if (shownScope == scope && loadingScope == null && guide.channelList().isNotEmpty()) guide.requestFocus()
+                    else loadChannels(focus = guide.focusedChannel()?.key, enterGrid = true)
                 }
             }
         }
@@ -286,6 +290,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         ++reloadSerial
         ++loadSerial
         io.shutdown()
+        // Queued favorites are still stored.
+        writes.shutdown()
     }
 
     /** Background work, unless the page is gone (its executor is shut down then). Main thread only. */
@@ -319,9 +325,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
         bg {
             val pls = db.playlists()
             val groups = pls.associate { it.id to db.groups(it.id) }
+            val withGuide = db.epgStatuses().filter { it.programmes > 0 }.map { it.source }.toSet()
             main.post {
                 if (serial != reloadSerial || released) return@post
                 playlists = pls
+                // A first guide import can take minutes on a big provider: until it lands, empty rows say so.
+                guide.loadingPlaylists = if (sync.busy) pls.map { it.id }.filter { it !in withGuide }.toSet() else emptySet()
                 val first = !loaded
                 loaded = true
                 showEmpty(pls.isEmpty())
@@ -343,13 +352,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
         is GuideScope.Group -> groups[s.playlistId].orEmpty().any { it.id == s.groupId }
     }
 
+    /** The scope whose channels the guide shows, and the one being loaded (null when none is on its way). */
+    private var shownScope: GuideScope? = null
+    private var loadingScope: GuideScope? = null
+
     private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
         val s = scope
         val serial = ++loadSerial
+        loadingScope = s
         bg {
             val list = db.channels(s)
             main.post {
                 if (serial != loadSerial || released) return@post
+                shownScope = s
+                loadingScope = null
                 guide.clearProgrammes()
                 guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
                 if (list.isEmpty()) {
@@ -707,17 +723,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val key = ChannelKey.parse(player.currentKey) ?: return
         val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return
         val fav = !ch.favorite
-        bg {
-            db.setFavorite(key, fav, System.currentTimeMillis())
-            val list = db.channels(scope)
-            val fresh = db.channel(key)
-            main.post {
-                if (released) return@post
-                guide.updateChannels(list)
-                if (fresh != null) playingChannel = fresh
-                refreshControls()
-                showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
-            }
+        // Shown at once (the star fills, the guide row follows); stored behind it. The database can be busy for a
+        // while with a guide update, which must not hold up the button.
+        guide.updateChannels(guide.channelList().map { if (it.key == key) it.copy(favorite = fav) else it })
+        playingChannel = ch.copy(favorite = fav)
+        refreshControls()
+        showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
+        val s = scope
+        writes.execute {
+            runCatching { db.setFavorite(key, fav, System.currentTimeMillis()) }
+                .onFailure { Log.w(TAG, "Favorite not stored: ${it.javaClass.simpleName}") }
+            // The Favorites list itself gains or loses the row once it's stored.
+            if (s is GuideScope.Favorites) main.post { if (!released && scope == s) loadChannels(focus = null, enterGrid = false) }
         }
     }
 
@@ -860,6 +877,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     val isFullScreen get() = fullScreen
 
     companion object {
+        private const val TAG = "FirePlayerLive"
         private const val INFO_MS = 4_000L
         private val PLAY_PAUSE_KEYS = setOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE)
         private val HANDLED_UP = setOf(

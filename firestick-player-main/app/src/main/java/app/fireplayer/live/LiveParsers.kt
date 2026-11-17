@@ -276,6 +276,10 @@ object XmltvReader {
     /** An XMLTV time as epoch millis; 0 when it can't be read. */
     fun epoch(text: String?): Long {
         if (text.isNullOrBlank()) return 0L
+        // The usual "20261117205300 -0500" read digit by digit: a big EPG has half a million of these, and a date
+        // formatter per time was a large part of an import on the TV. Anything else goes the long way below.
+        val fast = fastEpoch(text)
+        if (fast != NOT_FAST) return fast
         val t = text.trim()
         val m = OFFSET.find(t)
         val body = if (m != null) t.substring(0, m.range.first).trim() else t
@@ -299,6 +303,68 @@ object XmltvReader {
             return parsed.time - offsetMin * 60_000L
         }
         return 0L
+    }
+
+    private const val NOT_FAST = Long.MIN_VALUE
+
+    /** yyyyMMddHHmm[ss], then optionally spaces and Z / +hhmm / -hh:mm; [NOT_FAST] for anything else. */
+    internal fun fastEpoch(s: String): Long {
+        var i = 0
+        val n = s.length
+        while (i < n && s[i] == ' ') i++
+        fun num(len: Int): Int {
+            if (i + len > n) return -1
+            var v = 0
+            for (k in 0 until len) {
+                val c = s[i + k]
+                if (c !in '0'..'9') return -1
+                v = v * 10 + (c - '0')
+            }
+            i += len
+            return v
+        }
+        val year = num(4); val month = num(2); val day = num(2); val hour = num(2); val minute = num(2)
+        if (year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0) return NOT_FAST
+        val second = if (i + 2 <= n && s[i] in '0'..'9') num(2) else 0
+        if (second < 0) return NOT_FAST
+        while (i < n && s[i] == ' ') i++
+        var offsetMin = 0
+        if (i < n) {
+            val sign = s[i]
+            if (sign == 'Z') {
+                i++
+            } else if (sign == '+' || sign == '-') {
+                i++
+                val hh = num(2)
+                if (i < n && s[i] == ':') i++
+                val mm = num(2)
+                if (hh < 0 || mm < 0) return NOT_FAST
+                offsetMin = (if (sign == '-') -1 else 1) * (hh * 60 + mm)
+            } else {
+                return NOT_FAST
+            }
+            while (i < n && s[i] == ' ') i++
+            if (i != n) return NOT_FAST
+        }
+        if (month !in 1..12 || day < 1 || day > daysIn(year, month) || hour > 23 || minute > 59 || second > 59) return NOT_FAST
+        val days = daysFromCivil(year, month, day)
+        return (((days * 24 + hour) * 60 + minute) * 60 + second) * 1000L - offsetMin * 60_000L
+    }
+
+    private fun daysIn(year: Int, month: Int): Int = when (month) {
+        2 -> if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) 29 else 28
+        4, 6, 9, 11 -> 30
+        else -> 31
+    }
+
+    /** Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's days_from_civil). */
+    private fun daysFromCivil(year: Int, month: Int, day: Int): Long {
+        val y = (if (month <= 2) year - 1 else year).toLong()
+        val era = (if (y >= 0) y else y - 399) / 400
+        val yoe = y - era * 400
+        val doy = (153 * (month + (if (month > 2) -3 else 9)) + 2) / 5 + day - 1
+        val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097 + doe - 719468
     }
 
     private fun text(parser: XmlPullParser): String {

@@ -89,6 +89,12 @@ object PlayerFactory {
         if (mimeType in HEAVY_VIDEO) all.filter { it.hardwareAccelerated } else all
     }
 
+    /** Closed captions a live .ts stream may carry in its video: CC1 first, then digital caption service 1. */
+    private val LIVE_CAPTION_FORMATS = listOf(
+        Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_CEA608).setAccessibilityChannel(1).build(),
+        Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_CEA708).setAccessibilityChannel(1).build(),
+    )
+
     private val HEAVY_VIDEO = setOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_VP9, MimeTypes.VIDEO_AV1)
 
     private fun dataSourceFactory(
@@ -166,7 +172,11 @@ object PlayerFactory {
             .setConnectTimeoutMs(10_000)
             .setReadTimeoutMs(10_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), DefaultExtractorsFactory())
+        // TV closed captions ride inside the video (CEA-608 "CC1", and CEA-708 on digital channels). Media3 only looks
+        // for them in a .ts stream that declares them, which IPTV streams rarely do; these say "look anyway".
+        // (HLS streams are already looked at this way by Media3's HLS reader.)
+        val extractors = DefaultExtractorsFactory().setTsSubtitleFormats(LIVE_CAPTION_FORMATS)
+        val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
         val loadControl = DefaultLoadControl.Builder()
             // Starts after 1.5 s of picture (3 s after a stall), keeps up to 30 s ahead.

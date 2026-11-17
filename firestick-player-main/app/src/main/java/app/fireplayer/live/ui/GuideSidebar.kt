@@ -69,7 +69,20 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         // The playlist holding the current scope starts open.
         playlistOf(scope)?.let { expanded += it }
         if (expanded.isEmpty() && playlists.size == 1) expanded += playlists[0].id
-        rebuild()
+        // An update arriving while the viewer is in this column (a playlist or its guide finished loading) must not
+        // move them: the row they're on is found again by its identity.
+        val focusedKey = focusedChild?.let { getChildAdapterPosition(it) }?.let { items.getOrNull(it) }?.let { keyOf(it) }
+        val old = items
+        items = buildItems()
+        if (items == old) adapter?.notifyItemRangeChanged(0, items.size) else {
+            @Suppress("NotifyDataSetChanged")
+            adapter?.notifyDataSetChanged()
+        }
+        if (focusedKey != null) post {
+            if (hasFocus()) return@post
+            val i = items.indexOfFirst { keyOf(it) == focusedKey }
+            if (i >= 0) findViewHolderForAdapterPosition(i)?.itemView?.requestFocus() else focusCurrent()
+        }
     }
 
     /** Focus on the current scope's entry (coming back from the grid). */
@@ -86,7 +99,13 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     }
 
     private fun rebuild() {
-        items = buildList {
+        items = buildItems()
+        @Suppress("NotifyDataSetChanged")
+        adapter?.notifyDataSetChanged()
+    }
+
+    private fun buildItems(): List<Item> =
+        buildList {
             add(Item.All)
             for (p in playlists) {
                 val open = p.id in expanded
@@ -98,9 +117,16 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 }
             }
         }
-        @Suppress("NotifyDataSetChanged")
-        adapter?.notifyDataSetChanged()
+
+    /** A row's identity across updates (RecyclerView keeps the focused row by it). */
+    private fun keyOf(item: Item): String = when (item) {
+        Item.All -> "all"
+        is Item.Head -> "h|" + item.playlist.id
+        is Item.Entry -> "e|" + item.scope.encode()
     }
+
+    private val ids = HashMap<String, Long>()
+    private fun idOf(item: Item): Long = ids.getOrPut(keyOf(item)) { ids.size + 1L }
 
     private fun scopeOf(item: Item): GuideScope? = when (item) {
         Item.All -> GuideScope.AllPlaylists
@@ -122,11 +148,22 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         callbacks?.onScope(scope, enter)
     }
 
+    /**
+     * Opens or folds a playlist. Only its rows come or go, so the playlist row keeps focus (the whole list rebuilt
+     * dropped focus for a moment; it landed in the guide, which closed this column).
+     */
     private fun toggle(head: Item.Head) {
-        if (!expanded.remove(head.playlist.id)) expanded += head.playlist.id
-        val pos = items.indexOf(head)
-        rebuild()
-        post { findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus() }
+        val id = head.playlist.id
+        val pos = items.indexOfFirst { it is Item.Head && it.playlist.id == id }
+        if (pos < 0) return
+        val before = items.size
+        if (!expanded.remove(id)) expanded += id
+        items = buildItems()
+        val delta = items.size - before
+        adapter?.notifyItemChanged(pos)
+        if (delta < 0) adapter?.notifyItemRangeRemoved(pos + 1, -delta)
+        if (delta > 0) adapter?.notifyItemRangeInserted(pos + 1, delta)
+        post { if (!hasFocus()) findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus() }
     }
 
     override fun onDetachedFromWindow() {
@@ -137,7 +174,11 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row)
 
     private inner class Adapter : RecyclerView.Adapter<Holder>() {
+        init { setHasStableIds(true) }
+
         override fun getItemCount() = items.size
+
+        override fun getItemId(position: Int): Long = idOf(items[position])
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
             val ctx = parent.context

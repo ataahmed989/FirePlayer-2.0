@@ -204,6 +204,19 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   FirePlayer — package `app.fireplayer.next`, name "FirePlayer 2.0", the hollow-logo icon and banner, Continue Watching
   at `app.fireplayer.next.continue` (Glass Home only reads `app.fireplayer.continue`, so it never sees the test app),
   and no TiviMate title server (port 8000 belongs to the installed FirePlayer). Release builds are unchanged.
+- 2026-11-17 · From the user's first Fire TV test (real provider, 32,686 channels, 353 groups):
+  - Tab rail: Up/Down move between tabs only (one press from Live TV reaches Settings); OK or Right opens the tab's
+    page and goes into it; Left on the rail does nothing. From a page, Left/Back returns to the selected tab, never
+    to whichever tab is nearest on screen. The widened classic rail is opaque (it covered the groups column with the
+    column's names showing through).
+  - Groups column: folding or opening a playlist keeps focus on it and the column open; updates arriving while the
+    viewer is in the column keep their place. Left in an empty guide (empty group, no favorites) returns to the column.
+  - Favorites: the star and the guide row change the moment the button is pressed; the database write follows.
+  - Captions: live .ts channels offer the TV closed captions carried in the picture ("CC1", "Digital captions").
+    Assumptions: shown over the full-screen picture only (too small in the miniature), in the Subtitle style setting;
+    once turned on they stay on from channel to channel until turned off.
+  - Guide: channel numbers up to five digits get a wider number column so the ▶ playing marker sits before the
+    number. While a playlist's first guide is loading, its empty rows read "Loading the guide…".
 
 ## Concept references (local preview artifacts)
 
