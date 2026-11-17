@@ -74,9 +74,15 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       and drawn over full screen — verified on the Max (CC1 on a movie channel).
 - [x] Favorites slow → star and guide change at once, write on its own thread — verified on the Max.
 - [x] ▶ playing marker overlapped five-digit numbers → number column sized to the longest number — verified.
-- [~] "EPG not working": the guide was right once the import finished; the first import took ~17 minutes with
-      no feedback. Now: "Loading the guide…" in empty rows, timings logged per phase, faster XMLTV time reading,
-      unused index dropped, no auto-vacuum (new databases). Import speed work continues from the measurements.
+- [x] "EPG not working": the guide was right once the import finished; the first import took ~17 minutes with
+      no feedback. Now "Loading the guide…" shows in empty rows, and a full update measured on the Max (88 MB XMLTV,
+      276,074 programmes for 7,016 EPG ids) went from 282 s to 76 s for the EPG (+15 s for the channel lists):
+      XMLTV times read digit by digit (a date formatter per time cost ~3 minutes), imports switch generations in
+      1 ms instead of renaming every row (37 s with the database held), the old generation is deleted in short steps
+      (16 s, not blocking), unused index dropped, no auto-vacuum for new databases. Storing is now the largest part
+      (42 s of 60 s).
+- [x] Update buttons (all playlists, one playlist, EPG) dim and ignore presses while updating; otherwise they show
+      when the last update was (user request) — dimming verified on the Max.
 - [~] "All playlists" (32,686 channels) took 2–4 s to list → per-playlist reads in index order, one cursor window;
       entering the grid for the scope already shown no longer reloads it. Built, not yet re-measured on the Max.
 
