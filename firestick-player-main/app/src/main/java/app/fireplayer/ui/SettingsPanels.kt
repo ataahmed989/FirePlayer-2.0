@@ -401,7 +401,7 @@ class SettingsPanels(
                 }.asSubRow()
             }
             val font = importedFontName
-            badgeRow("Subtitle font sent from phone", if (font != null) "Active" else "None sent", if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
+            badgeRow("Subtitle font from phone", if (font != null) "Active" else "None", if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
                 openSub("Subtitle font") { fontSection(this) }
             }.asSubRow()
         }

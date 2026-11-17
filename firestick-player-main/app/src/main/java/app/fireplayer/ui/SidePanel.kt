@@ -138,6 +138,17 @@ class SidePanel(private val activity: Activity) {
     }
 
     private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null) {
+        val started = android.os.SystemClock.elapsedRealtime()
+        try {
+            rebuildRows(focusIndex, key)
+        } finally {
+            // Long windows (a playlist's 350 groups) are where a redraw costs; noted so it can be measured on the TV.
+            val ms = android.os.SystemClock.elapsedRealtime() - started
+            if (ms > 60) android.util.Log.i("FirePlayerPanel", "Window redrawn: ${list.childCount} rows in $ms ms")
+        }
+    }
+
+    private fun rebuildRows(focusIndex: Int, key: Pair<String, Int>?) {
         // A small window open over this one keeps the selection; the row is only noted, to come back to when it closes.
         val behind = FireDialog.isShowing(activity)
         // Park focus on the window itself while its rows are replaced, so it can't wander off.
@@ -183,6 +194,23 @@ class SidePanel(private val activity: Activity) {
             if (child.tag == ROW_PAIR && child is ViewGroup) (0 until child.childCount).map { child.getChildAt(it) }
             else listOf(child)
         }.filter { it.isFocusable }
+
+    /**
+     * Rewrites one row's words in place ([label], and [value] as [row] would show it: a switch for On/Off), keeping
+     * the row itself (its card, focus and what it does). For long lists, where redrawing the whole window takes a
+     * second on a TV (a playlist's 350 groups).
+     */
+    fun updateRow(row: View, label: String, value: String?) {
+        val target = row as? LinearLayout ?: return
+        val fresh = rows.build(label, value, null)
+        target.removeAllViews()
+        while (fresh.childCount > 0) {
+            val child = fresh.getChildAt(0)
+            fresh.removeViewAt(0)
+            target.addView(child)
+        }
+        target.refreshDrawableState()
+    }
 
     fun focusRow(index: Int) {
         val focusRows = focusables()

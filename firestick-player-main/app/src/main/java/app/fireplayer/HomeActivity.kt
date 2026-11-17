@@ -280,7 +280,12 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     /** Live FirePlayer Settings over the Live TV tab; focus returns where it was when it closes. */
     override fun openPlayerSettings() {
         val back = currentFocus
-        liveSettings.openPlayerSettings(settingsPanels, onClose = { if (back != null && back.isShown) back.requestFocus() else focusPage() })
+        // The guide steps back while the window is open (the classic window is see-through), as the Settings tab does.
+        live.root.animate().alpha(0.35f).setDuration(160).start()
+        liveSettings.openPlayerSettings(settingsPanels, onClose = {
+            live.root.animate().alpha(1f).setDuration(160).start()
+            if (back != null && back.isShown) back.requestFocus() else focusPage()
+        })
     }
 
     private fun openLink() {

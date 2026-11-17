@@ -55,7 +55,19 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /** The panel is told about every sync so statuses update while it's open. */
     private val listener = object : LiveSync.Listener {
-        override fun onLiveDataChanged(playlistId: String) { if (panel.isOpen) reloadThen { panel.refresh() } }
+        override fun onLiveDataChanged(playlistId: String) {
+            // A change this window made itself is already on screen (redrawing 350 groups would take a second).
+            if (ownChanges > 0) { ownChanges--; return }
+            if (panel.isOpen) reloadThen { panel.refresh() }
+        }
+    }
+
+    /** Changes made here (group switches and order, playlist order) the guide is told about; this window isn't. */
+    private var ownChanges = 0
+
+    private fun changed(playlistId: String) {
+        ownChanges++
+        sync.changed(playlistId)
     }
 
     init {
@@ -94,13 +106,17 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         }
     }
 
-    /** Remote › Channel changing buttons, with what the chosen one does. */
+    /**
+     * Remote › Channel changing buttons: the two ways as rows (the chosen one ticked), with what the chosen one does.
+     * (As one row with its value, the long names didn't fit the window.)
+     */
     private fun channelButtons(p: SidePanel) = with(p) {
-        choice("Channel changing buttons", listOf("D-pad + channel buttons", "Channel buttons only"), if (prefs.channelButtonsOnly) 1 else 0) { i ->
-            prefs.channelButtonsOnly = i == 1
-        }
+        message("Channel changing buttons")
+        val only = prefs.channelButtonsOnly
+        row("D-pad + channel buttons", checked = !only) { prefs.channelButtonsOnly = false; refresh() }
+        row("Channel buttons only", checked = only) { prefs.channelButtonsOnly = true; refresh() }
         message(
-            if (prefs.channelButtonsOnly) "Channel +/− change channels. Up/Down or Center show the controls."
+            if (only) "Channel +/− change channels. Up/Down or Center show the controls."
             else "With the controls hidden, Up/Down and Channel +/− change channels. Center shows the controls.",
         )
     }
@@ -296,7 +312,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 // The update starts first, so the window redraws with its Update buttons already dimmed.
                 if (before == null || before.url != p.url || before.username != p.username || before.password != p.password ||
                     before.output != p.output || before.includeLive != p.includeLive || before.epgUrl != p.epgUrl
-                ) sync.update(p.id) else if (before.name != p.name) sync.changed(p.id)
+                ) sync.update(p.id) else if (before.name != p.name) changed(p.id)
                 panel.refresh()
             }
         }
@@ -350,35 +366,51 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * A list the viewer puts in order: OK picks an entry up (it says "Moving"), Up/Down carry it, OK puts it down;
-     * the button beside each moves it to the top. Every move is saved as it happens.
+     * the button beside each moves it to the top. Every move is saved as it happens. The rows stay where they are
+     * and only their words change, so a move is instant even with 350 groups.
      */
     private class Reorder<T>(var items: MutableList<T>, val save: (List<T>) -> Unit) {
         var moving = -1
+        val rows = ArrayList<android.view.View>()
     }
 
     private fun <T> reorderRows(p: SidePanel, r: Reorder<T>, name: (T) -> String) = with(p) {
         message("Press OK on one to pick it up, move it with Up and Down, and press OK again to put it down. The button beside each moves it to the top.")
+        fun show(i: Int) = updateRow(r.rows[i], name(r.items[i]), if (r.moving == i) "Moving" else "${i + 1}")
+        r.rows.clear()
         r.items.forEachIndexed { i, item ->
-            val moving = r.moving == i
-            rowWithButton(
+            r.rows += rowWithButton(
                 name(item),
-                if (moving) "Moving" else "${i + 1}",
+                if (r.moving == i) "Moving" else "${i + 1}",
                 R.drawable.ic_move_top,
                 "Move to top",
-                onClick = { r.moving = if (moving) -1 else i; refresh() },
+                onClick = {
+                    val before = r.moving
+                    r.moving = if (r.moving == i) -1 else i
+                    if (before in r.rows.indices) show(before)
+                    show(i)
+                },
                 onButton = {
-                    if (i > 0) { r.items.add(0, r.items.removeAt(i)); r.moving = -1; r.save(r.items.toList()); refresh(); focusRow(0) }
+                    if (i > 0) {
+                        r.items.add(0, r.items.removeAt(i))
+                        r.moving = -1
+                        r.save(r.items.toList())
+                        for (k in 0..i) show(k)
+                        r.rows[0].requestFocus()
+                    }
                 },
                 keys = { code, ev ->
                     val step = when (code) { KeyEvent.KEYCODE_DPAD_UP -> -1; KeyEvent.KEYCODE_DPAD_DOWN -> 1; else -> 0 }
-                    if (!moving || step == 0) return@rowWithButton false
+                    if (r.moving != i || step == 0) return@rowWithButton false
                     val to = i + step
                     if (ev.action == KeyEvent.ACTION_DOWN && to in r.items.indices) {
                         r.items.add(to, r.items.removeAt(i))
                         r.moving = to
                         r.save(r.items.toList())
-                        // Focus follows the entry: it's found again by its name.
-                        refresh()
+                        show(i)
+                        show(to)
+                        // Focus follows the entry being moved.
+                        r.rows[to].requestFocus()
                     }
                     true
                 },
@@ -392,7 +424,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 io.execute {
                     db.setPlaylistOrder(order.map { it.id })
                     val list = db.playlists()
-                    main.post { playlists = list; order.firstOrNull()?.let { sync.changed(it.id) } }
+                    main.post { playlists = list; order.firstOrNull()?.let { changed(it.id) } }
                 }
             }
         }
@@ -403,14 +435,16 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * Manage groups (user spec): Order — the shown groups in the viewer's order; Hide or show — "Hide new groups",
-     * Show all, Hide all, and a switch for each group. Hidden groups and their channels leave the guide.
+     * Show all, Hide all, and a switch for each group. Hidden groups and their channels leave the guide. A group's
+     * switch flips in place (redrawing 350 groups took a second on the TV); Show all / Hide all redraw the window.
      */
     private fun manageGroups(p: SidePanel, playlistId: String) = with(p) {
         val pl = playlists.firstOrNull { it.id == playlistId } ?: run { message("This playlist was deleted."); return@with }
         val all = groups[playlistId].orEmpty()
         if (all.isEmpty()) { message("This playlist has no groups yet. They appear after its next update."); return@with }
         header("Order")
-        row("Reorder groups", "${all.count { !it.hidden }} shown") {
+        fun shownText() = "${groups[playlistId].orEmpty().count { !it.hidden }} shown"
+        val order = row("Reorder groups", shownText()) {
             openSub("Reorder groups") { reorderGroups(this, playlistId) }
         }
         header("Hide or show")
@@ -418,11 +452,23 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         row("Show all") { setGroups(playlistId) { db.setAllGroupsHidden(playlistId, false) } }
         row("Hide all") { setGroups(playlistId) { db.setAllGroupsHidden(playlistId, true) } }
         for (g in all) {
-            row(g.name, if (g.hidden) "Off" else "On") { setGroups(playlistId) { db.setGroupHidden(playlistId, g.id, !g.hidden) } }.asSubRow()
+            lateinit var view: android.view.View
+            view = row(g.name, if (g.hidden) "Off" else "On") {
+                // The group as it is now (this row may have been flipped since it was drawn).
+                val now = groups[playlistId].orEmpty().firstOrNull { it.id == g.id } ?: return@row
+                val hide = !now.hidden
+                groups[playlistId] = groups[playlistId].orEmpty().map { if (it.id == g.id) it.copy(hidden = hide) else it }
+                updateRow(view, g.name, if (hide) "Off" else "On")
+                updateRow(order, "Reorder groups", shownText())
+                io.execute {
+                    db.setGroupHidden(playlistId, g.id, hide)
+                    main.post { changed(playlistId) }
+                }
+            }.asSubRow()
         }
     }
 
-    /** Applies a change to the groups, reads them again, and lets the guide follow. */
+    /** Applies a change to every group (Show all, Hide all), reads them again, redraws, and lets the guide follow. */
     private fun setGroups(playlistId: String, change: () -> Unit) {
         io.execute {
             change()
@@ -430,7 +476,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             main.post {
                 groups[playlistId] = g
                 if (panel.isOpen) panel.refresh()
-                sync.changed(playlistId)
+                changed(playlistId)
             }
         }
     }
@@ -442,7 +488,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 io.execute {
                     db.setGroupOrder(playlistId, order.map { it.id })
                     val g = db.allGroups(playlistId)
-                    main.post { groups[playlistId] = g; sync.changed(playlistId) }
+                    main.post { groups[playlistId] = g; changed(playlistId) }
                 }
             }
         }
