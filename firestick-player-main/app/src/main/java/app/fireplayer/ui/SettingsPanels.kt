@@ -17,6 +17,7 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
+import app.fireplayer.data.CredentialChecks
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
 import app.fireplayer.player.NextEpisode
@@ -35,7 +36,6 @@ import app.fireplayer.update.Updater
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /**
@@ -51,9 +51,11 @@ class SettingsPanels(
 
     private val updater = Updater(activity)
     private var updateStatus: String? = null
-    // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
-    private var tmdbStatus: String? = null
-    private var tmdbProblem: String? = null
+    /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
+    private val checks = CredentialChecks(prefs)
+    // Statuses ▾: open or not (closed each time the window opens).
+    private var statusesOpen = false
+    private var statusesSession = -1
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
     // what "Check playlists now" said.
@@ -118,12 +120,64 @@ class SettingsPanels(
     private val importedFontName: String?
         get() = if (FontImport.customFontFile(activity).exists()) prefs.customFontName.ifEmpty { "Font from your phone" } else null
 
-    fun renderSettings(panel: SidePanel) = with(panel) {
+    // ---- The windows ------------------------------------------------------------------------------------------------
+
+    /**
+     * App settings, everything (the home screen's Settings, and "App settings" from a player's window): every setting
+     * the app has, including those the player windows leave out (skip steps, Hold to speed up, TiviMate titles,
+     * the subtitle font, keys). Where each goes in the main Settings page is still to be planned (user).
+     */
+    fun renderSettings(panel: SidePanel): Unit = with(panel) {
+        remoteSection(this)
+        lookSection(this)
+        skippingSection(this, full = true)
+        defaultsSection(this, autoSync = false, resume = true)
+        playbackSection(this)
+        renderTitles(this)
+        fontSection(this)
+        credentialsSection(this)
+        skipIntroSection(this)
+        appSection(this, allSettings = false)
+    }
+
+    /**
+     * VOD FirePlayer Settings, after "This episode / This film" (user spec): Remote, Look, Skip intro and credits,
+     * Skipping, Defaults, Playback, Statuses, App.
+     */
+    fun renderPlayerVod(panel: SidePanel): Unit = with(panel) {
+        remoteSection(this)
+        lookSection(this)
+        skipIntroSection(this)
+        skippingSection(this, full = false)
+        defaultsSection(this, autoSync = true, resume = true)
+        playbackSection(this)
+        statusesSection(this)
+        appSection(this, allSettings = true)
+    }
+
+    /**
+     * The shared part of Live FirePlayer Settings, after its Playlists and EPG (user spec): Remote ([remoteMore]: the
+     * channel changing buttons), Look, Defaults (no auto sync: live channels don't support it), Statuses, App.
+     */
+    fun renderPlayerLive(panel: SidePanel, remoteMore: SidePanel.() -> Unit): Unit = with(panel) {
+        remoteSection(this, remoteMore)
+        lookSection(this)
+        defaultsSection(this, autoSync = false, resume = false)
+        statusesSection(this)
+        appSection(this, allSettings = true)
+    }
+
+    // ---- Sections: each setting is drawn by one function, so it reads and writes one saved value wherever it is ----
+
+    fun remoteSection(panel: SidePanel, more: SidePanel.() -> Unit = {}): Unit = with(panel) {
         header("Remote")
         choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
             prefs.menuOpensStyle = it == 1
         }
+        more()
+    }
 
+    fun lookSection(panel: SidePanel): Unit = with(panel) {
         header("Look")
         // A small list behind an arrow: which pods show above the time bar.
         if (chipsSession != session) {
@@ -159,23 +213,30 @@ class SettingsPanels(
                 prefs.glassRefreshPerSec = rates[it]
             }.asSubRow()
         }
+    }
 
+    /** Skipping: [full] adds the step lengths and Hold to speed up (App settings); the player shows the preview only. */
+    fun skippingSection(panel: SidePanel, full: Boolean): Unit = with(panel) {
         header("Skipping")
-        val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
-        choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {
-            prefs.dpadStepSec = dpadSteps[it]
-        }
-        val ffSteps = listOf(15, 30, 60, 120, 300, 600)
-        choice("Rewind / fast-forward", ffSteps.map { formatStep(it) }, ffSteps.indexOf(prefs.ffStepSec)) {
-            prefs.ffStepSec = ffSteps[it]
-        }
-        row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
-            prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
+        if (full) {
+            val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
+            choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {
+                prefs.dpadStepSec = dpadSteps[it]
+            }
+            val ffSteps = listOf(15, 30, 60, 120, 300, 600)
+            choice("Rewind / fast-forward", ffSteps.map { formatStep(it) }, ffSteps.indexOf(prefs.ffStepSec)) {
+                prefs.ffStepSec = ffSteps[it]
+            }
+            row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
+                prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
+            }
         }
         row("Preview while skipping", onOff(prefs.seekPreviews)) {
             prefs.seekPreviews = !prefs.seekPreviews; refresh()
         }
+    }
 
+    fun defaultsSection(panel: SidePanel, autoSync: Boolean, resume: Boolean): Unit = with(panel) {
         header("Defaults")
         val subLanguages = languages + ""
         choice("Subtitle language", subLanguages.map { languageName(it) }, subLanguages.indexOf(prefs.subtitleLanguage)) {
@@ -184,11 +245,24 @@ class SettingsPanels(
         choice("Audio language", languages.map { languageName(it) }, languages.indexOf(prefs.audioLanguage)) {
             prefs.audioLanguage = languages[it]
         }
-        val resumes = Prefs.Resume.entries
-        choice("Resume where I left off", resumes.map { it.label }, resumes.indexOf(prefs.resume)) {
-            prefs.resume = resumes[it]
+        if (autoSync) autoSyncRow(this)
+        if (resume) {
+            val resumes = Prefs.Resume.entries
+            choice("Resume where I left off", resumes.map { it.label }, resumes.indexOf(prefs.resume)) {
+                prefs.resume = resumes[it]
+            }
         }
+    }
 
+    private fun autoSyncRow(panel: SidePanel): Unit = with(panel) {
+        row("Auto sync subtitles", onOff(prefs.autoSync)) {
+            prefs.autoSync = !prefs.autoSync
+            onAutoSyncChanged()
+            refresh()
+        }
+    }
+
+    fun playbackSection(panel: SidePanel): Unit = with(panel) {
         header("Playback")
         row("Play next episode", onOff(prefs.playNextEpisode)) {
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
@@ -199,9 +273,9 @@ class SettingsPanels(
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
         }
+    }
 
-        renderTitles(this)
-
+    fun fontSection(panel: SidePanel): Unit = with(panel) {
         header("Subtitle font")
         val fontSet = importedFontName != null
         badgeRow("Font from your phone", activeOrNot(fontSet), if (fontSet) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
@@ -218,43 +292,46 @@ class SettingsPanels(
                 refresh()
             }.asSubRow()
         }
+    }
 
+    /**
+     * The OpenSubtitles and TMDB keys (App settings only). Each key's badge says whether it works, not just whether
+     * it's saved: "Set · not checked", "Working", "Not accepted" ([CredentialChecks]). A saved key is never shown.
+     */
+    fun credentialsSection(panel: SidePanel): Unit = with(panel) {
         header("Online subtitles and TMDB API")
-        row("Auto sync subtitles", onOff(prefs.autoSync)) {
-            prefs.autoSync = !prefs.autoSync
-            onAutoSyncChanged()
-            refresh()
+        autoSyncRow(this)
+        val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
+        keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers", badge = badgeFor(os.state)) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
         }
-        keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
         // Optional: signing in raises how many subtitles can be downloaded a day.
-        keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
-        keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true)
-        val tmdbBadge = when (tmdbStatus) {
-            CHECKING -> CHECKING to Rows.Badge.BUSY
-            NOT_ACCEPTED -> NOT_ACCEPTED to Rows.Badge.PROBLEM
-            else -> activeOrNot(prefs.keys.isSet(KeyStore.Key.TMDB)).let { it to if (it == ACTIVE) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE }
+        keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
         }
+        keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
+        }
+        problemOf(os)?.let { message("OpenSubtitles: $it.") }
+        val tmdb = checks.status(CredentialChecks.Service.TMDB)
         keyRow(
             "TMDB API key",
             KeyStore.Key.TMDB,
             whereFrom = "From themoviedb.org › Settings › API",
             title = "TMDB API key or read access token",
-            badge = tmdbBadge,
+            badge = badgeFor(tmdb.state),
         ) {
             // TiviMate's titles start being looked up with it.
             TitleService.start(activity)
-            tmdbProblem = null
-            tmdbStatus = CHECKING
-            thread(name = "FirePlayerTmdb", isDaemon = true) {
-                val problem = Tmdb(prefs).check()
-                activity.runOnUiThread {
-                    tmdbStatus = if (problem == null) ACTIVE else NOT_ACCEPTED
-                    tmdbProblem = problem
-                    if (isOpen) refresh()
-                }
+            checks.check(CredentialChecks.Service.TMDB) { if (isOpen) refresh() }
+        }
+        problemOf(tmdb)?.let { message("TMDB: $it.") }
+        if (os.state != CredentialChecks.State.NOT_SET || tmdb.state != CredentialChecks.State.NOT_SET) {
+            row("Check the keys now", if (os.state == CredentialChecks.State.CHECKING || tmdb.state == CredentialChecks.State.CHECKING) "Checking…" else null) {
+                for (s in CredentialChecks.Service.entries) checks.check(s) { if (isOpen) refresh() }
+                refresh()
             }
         }
-        tmdbProblem?.let { message("$it.") }
         // TMDB asks apps that use its API to say so.
         view(TextView(activity).apply {
             text = TMDB_NOTICE
@@ -263,7 +340,9 @@ class SettingsPanels(
             setLineSpacing(2f * density, 1f)
             alpha = 0.8f
         }, top = 3, bottom = 4)
+    }
 
+    fun skipIntroSection(panel: SidePanel): Unit = with(panel) {
         header("Skip intro and credits")
         if (session != skipSession) {
             skipSession = session
@@ -281,15 +360,60 @@ class SettingsPanels(
         )
         if (skipDetailsShown) {
             message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
-                "Times from the file's chapters, else SkipDB and IntroDB, with the TMDB key above.")
+                "Times from the file's chapters, else SkipDB and IntroDB, with a TMDB key.")
         }
         val counts = COUNTDOWNS
         choice("Next episode / Exit countdown", counts.map { if (it == 0) "Until the end" else "$it s" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
             prefs.autoCountdownSec = counts[it]
         }
+    }
 
+    /**
+     * Statuses ▾ (the player windows): OpenSubtitles, TMDB API and the font sent from the phone. Each opens the App
+     * settings section where it's managed. Opening the list checks keys that haven't been checked yet.
+     */
+    fun statusesSection(panel: SidePanel): Unit = with(panel) {
+        header("Statuses")
+        if (statusesSession != session) {
+            statusesSession = session
+            statusesOpen = false
+        }
+        val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
+        val tmdb = checks.status(CredentialChecks.Service.TMDB)
+        val states = listOf(os.state, tmdb.state)
+        val (summary, style) = when {
+            states.any { it == CredentialChecks.State.NOT_ACCEPTED } -> "Needs a look" to Rows.Badge.PROBLEM
+            states.any { it == CredentialChecks.State.CHECKING } -> "Checking…" to Rows.Badge.BUSY
+            states.all { it == CredentialChecks.State.WORKING } -> "All working" to Rows.Badge.ACTIVE
+            states.all { it == CredentialChecks.State.NOT_SET } -> "Not set up" to Rows.Badge.INACTIVE
+            else -> "${states.count { it == CredentialChecks.State.WORKING }} of 2 working" to Rows.Badge.LIGHT
+        }
+        dropdownRow("Services and font", summary, style, statusesOpen) {
+            statusesOpen = !statusesOpen
+            if (statusesOpen) checks.checkUnchecked { if (isOpen) refresh() }
+            refresh()
+        }
+        if (statusesOpen) {
+            for ((service, st) in listOf(CredentialChecks.Service.OPENSUBTITLES to os, CredentialChecks.Service.TMDB to tmdb)) {
+                val (text, badge) = badgeFor(st.state)
+                badgeRow(service.label, text, badge) {
+                    openSub("Online subtitles and TMDB API") { credentialsSection(this) }
+                }.asSubRow()
+            }
+            val font = importedFontName
+            badgeRow("Subtitle font sent from phone", if (font != null) "Active" else "None sent", if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
+                openSub("Subtitle font") { fontSection(this) }
+            }.asSubRow()
+        }
+    }
+
+    /** App: Check for updates; in a player's window also "App settings" (every setting, as on the home screen). */
+    fun appSection(panel: SidePanel, allSettings: Boolean): Unit = with(panel) {
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
+            if (!updater.offered) {
+                updateStatus = "Not in test builds"; refresh(); return@row
+            }
             updateStatus = "Checking…"; refresh()
             updater.check(onFailed = { updateStatus = "Couldn't check"; if (isOpen) refresh() }) { release ->
                 updateStatus = if (release == null) "Up to date" else null
@@ -297,13 +421,29 @@ class SettingsPanels(
                 release?.let { updater.offer(it) }
             }
         }
+        // The settings these windows leave out stay here (user: preserved, not removed).
+        if (allSettings) row("App settings") { openSub("App settings") { renderSettings(this) } }
+    }
+
+    private fun badgeFor(state: CredentialChecks.State): Pair<String, Rows.Badge> = state.label to when (state) {
+        CredentialChecks.State.NOT_SET -> Rows.Badge.INACTIVE
+        CredentialChecks.State.NOT_CHECKED -> Rows.Badge.LIGHT
+        CredentialChecks.State.CHECKING -> Rows.Badge.BUSY
+        CredentialChecks.State.WORKING -> Rows.Badge.ACTIVE
+        CredentialChecks.State.NOT_ACCEPTED -> Rows.Badge.PROBLEM
+        CredentialChecks.State.UNREACHABLE -> Rows.Badge.INACTIVE
+    }
+
+    private fun problemOf(st: CredentialChecks.Status): String? = when (st.state) {
+        CredentialChecks.State.NOT_ACCEPTED, CredentialChecks.State.UNREACHABLE -> st.problem
+        else -> null
     }
 
     /**
      * TiviMate's English titles: the switch, with an arrow beside it for the set-up details (hidden each time the
      * window opens); under it, while on, how far the titles are and a button that sets the server to work now.
      */
-    private fun renderTitles(panel: SidePanel) = with(panel) {
+    private fun renderTitles(panel: SidePanel): Unit = with(panel) {
         titlesPanel = panel
         header("TiviMate titles")
         if (session != titlesSession) {
@@ -623,8 +763,6 @@ class SettingsPanels(
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"
-        private const val CHECKING = "Checking…"
-        private const val NOT_ACCEPTED = "Not accepted"
         private const val SAVED_HINT = "Saved · type a new one to replace it"
         private const val OPTIONAL_HINT = "Optional · more downloads a day"
         private const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."

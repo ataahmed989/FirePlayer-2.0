@@ -223,8 +223,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 } else if (enter) {
                     // The same scope again. Already shown (no load on its way): straight in; reloading it first took
                     // seconds with a big playlist. Otherwise go in once its list has arrived, if it has channels.
-                    if (shownScope == scope && loadingScope == null && guide.channelList().isNotEmpty()) guide.requestFocus()
-                    else loadChannels(focus = guide.focusedChannel()?.key, enterGrid = true)
+                    when {
+                        // Its list is on its way: go in when it arrives (a second read would only start over).
+                        loadingScope == scope -> pendingEnter = true
+                        shownScope == scope && guide.channelList().isNotEmpty() -> guide.requestFocus()
+                        else -> loadChannels(focus = if (shownScope == scope) guide.focusedChannel()?.key else null, enterGrid = true)
+                    }
                 }
             }
         }
@@ -327,7 +331,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         bg {
             val pls = db.playlists()
             val groups = pls.associate { it.id to db.groups(it.id) }
-            val withGuide = db.epgStatuses().filter { it.programmes > 0 }.map { it.source }.toSet()
+            // A guide counts as loading until its first import was attempted (worked or not).
+            val withGuide = db.epgStatuses().map { it.source }.toSet()
             main.post {
                 if (serial != reloadSerial || released) return@post
                 playlists = pls
@@ -357,10 +362,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The scope whose channels the guide shows, and the one being loaded (null when none is on its way). */
     private var shownScope: GuideScope? = null
     private var loadingScope: GuideScope? = null
+    /** OK/Right came while [loadingScope]'s list was loading: the grid is entered when it arrives. */
+    private var pendingEnter = false
 
     private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
         val s = scope
         val serial = ++loadSerial
+        if (loadingScope != s) pendingEnter = false
         loadingScope = s
         bg {
             val list = db.channels(s)
@@ -374,7 +382,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
                         if (sync.busy) "Updating the playlist…" else "No channels here.")
                 }
-                if (enterGrid && list.isNotEmpty()) guide.requestFocus()
+                if ((enterGrid || pendingEnter) && list.isNotEmpty()) guide.requestFocus()
+                pendingEnter = false
             }
         }
     }
@@ -735,8 +744,23 @@ class LivePage(private val activity: Activity, private val host: Host) {
         writes.execute {
             runCatching { db.setFavorite(key, fav, System.currentTimeMillis()) }
                 .onFailure { Log.w(TAG, "Favorite not stored: ${it.javaClass.simpleName}") }
-            // The Favorites list itself gains or loses the row once it's stored.
-            if (s is GuideScope.Favorites) main.post { if (!released && scope == s) loadChannels(focus = null, enterGrid = false) }
+            main.post {
+                if (released) return@post
+                if (s is GuideScope.Favorites && scope == s || loadingScope != null) {
+                    // The Favorites list gains or loses the row; a list read before the write is read again. Focus stays
+                    // where it was, or on the row next to a removed one.
+                    val rows = guide.channelList()
+                    val cur = guide.focusedChannel()?.key
+                    val i = rows.indexOfFirst { it.key == cur }
+                    val keep = if (cur == key && !fav && scope is GuideScope.Favorites) (rows.getOrNull(i + 1) ?: rows.getOrNull(i - 1))?.key else cur
+                    loadChannels(focus = keep, enterGrid = false)
+                } else {
+                    // Already shown; applied again in case a list arrived in between.
+                    guide.updateChannels(guide.channelList().map { if (it.key == key) it.copy(favorite = fav) else it })
+                    playingChannel = playingChannel?.let { if (it.key == key) it.copy(favorite = fav) else it }
+                    refreshControls()
+                }
+            }
         }
     }
 
@@ -878,6 +902,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     val isFullScreen get() = fullScreen
 
+    /** The Info pods setting changed: the full-screen controls show the pods it now lists. */
+    fun refreshPods() = controls.setStatus(player.status())
+
     companion object {
         private const val TAG = "FirePlayerLive"
         private const val INFO_MS = 4_000L
@@ -939,4 +966,9 @@ class LivePrefs(context: Context) {
     var fullScreenAfterSec: Int
         get() = sp.getInt("full_after_s", 30)
         set(v) = sp.edit().putInt("full_after_s", v).apply()
+
+    /** Live FirePlayer Settings › Update interval: how often the EPGs are read again (hours; default 24). */
+    var epgUpdateHours: Int
+        get() = sp.getInt("epg_update_h", 24)
+        set(v) = sp.edit().putInt("epg_update_h", v).apply()
 }

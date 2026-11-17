@@ -35,6 +35,11 @@ class SidePanel(private val activity: Activity) {
     /** Counts the times a window was opened, so a choice kept "while it's open" can start afresh the next time. */
     var session = 0
         private set
+    private var sessions = 0
+
+    /** Windows a sub-window was opened from ([openSub]): Back returns to them, to the row it was opened from. */
+    private class Parent(val title: String, val render: SidePanel.() -> Unit, val onClose: (() -> Unit)?, val session: Int, val key: Pair<String, Int>?)
+    private val parents = ArrayList<Parent>()
 
     /** The row last selected, by what it says: the one to come back to after a small window over this one. */
     private var lastKey: Pair<String, Int>? = null
@@ -52,9 +57,10 @@ class SidePanel(private val activity: Activity) {
     }
 
     fun open(titleText: String, onClose: (() -> Unit)? = null, render: SidePanel.() -> Unit) {
+        parents.clear()
         this.onClose = onClose
         renderer = render
-        session++
+        session = ++sessions
         title.text = titleText
         Glass.background(root, Glass.Kind.PANEL)
         root.visibility = View.VISIBLE
@@ -67,8 +73,41 @@ class SidePanel(private val activity: Activity) {
         rebuild(focusIndex = 0)
     }
 
+    /**
+     * A window opened from a row of this one (a playlist from the list, a status's settings): Back ([back]) comes back
+     * to this window as it was, on that row. Closing ([close]) closes them all.
+     */
+    fun openSub(titleText: String, render: SidePanel.() -> Unit) {
+        val current = renderer
+        if (!isOpen || current == null) return open(titleText, null, render)
+        val rows = focusables()
+        val i = rows.indexOfFirst { it.hasFocus() }
+        parents += Parent(title.text.toString(), current, onClose, session, if (i >= 0) rowKey(rows, i) else lastKey)
+        onClose = null
+        renderer = render
+        session = ++sessions
+        title.text = titleText
+        scroll.scrollTo(0, 0)
+        rebuild(focusIndex = 0)
+    }
+
+    /** Whether Back returns to a window under this one rather than closing. */
+    val hasParent: Boolean get() = isOpen && parents.isNotEmpty()
+
+    /** Back: to the window this one was opened from ([openSub]), else closes. */
+    fun back() {
+        val parent = parents.removeLastOrNull() ?: return close()
+        renderer = parent.render
+        onClose = parent.onClose
+        session = parent.session
+        title.text = parent.title
+        scroll.scrollTo(0, 0)
+        rebuild(focusIndex = 0, key = parent.key)
+    }
+
     fun close() {
         if (!isOpen) return
+        parents.clear()
         root.animate().cancel()
         root.visibility = View.GONE
         list.removeAllViews()
@@ -289,6 +328,61 @@ class SidePanel(private val activity: Activity) {
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> true
                 // Up and down go on from the row, as if from it.
+                else -> Rows.verticalNav(list, row, keyCode, event)
+            }
+        }
+        list.addView(pair, rows.listParams())
+        return row
+    }
+
+    /**
+     * A row with a small icon button beside it ([icon], read out as [buttonLabel]): Right reaches the button, Left
+     * goes back, Up and Down pass both. [keys] sees the row's keys first (a row being moved takes Up and Down).
+     */
+    fun rowWithButton(
+        label: String,
+        value: String?,
+        icon: Int,
+        buttonLabel: String,
+        onClick: () -> Unit,
+        onButton: () -> Unit,
+        keys: ((Int, KeyEvent) -> Boolean)? = null,
+    ): View {
+        val row = rows.build(label, value, null)
+        row.setOnClickListener { onClick() }
+        val button = rows.base().apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            minimumHeight = 0
+            contentDescription = buttonLabel
+            addView(ImageView(activity).apply {
+                setImageResource(icon)
+                imageTintList = rows.textColors
+                isDuplicateParentStateEnabled = true
+            }, LinearLayout.LayoutParams(rows.dp(15), rows.dp(15)))
+            setOnClickListener { onButton() }
+        }
+        val pair = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            tag = ROW_PAIR
+            clipChildren = false
+            clipToPadding = false
+        }
+        pair.setTag(R.id.group_row, true)
+        pair.addView(row, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        pair.addView(button, LinearLayout.LayoutParams(rows.dp(36), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = rows.dp(6) })
+        row.setOnKeyListener { _, keyCode, event ->
+            if (keys?.invoke(keyCode, event) == true) return@setOnKeyListener true
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { if (event.action == KeyEvent.ACTION_DOWN) button.requestFocus(); true }
+                KeyEvent.KEYCODE_DPAD_LEFT -> true
+                else -> Rows.verticalNav(list, row, keyCode, event)
+            }
+        }
+        button.setOnKeyListener { _, keyCode, event ->
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> { if (event.action == KeyEvent.ACTION_DOWN) row.requestFocus(); true }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> true
                 else -> Rows.verticalNav(list, row, keyCode, event)
             }
         }
@@ -745,6 +839,17 @@ class SidePanel(private val activity: Activity) {
             "Other subtitles" to R.drawable.ic_head_subs,
             "Skip intro and credits" to R.drawable.ic_head_intro,
             "App" to R.drawable.ic_head_app,
+            "Statuses" to R.drawable.ic_head_app,
+            "Playlists and EPG" to R.drawable.ic_head_list,
+            "Playlist" to R.drawable.ic_head_list,
+            "Account" to R.drawable.ic_head_app,
+            "Xtream Codes parameters" to R.drawable.ic_head_tv,
+            "M3U playlist" to R.drawable.ic_head_tv,
+            "EPG sources" to R.drawable.ic_head_list,
+            "Groups" to R.drawable.ic_head_list,
+            "Hide or show" to R.drawable.ic_head_look,
+            "Order" to R.drawable.ic_head_list,
+            "Updates" to R.drawable.ic_head_app,
             "Customs" to R.drawable.ic_head_star,
             "Downloaded before" to R.drawable.ic_head_download,
             "Search results" to R.drawable.ic_head_search,

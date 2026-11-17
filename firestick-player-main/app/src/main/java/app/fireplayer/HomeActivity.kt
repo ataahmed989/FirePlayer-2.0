@@ -123,6 +123,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         lookOn = Glass.on
         clipForLook()
         settingsPanels.onLookChanged = { applyLook() }
+        // Info pods are one setting for films and live channels: the live controls follow a change at once.
+        settingsPanels.onChipsChanged = { live.refreshPods() }
         showTab(NavRail.Tab.LIVE)
         root.post { live.takeFocus() }
 
@@ -249,8 +251,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
                 settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
             }
         }
-        settingsRow = addRow("Settings", R.drawable.ic_settings) { from ->
-            openPanel("Settings", from) { settingsPanels.renderSettings(this) }
+        // App settings: every setting (OpenSubtitles and TMDB keys are managed here; the player windows link to it).
+        settingsRow = addRow("App settings", R.drawable.ic_settings) { from ->
+            openPanel("App settings", from) { settingsPanels.renderSettings(this) }
         }
         return column
     }
@@ -398,6 +401,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
                 leftMargin = lp.leftMargin; topMargin = lp.topMargin; gravity = Gravity.TOP or Gravity.START
             }
             captions.visibility = View.VISIBLE
+            // What's on screen already, not just from the next line on.
+            showCues(player.currentCues)
         } else {
             captions.setCues(emptyList())
             captions.visibility = View.GONE
@@ -416,9 +421,17 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             }
         }
 
-        override fun onLiveCues(cues: List<Cue>) {
-            captions.setCues(if (videoFull) captionStyler.normalize(cues) else emptyList())
-        }
+        override fun onLiveCues(cues: List<Cue>) = showCues(cues)
+    }
+
+    /**
+     * Captions over the full-screen picture: text ones in the Subtitle style, picture ones (DVB subtitles) as they
+     * come (they have no text to restyle).
+     */
+    private fun showCues(cues: List<Cue>) {
+        if (!videoFull) { captions.setCues(emptyList()); return }
+        val (pictures, text) = cues.partition { it.bitmap != null }
+        captions.setCues(captionStyler.normalize(text) + pictures)
     }
 
     override fun setChromeVisible(visible: Boolean) {
@@ -461,7 +474,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (isBack) {
             if (event.action == KeyEvent.ACTION_DOWN && panel.isOpen) {
                 consumeBackUp = true
-                panel.close()
+                // A window opened from another (a playlist from the list) goes back to it.
+                panel.back()
                 return true
             }
             // Back from a page goes to the rail; Back on the rail leaves the app.
@@ -495,7 +509,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         val back = currentFocus
         val onClose: () -> Unit = { if (back != null && back.isShown) back.requestFocus() else focusPage() }
         if (style) panel.open("Subtitle style", onClose) { settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {}) }
-        else panel.open("Settings", onClose) { settingsPanels.renderSettings(this) }
+        else panel.open("App settings", onClose) { settingsPanels.renderSettings(this) }
     }
 
     companion object {

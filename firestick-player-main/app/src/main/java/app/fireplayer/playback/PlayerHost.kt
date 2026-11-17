@@ -73,6 +73,8 @@ class PlayerHost private constructor(context: Context) {
     private var captionsOn = false
     private var captionsMime: String? = null
     private var cues: List<Cue> = emptyList()
+    /** The captions on screen now (for a screen that starts showing them mid-line). */
+    val currentCues: List<Cue> get() = cues
 
     private val engine = object : LiveSession.Engine {
         override fun open(source: LiveSession.Source) = openStream(source)

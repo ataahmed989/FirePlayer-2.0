@@ -29,10 +29,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
-        // Android turns auto-vacuum on by default: every EPG swap then moved pages around to shrink the file,
-        // writing hundreds of MB. Without it, freed pages are reused by the next import (only new databases; an
-        // existing one keeps its setting until it is rebuilt).
-        db.rawQuery("PRAGMA auto_vacuum = NONE", null).use { it.moveToFirst() }
+        // Android turns auto-vacuum on (FULL) by default: every EPG swap then moved pages around to shrink the file,
+        // writing hundreds of MB. INCREMENTAL (allowed on an existing database, unlike NONE) leaves freed pages for
+        // the next import to reuse.
+        db.rawQuery("PRAGMA auto_vacuum = INCREMENTAL", null).use { it.moveToFirst() }
         // The write-ahead log shrinks back after a big import instead of keeping its largest size on disk.
         db.rawQuery("PRAGMA journal_size_limit = ${8 * 1024 * 1024}", null).use { it.moveToFirst() }
     }
@@ -249,13 +249,13 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val oldGen = epgGen(source)
         val newGen = oldGen + 1
         val target = physical(source, newGen)
-        // What an interrupted import left behind goes first.
-        deleteRows(target)
-        deleteRows(source + STAGING)
+        // What an interrupted import left behind goes first: every stored name of this source but the one read now.
+        deleteLeftovers(source, keep = physical(source, oldGen))
         val insert = db.compileStatement(
             "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         var inBatch = 0
+        var switched = false
         var storingNs = 0L
         val t0 = SystemClock.elapsedRealtime()
         db.beginTransaction()
@@ -282,14 +282,16 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 put("source", source); put("url", url); put("last_sync", now); put("status", "OK"); put("programmes", count); put("gen", newGen)
             }
             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+            switched = true
             val t2 = SystemClock.elapsedRealtime()
-            deleteRows(physical(source, oldGen))
+            // A failure here only leaves rows behind (removed at the next import), never the ones now read.
+            runCatching { deleteRows(physical(source, oldGen)) }
             Log.i(TAG, "EPG stored: $count programmes; download + read + store ${t1 - t0} ms (storing ${storingNs / 1_000_000} ms), switch ${t2 - t1} ms, old removed in ${SystemClock.elapsedRealtime() - t2} ms")
             return count
         } catch (t: Throwable) {
             // A failed download leaves the old listings as they were; its partial rows go.
             runCatching { if (db.inTransaction()) db.endTransaction() }
-            runCatching { deleteRows(target) }
+            if (!switched) runCatching { deleteRows(target) }
             throw t
         } finally {
             if (db.inTransaction()) db.endTransaction()
@@ -301,6 +303,26 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
 
     private fun epgGen(source: String): Int =
         readableDatabase.rawQuery("SELECT gen FROM epg_status WHERE source = ?", arrayOf(source)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    /**
+     * Deletes every stored name of [source] except [keep]: the generation 0 name, the old staging name, and any
+     * "source@n" an interrupted import or switch left. Names are found by stepping through the key (index seeks).
+     */
+    private fun deleteLeftovers(source: String, keep: String) {
+        val names = ArrayList<String>()
+        if (keep != source) names += source
+        names += source + STAGING
+        var after = "$source@"
+        val upper = "${source}A"
+        while (true) {
+            val next = readableDatabase.rawQuery(
+                "SELECT source FROM program WHERE source > ? AND source < ? ORDER BY source LIMIT 1", arrayOf(after, upper),
+            ).use { if (it.moveToFirst()) it.getString(0) else null } ?: break
+            if (next != keep) names += next
+            after = next
+        }
+        for (n in names) deleteRows(n)
+    }
 
     /** Deletes one stored source's rows a few channels at a time, each step its own short transaction. */
     private fun deleteRows(physicalSource: String) {

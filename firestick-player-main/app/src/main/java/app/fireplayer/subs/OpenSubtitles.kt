@@ -137,6 +137,27 @@ class OpenSubtitles(private val prefs: Prefs) {
         return file
     }
 
+    /**
+     * Whether the saved key works (and the sign-in, when one is saved): null when it does; otherwise whether the site
+     * answered no (true) or couldn't be reached (false), and what it said.
+     */
+    fun verify(): Pair<Boolean, String>? {
+        val signIn = prefs.openSubtitlesUser.isNotEmpty() && prefs.openSubtitlesPassword.isNotEmpty()
+        return try {
+            if (signIn) {
+                val body = JSONObject().put("username", prefs.openSubtitlesUser).put("password", prefs.openSubtitlesPassword).toString()
+                request("POST", "$base/login", body)
+            } else {
+                request("GET", "$base/infos/formats", null)
+            }
+            null
+        } catch (e: java.io.IOException) {
+            false to "Couldn't reach OpenSubtitles"
+        } catch (e: Exception) {
+            true to (e.message ?: "OpenSubtitles didn't accept it")
+        }
+    }
+
     private fun ensureLogin() {
         if (token != null || prefs.openSubtitlesUser.isEmpty() || prefs.openSubtitlesPassword.isEmpty()) return
         val body = JSONObject()

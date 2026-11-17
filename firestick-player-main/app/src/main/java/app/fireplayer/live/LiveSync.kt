@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Log
 import android.os.SystemClock
 import android.util.Xml
+import app.fireplayer.live.ui.LivePrefs
 import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedInputStream
 import java.io.InputStream
@@ -68,16 +69,15 @@ class LiveSync private constructor(context: Context) {
     /** On app start: playlists not updated within their interval are updated now. */
     fun updateDue(now: Long = System.currentTimeMillis()) = submit {
         val due = db.playlists().filter { now - it.lastSync >= it.updateHours.coerceAtLeast(1) * HOUR_MS }
-        if (due.isEmpty()) {
-            db.pruneProgrammes(now - PAST_KEEP_MS)
-            return@submit
-        }
         for (p in due) { syncChannels(p); notify(p.id) }
-        // The due playlists' EPGs, plus every EPG when a due playlist has none of its own (it borrows theirs).
+        // The due playlists' EPGs, plus every EPG when a due playlist has none of its own (it borrows theirs), plus
+        // any EPG older than the EPG update interval (Live FirePlayer Settings) whether or not its playlist is due.
         val all = db.playlists()
         val dueIds = due.map { it.id }.toSet()
         val needFallback = all.any { it.id in dueIds && epgUrl(it) == null }
-        val sources = all.filter { epgUrl(it) != null && (it.id in dueIds || needFallback) }
+        val epgEvery = LivePrefs(app).epgUpdateHours.coerceAtLeast(1) * HOUR_MS
+        val epgSeen = db.epgStatuses().associate { it.source to it.lastSync }
+        val sources = all.filter { epgUrl(it) != null && (it.id in dueIds || needFallback || now - (epgSeen[it.id] ?: 0L) >= epgEvery) }
         db.pruneProgrammes(now - PAST_KEEP_MS)
         for (p in sources) { syncEpg(p); notify(p.id) }
     }
@@ -108,6 +108,9 @@ class LiveSync private constructor(context: Context) {
     }
 
     private fun notify(id: String) = main.post { for (l in listeners.toList()) l.onLiveDataChanged(id) }
+
+    /** A change made outside a sync (group order or visibility, playlist order): screens showing it reload. */
+    fun changed(playlistId: String) = notify(playlistId)
 
     // ---- Channels ----------------------------------------------------------------------------------------------
 

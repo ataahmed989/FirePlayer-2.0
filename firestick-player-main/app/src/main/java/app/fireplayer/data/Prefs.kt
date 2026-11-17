@@ -9,6 +9,9 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
 
+    /** The file itself, for small records kept beside the settings (key check results, [CredentialChecks]). */
+    internal val raw: SharedPreferences get() = sp
+
     init {
         forgetPlayerMatches()
     }

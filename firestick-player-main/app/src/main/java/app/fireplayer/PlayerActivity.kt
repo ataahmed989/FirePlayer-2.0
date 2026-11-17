@@ -3718,7 +3718,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (panel.isOpen) {
             if (code == KeyEvent.KEYCODE_BACK) {
                 consumeBackUp = true
-                panel.close()
+                panel.back()
                 return true
             }
             val before = currentFocus
@@ -4427,8 +4427,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             refreshLabels()
         }) {
+            // VOD FirePlayer Settings (user spec): This episode / film, then the player's own sections. Every other
+            // setting is under App › App settings, as on the home screen.
             renderThisTitle(from)
-            settingsPanels.renderSettings(this)
+            settingsPanels.renderPlayerVod(this)
         }
     }
 
@@ -4628,7 +4630,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             if (!thisTitleOpen) return
             val why = when {
-                !tmdb.isConfigured -> "Add a TMDB API key below to match episodes with TMDB's names and numbers."
+                !tmdb.isConfigured -> "Add a TMDB API key (Statuses, below) to match episodes with TMDB's names and numbers."
                 ep.why != null && ep.joined -> ep.why + " TMDB's: " + ep.parts.joinToString(" and ") { "S${it.season} E${it.number}" } + "."
                 ep.why != null -> ep.why.orEmpty()
                 ep.match == ShowGuide.Match.NONE -> "TMDB doesn't know this show by your provider's name. Fix match finds it."
@@ -4663,7 +4665,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             row("Picture & sound") { openQuality(from, show = false) }.asSubRow()
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }.asSubRow()
             row("Source", portal) {}.asSubRow()
-            if (!tmdb.isConfigured) message("Add a TMDB API key below to fix this film's name.")
+            if (!tmdb.isConfigured) message("Add a TMDB API key (Statuses, below) to fix this film's name.")
         }
     }
 
