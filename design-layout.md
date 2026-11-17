@@ -145,6 +145,30 @@ Source checked: app/src/main/java/app/fireplayer/ui/SettingsPanels.kt.
 - Resolve shared persistence ownership across titles.db and live.db and the separate title-service process.
 - Define target-device performance budgets and acceptance checks before claiming three-screen reliability.
 
+## Implementation decisions log
+
+Decisions made while implementing. "User" entries are the user's answers; "Assumption" entries are reversible
+choices made to keep going and are open to change. Progress is tracked in PROGRESS.md.
+
+- 2026-11-17 · User: FirePlayer-2.0 is the trunk. Old-repo VOD changes #75 and #76 are ported into
+  `firestick-player-main/` so VOD matches the shipped app.
+- 2026-11-17 · User: the launcher icon opens the new shell directly on the Live TV guide. Unfinished tabs are
+  hidden (no placeholders). "Open a link" and "Subtitle style" move under Settings. When Home is functional it
+  becomes the default launcher destination. `HomeActivity` stays the single LAUNCHER component.
+- 2026-11-17 · User: Android Views, reusing GlassDrawable/GlassBackdrop, fonts, FireDialog, SidePanel and focus
+  behavior. Recycled Views for shelves and channel lists; the EPG is a canvas-drawn View that draws only the
+  visible area and handles D-pad focus, scrolling and accessibility. Selective glass; blur low-resolution, cached
+  and refreshed conservatively; glass capture stops when controls are hidden; no per-cell or per-tile blur.
+  Network, image decoding and EPG processing stay off the UI thread; bounded caches and prefetch. Validate on the
+  target Fire TV before increasing effects.
+- 2026-11-17 · User: classic shows the same stationary blue wallpaper behind its original dark surfaces.
+- 2026-11-17 · Assumption: the live miniature and full-screen live player are one ExoPlayer in one Activity
+  (the shell), resized between the two rectangles, so switching never reconnects or rebuffers and uses one
+  provider connection. VOD keeps using `PlayerActivity` unchanged; starting VOD stops live.
+- 2026-11-17 · Assumption: glass on Home/guide blurs the stationary wallpaper once (cached), not live video.
+- 2026-11-17 · Assumption: test APKs are debug-signed (user: the original key is only needed for an update that
+  installs over the existing FirePlayer).
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png
