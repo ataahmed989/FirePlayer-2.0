@@ -33,6 +33,7 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.titles.TitleService
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.GlassSource
 import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsPanels
@@ -51,7 +52,10 @@ import app.fireplayer.update.Updater
 class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     private var still: GlassSource? = null
-    override val glassSource: GlassSource? get() = still
+    /** The live picture, blurred, for the full-screen controls' glass (Android 7+); made when first needed. */
+    private var film: GlassBackdrop? = null
+    private var filmOn = false
+    override val glassSource: GlassSource? get() = if (filmOn) film ?: still else still
     private lateinit var shellTokens: Tokens
     override val tokens: Tokens get() = shellTokens
 
@@ -137,6 +141,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun onStop() {
         live.stop()
+        film?.stop()
         root.keepScreenOn = false
         super.onStop()
     }
@@ -145,12 +150,25 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun overlayOpen(): Boolean = panel.isOpen || FireDialog.isShowing(this)
 
+    override fun setFilmGlass(on: Boolean) {
+        filmOn = on && Glass.on && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
+        if (filmOn) {
+            val f = film ?: GlassBackdrop(this, surface).also { film = it }
+            f.start()
+            f.playing = player.status().playing
+            f.frameChanged()
+        } else {
+            film?.stop()
+        }
+    }
+
     override fun onDestroy() {
         root.viewTreeObserver.removeOnGlobalFocusChangeListener(focusWatcher)
         player.removeListener(videoSizeListener)
         player.detach(surface)
         live.release()
         liveSettings.release()
+        film?.release()
         super.onDestroy()
     }
 
@@ -366,6 +384,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         override fun onLiveStatus(status: PlayerHost.Status) {
             // The screen stays on while a channel plays (the Fire TV screensaver would cover it), as films do.
             root.keepScreenOn = status.key != null && status.error == null
+            film?.playing = status.playing
             if (status.videoSize != lastSize) {
                 lastSize = status.videoSize
                 layoutVideo()

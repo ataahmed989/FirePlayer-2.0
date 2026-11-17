@@ -57,6 +57,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fun overlayOpen(): Boolean
         /** What owns the live picture on this screen (its surface): a stale screen's stop is ignored. */
         val videoOwner: Any
+        /**
+         * Glass shows the blurred live picture (true: full-screen controls are up) or the wallpaper (false). The film
+         * is only copied while glass is on screen, so with the controls hidden nothing is captured.
+         */
+        fun setFilmGlass(on: Boolean)
         fun openPlaylists()
     }
 
@@ -269,6 +274,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         main.removeCallbacks(hideNotice)
         // The controls' timer is gone: don't leave them up for the return.
         if (fullScreen) controls.hideAll()
+        filmGlass(false)
         revealKey = 0
         backDownSeen = false
     }
@@ -546,6 +552,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fullScreen = false
         revealKey = 0
         controls.hideAll()
+        filmGlass(false)
         host.setChromeVisible(true)
         guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         guideLayer.visibility = View.VISIBLE
@@ -619,6 +626,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         main.removeCallbacks(hideControls)
         val f = activity.currentFocus
         controls.hideAll()
+        filmGlass(false)
         revealKey = 0
         if (f != null && isInside(f, controls)) f.clearFocus()
     }
@@ -634,8 +642,19 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun showControls() {
         refreshControls()
+        filmGlass(true)
         controls.showControls()
         bumpControls()
+    }
+
+    private var filmGlassOn = false
+
+    /** Full-screen controls blur the film behind them (glass look); everywhere else glass blurs the wallpaper. */
+    private fun filmGlass(on: Boolean) {
+        if (filmGlassOn == on) return
+        filmGlassOn = on
+        host.setFilmGlass(on)
+        if (Glass.on) controls.applyLook()
     }
 
     private fun bumpControls() {
