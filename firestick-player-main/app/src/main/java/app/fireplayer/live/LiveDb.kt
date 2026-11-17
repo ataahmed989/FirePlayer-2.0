@@ -2,7 +2,10 @@ package app.fireplayer.live
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.AbstractWindowedCursor
 import android.database.Cursor
+import android.database.CursorWindow
+import android.os.Build
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.SystemClock
@@ -50,6 +53,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 "blocked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(playlist_id, id)) WITHOUT ROWID",
         )
         db.execSQL("CREATE INDEX channel_group_idx ON channel(playlist_id, group_id, position)")
+        db.execSQL("CREATE INDEX channel_pos_idx ON channel(playlist_id, position)")
         db.execSQL("CREATE TABLE favorite(playlist_id TEXT NOT NULL, channel_id TEXT NOT NULL, added INTEGER NOT NULL, PRIMARY KEY(playlist_id, channel_id)) WITHOUT ROWID")
         db.execSQL("CREATE TABLE recent(playlist_id TEXT NOT NULL, channel_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(playlist_id, channel_id)) WITHOUT ROWID")
         // Programmes are kept per EPG source: the playlist whose EPG listed them.
@@ -57,7 +61,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             "CREATE TABLE program(source TEXT NOT NULL, epg_ref TEXT NOT NULL, start INTEGER NOT NULL, stop INTEGER NOT NULL, " +
                 "title TEXT NOT NULL, description TEXT, category TEXT, PRIMARY KEY(source, epg_ref, start)) WITHOUT ROWID",
         )
-        db.execSQL("CREATE TABLE epg_status(source TEXT PRIMARY KEY, url TEXT NOT NULL, last_sync INTEGER NOT NULL, status TEXT NOT NULL, programmes INTEGER NOT NULL) WITHOUT ROWID")
+        // gen: which import of this source the guide reads (its programme rows are stored under [physical]).
+        db.execSQL("CREATE TABLE epg_status(source TEXT PRIMARY KEY, url TEXT NOT NULL, last_sync INTEGER NOT NULL, status TEXT NOT NULL, programmes INTEGER NOT NULL, gen INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -72,6 +77,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         // Version 3: the epg_ref index was never used by a query (every read gives the source), yet every imported
         // programme paid for it.
         if (oldVersion < 3) db.execSQL("DROP INDEX IF EXISTS program_ref_idx")
+        // Version 4: a playlist's channels in order without sorting them (32,000 channels took seconds to list).
+        if (oldVersion < 4) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS channel_pos_idx ON channel(playlist_id, position)")
+            // Imports switch generations instead of renaming every row (existing rows are generation 0).
+            db.execSQL("ALTER TABLE epg_status ADD COLUMN gen INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     // ---- Playlists --------------------------------------------------------------------------------------------
@@ -106,7 +117,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         db.beginTransaction()
         try {
             for (t in listOf("channel", "channel_group", "favorite", "recent")) db.delete(t, "playlist_id = ?", arrayOf(id))
-            db.delete("program", "source = ?", arrayOf(id))
+            // Every generation of its listings (and an interrupted import's).
+            db.delete("program", "source = ? OR source = ? OR (source >= ? AND source < ?)", arrayOf(id, id + STAGING, "$id@", "${id}A"))
             db.delete("epg_status", "source = ?", arrayOf(id))
             db.delete("playlist", "id = ?", arrayOf(id))
             db.setTransactionSuccessful()
@@ -217,25 +229,32 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     /**
-     * Replaces everything [source]'s EPG listed with what [fill] inserts. The download is read into staging rows in
-     * small transactions (the database is never held for a whole download, so favorites and history writes don't
-     * wait), then one short transaction swaps them in and drops every source's programmes that ended before
-     * [keepFrom]. The guide keeps showing the old listings until the swap.
+     * Replaces everything [source]'s EPG listed with what [fill] inserts. The download is stored as a new generation
+     * of the source's rows, in batches (the database is never held for a whole download, so the viewer's own changes
+     * don't wait). One tiny transaction then points the guide at it, and the old generation is deleted in small
+     * steps. (Renaming every row from a staging name to the real one rewrote the whole table: minutes on a TV.)
      */
     fun replaceProgrammes(source: String, url: String, keepFrom: Long, now: Long, fill: ((String, Programme) -> Unit) -> Int): Int {
         val db = writableDatabase
-        val staging = "$source$STAGING"
-        db.delete("program", "source = ?", arrayOf(staging))
+        val oldGen = epgGen(source)
+        val newGen = oldGen + 1
+        val target = physical(source, newGen)
+        // What an interrupted import left behind goes first.
+        deleteRows(target)
+        deleteRows(source + STAGING)
         val insert = db.compileStatement(
             "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         var inBatch = 0
+        var storingNs = 0L
         val t0 = SystemClock.elapsedRealtime()
         db.beginTransaction()
         try {
             val count = fill { ref, p ->
+                if (p.stop <= keepFrom) return@fill
+                val s0 = System.nanoTime()
                 insert.clearBindings()
-                insert.bindString(1, staging); insert.bindString(2, ref); insert.bindLong(3, p.start); insert.bindLong(4, p.stop)
+                insert.bindString(1, target); insert.bindString(2, ref); insert.bindLong(3, p.start); insert.bindLong(4, p.stop)
                 insert.bindString(5, p.title); bindOrNull(insert, 6, p.description); bindOrNull(insert, 7, p.category)
                 insert.executeInsert()
                 if (++inBatch >= BATCH) {
@@ -244,29 +263,43 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                     inBatch = 0
                     db.beginTransaction()
                 }
+                storingNs += System.nanoTime() - s0
             }
             db.setTransactionSuccessful()
             db.endTransaction()
             val t1 = SystemClock.elapsedRealtime()
-            db.beginTransaction()
-            db.delete("program", "source = ?", arrayOf(source))
-            db.execSQL("UPDATE program SET source = ? WHERE source = ?", arrayOf(source, staging))
-            db.delete("program", "stop < ?", arrayOf(keepFrom.toString()))
             val v = ContentValues().apply {
-                put("source", source); put("url", url); put("last_sync", now); put("status", "OK"); put("programmes", count)
+                put("source", source); put("url", url); put("last_sync", now); put("status", "OK"); put("programmes", count); put("gen", newGen)
             }
             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
-            db.setTransactionSuccessful()
-            db.endTransaction()
-            Log.i(TAG, "EPG stored: $count programmes; read + insert ${t1 - t0} ms, swap ${SystemClock.elapsedRealtime() - t1} ms")
+            val t2 = SystemClock.elapsedRealtime()
+            deleteRows(physical(source, oldGen))
+            Log.i(TAG, "EPG stored: $count programmes; download + read + store ${t1 - t0} ms (storing ${storingNs / 1_000_000} ms), switch ${t2 - t1} ms, old removed in ${SystemClock.elapsedRealtime() - t2} ms")
             return count
         } catch (t: Throwable) {
-            // A failed download leaves the old listings as they were; its partial staging rows go.
+            // A failed download leaves the old listings as they were; its partial rows go.
             runCatching { if (db.inTransaction()) db.endTransaction() }
-            runCatching { db.delete("program", "source = ?", arrayOf(staging)) }
+            runCatching { deleteRows(target) }
             throw t
         } finally {
             if (db.inTransaction()) db.endTransaction()
+        }
+    }
+
+    /** The name a source's programme rows are stored under in generation [gen] (0: the source itself). */
+    private fun physical(source: String, gen: Int) = if (gen == 0) source else "$source@$gen"
+
+    private fun epgGen(source: String): Int =
+        readableDatabase.rawQuery("SELECT gen FROM epg_status WHERE source = ?", arrayOf(source)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    /** Deletes one stored source's rows a few channels at a time, each step its own short transaction. */
+    private fun deleteRows(physicalSource: String) {
+        val step = writableDatabase.compileStatement(
+            "DELETE FROM program WHERE source = ?1 AND epg_ref IN (SELECT epg_ref FROM program WHERE source = ?1 GROUP BY epg_ref LIMIT 50)",
+        )
+        step.use {
+            it.bindString(1, physicalSource)
+            while (it.executeUpdateDelete() > 0) Unit
         }
     }
 
@@ -306,9 +339,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     fun channels(scope: GuideScope): List<Channel> {
         val select = "SELECT c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position, " +
             "f.channel_id IS NOT NULL, c.blocked FROM channel c LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
+        // Every playlist: each one's channels in turn, in playlist order (read in index order, never sorted whole).
+        if (scope == GuideScope.AllPlaylists) return playlists().flatMap { channels(GuideScope.AllChannels(it.id)) }
         val (sql, args) = when (scope) {
-            GuideScope.AllPlaylists ->
-                (select + "JOIN playlist p ON p.id = c.playlist_id WHERE c.blocked = 0 ORDER BY p.position, p.name, c.position") to emptyArray<String>()
+            GuideScope.AllPlaylists -> error("handled above")
             is GuideScope.AllChannels ->
                 (select + "WHERE c.playlist_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId)
             is GuideScope.Favorites ->
@@ -316,7 +350,16 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             is GuideScope.Group ->
                 (select + "WHERE c.playlist_id = ? AND c.group_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId, scope.groupId)
         }
-        return readableDatabase.rawQuery(sql, args).use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
+        return readableDatabase.rawQuery(sql, args).wholeWindow().use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
+    }
+
+    /**
+     * A long list in one pass: Android reads a query's rows into 2 MB windows and runs the query again from the top
+     * for each further window, so a 32,000-channel list was read several times over. One big window instead (API 28+).
+     */
+    private fun Cursor.wholeWindow(): Cursor {
+        if (Build.VERSION.SDK_INT >= 28 && this is AbstractWindowedCursor) window = CursorWindow("channels", 24L * 1024 * 1024)
+        return this
     }
 
     fun channel(key: ChannelKey): Channel? =
@@ -343,7 +386,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val db = readableDatabase
         for (ch in channels) {
             val ref = ch.epgRef ?: continue
-            val sources = if (ch.playlistId in withEpg) listOf(ch.playlistId) else sourceOrder.filter { it in withEpg }
+            val sources = withEpg[ch.playlistId]?.let { listOf(it) } ?: sourceOrder.mapNotNull { withEpg[it] }
             for (source in sources) {
                 val list = db.rawQuery(
                     "SELECT start, stop, title, description, category FROM program WHERE source = ? AND epg_ref = ? AND stop > ? AND start < ? ORDER BY start",
@@ -358,9 +401,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    private fun sourcesWithEpg(): Set<String> =
-        readableDatabase.rawQuery("SELECT source FROM epg_status WHERE programmes > 0", null).use { c ->
-            buildSet { while (c.moveToNext()) add(c.getString(0)) }
+    /** Sources with listings, each with the name its current generation's rows are stored under. */
+    private fun sourcesWithEpg(): Map<String, String> =
+        readableDatabase.rawQuery("SELECT source, gen FROM epg_status WHERE programmes > 0", null).use { c ->
+            buildMap { while (c.moveToNext()) put(c.getString(0), physical(c.getString(0), c.getInt(1))) }
         }
 
     // ---- The viewer's own data ---------------------------------------------------------------------------------
@@ -411,7 +455,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     )
 
     companion object {
-        private const val VERSION = 3
+        private const val VERSION = 4
         private const val TAG = "FirePlayerLive"
         const val RECENT_KEEP = 10
         private const val STAGING = "#new"

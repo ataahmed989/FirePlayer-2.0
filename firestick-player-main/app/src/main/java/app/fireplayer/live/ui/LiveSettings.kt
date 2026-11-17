@@ -70,8 +70,33 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         header("Manage")
         row("Add playlist") { addPlaylist(onClose) }
         if (playlists.isNotEmpty()) {
-            row("Update all playlists", if (sync.busy) "Updating…" else null) { sync.updateAll(); refresh() }
+            updateRow(this, "Update all playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
         }
+    }
+
+    /**
+     * An Update button: while anything is updating it's dimmed and does nothing (it stays focusable, so focus
+     * doesn't jump), and says "Updating…"; otherwise it says when the last update was.
+     */
+    private fun updateRow(p: SidePanel, label: String, lastSync: Long, start: () -> Unit) {
+        val busy = sync.busy
+        val row = p.row(label, if (busy) "Updating…" else if (lastSync > 0) "Updated ${whenText(lastSync, short = true)}" else "Never updated") {
+            if (!sync.busy) { start(); p.refresh() }
+        }
+        if (busy) row.alpha = 0.45f
+    }
+
+    /** "5:04 PM" today, "yesterday 5:04 PM", else "Nov 15, 5:04 PM" ([short]: "yesterday", "Nov 15"). */
+    private fun whenText(t: Long, short: Boolean = false): String {
+        val time = DateFormat.getTimeFormat(activity).format(Date(t))
+        val day = java.util.Calendar.getInstance()
+        val then = java.util.Calendar.getInstance().apply { timeInMillis = t }
+        fun sameDay(a: java.util.Calendar, b: java.util.Calendar) = a.get(java.util.Calendar.YEAR) == b.get(java.util.Calendar.YEAR) && a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR)
+        if (sameDay(day, then)) return time
+        day.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        if (sameDay(day, then)) return if (short) "yesterday" else "yesterday $time"
+        val date = android.text.format.DateUtils.formatDateTime(activity, t, android.text.format.DateUtils.FORMAT_SHOW_DATE or android.text.format.DateUtils.FORMAT_ABBREV_MONTH)
+        return if (short) date else "$date, $time"
     }
 
     private fun shortStatus(p: Playlist): String = when {
@@ -140,7 +165,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         choice("Update interval", hours.map { "Every $it hours" }, hours.indexOf(pl.updateHours).let { if (it < 0) 2 else it }) { i ->
             save(pl.copy(updateHours = hours[i]))
         }
-        row("Update playlist") { sync.update(pl.id); refresh() }
+        updateRow(this, "Update playlist", pl.lastSync) { sync.update(pl.id) }
         row("Delete playlist") {
             FireDialog.ask(activity, "Delete \"${pl.name}\"? Its channels, favorites and guide go too.", listOf(
                 "Delete" to {
@@ -230,12 +255,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             message("Each playlist's guide comes from its own EPG. A playlist without one borrows another playlist's listings only for channels with the exact same EPG id.")
             header("EPG sources")
             if (playlists.isEmpty()) message("No playlists yet.")
-            val tf = DateFormat.getTimeFormat(activity)
             for (pl in playlists) {
                 val s = statuses[pl.id]
                 val value = when {
                     s == null -> "Not loaded"
-                    s.status == "OK" -> "${s.programmes} programmes · ${tf.format(Date(s.lastSync))}"
+                    s.status == "OK" -> "${s.programmes} programmes · ${whenText(s.lastSync)}"
                     else -> s.status
                 }
                 row(pl.name, value) {}
@@ -244,7 +268,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             // Provisional: the outline fixes one day of past programmes; whether it's adjustable is still open.
             row("Past days to keep EPG", "1 day", enabled = false) {}
             header("Update")
-            row("Update EPG", if (sync.busy) "Updating…" else null) { sync.updateEpg(); refresh() }
+            updateRow(this, "Update EPG", statuses.values.maxOfOrNull { it.lastSync } ?: 0L) { sync.updateEpg() }
             row("Clear EPG") {
                 FireDialog.ask(activity, "Clear all programme listings? They load again at the next update.", listOf(
                     "Clear" to { sync.clearEpg() },

@@ -5,7 +5,7 @@ Working checklist kept current as increments land. Branch: `claude/blissful-maye
 Legend: [x] done and verified · [~] partly done, or verified only with fixture data / in the emulator · [ ] not started.
 "Emulator" means an Android TV API 30 x86 emulator running **without hardware acceleration** in the cloud container:
 behaviour and layout are real, but speed is not (video plays at roughly 1/6 speed; a remote key press takes up to a
-minute to arrive). Nothing here has been run on a Fire TV yet.
+minute to arrive). Section 3b records the first tests on the user's Fire TV.
 
 ## 0. Environment and baseline (November 17)
 
@@ -60,6 +60,25 @@ minute to arrive). Nothing here has been run on a Fire TV yet.
       geometry difference: glass panel corners are rounder than classic (existing glass renderer radius table).
 - [x] Test APK (debug-signed, ARM) delivered from 26ddfdf. It can't install over a release-signed FirePlayer.
 - [x] Independent review (4 dimensions, each finding verified): 35 confirmed findings fixed; 355 unit tests pass.
+
+## 3b. First Fire TV test (Fire TV Stick 4K Max, Fire OS 8 / Android 11, user's real provider)
+
+Connected over Tailscale + ADB with the user's permission; the test app (`app.fireplayer.next`) sits beside the
+user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programmes (12,249 channels have an EPG id).
+
+- [x] Tab rail: Down from Live TV reached the page instead of Settings → the rail moves between its own tabs;
+      OK/Right opens a tab; Left from a page returns to the selected tab — verified on the Max.
+- [x] Groups column: folding a playlist closed the column (focus fell into the guide) → only that playlist's rows
+      change, focus stays — verified on the Max (OK and Left fold, OK opens).
+- [x] Captions: "This channel has no captions" on channels with TV captions → CEA-608/708 now found in .ts streams
+      and drawn over full screen — verified on the Max (CC1 on a movie channel).
+- [x] Favorites slow → star and guide change at once, write on its own thread — verified on the Max.
+- [x] ▶ playing marker overlapped five-digit numbers → number column sized to the longest number — verified.
+- [~] "EPG not working": the guide was right once the import finished; the first import took ~17 minutes with
+      no feedback. Now: "Loading the guide…" in empty rows, timings logged per phase, faster XMLTV time reading,
+      unused index dropped, no auto-vacuum (new databases). Import speed work continues from the measurements.
+- [~] "All playlists" (32,686 channels) took 2–4 s to list → per-playlist reads in index order, one cursor window;
+      entering the grid for the scope already shown no longer reloads it. Built, not yet re-measured on the Max.
 
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
 
