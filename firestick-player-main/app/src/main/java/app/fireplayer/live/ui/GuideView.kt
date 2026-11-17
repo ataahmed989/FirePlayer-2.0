@@ -368,7 +368,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val nx = xOf(now)
         if (nx >= gridLeft) canvas.drawLine(nx, headerH, nx, height.toFloat(), nowPaint)
         canvas.restore()
-        if (nx >= gridLeft) canvas.drawCircle(nx, headerH - t.dpf(3f), t.dpf(3f), nowPaint)
+        // The dot sits centred on the header's rule (the horizontal time line), the now line running down from it.
+        if (nx >= gridLeft) canvas.drawCircle(nx, headerH - t.dpf(0.5f), t.dpf(3.5f), nowPaint)
     }
 
     private fun drawHeader(canvas: Canvas, now: Long, ws: Long, wEnd: Long, xOf: (Long) -> Float) {

@@ -349,6 +349,12 @@ object FireDialog {
             if (!isShowing) return
             isShowing = false
             open[activity]?.remove(this)
+            // Whatever closes the window (Save, Cancel, Back, Done), its keyboard closes with it: a keyboard left
+            // thinking it's still up can keep the D-pad from the screen underneath.
+            if (shade.findFocus() is android.widget.EditText) {
+                (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.hideSoftInputFromWindow(shade.windowToken, 0)
+            }
             shade.viewTreeObserver.takeIf { it.isAlive }?.removeOnGlobalFocusChangeListener(keepFocus)
             shade.animate().cancel()
             (shade.parent as? ViewGroup)?.removeView(shade)
