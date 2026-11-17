@@ -1,0 +1,19 @@
+# Reference archives and tools are not application source.
+/APPS/
+/Tools/
+*.apk
+*.zip
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
+local.properties
+**/local.properties
+**/.gradle/
+**/.kotlin/
+**/build/
+**/.idea/
+*.iml
+.DS_Store
+

@@ -1,0 +1,321 @@
+package app.fireplayer.player
+
+import android.net.Uri
+import android.os.SystemClock
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceException
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.TransferListener
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Goes straight to where the provider last sent a link, instead of asking it again every time.
+ *
+ * IPTV film links usually point at the provider's login server, which answers every request by sending the player on
+ * to the server that actually has the file. An MKV takes three requests before its picture appears (its start, its
+ * index at the end, then back to the start), and every skip one more, so each would also wait on the login server.
+ * If the remembered address stops working (it often carries a pass that expires), the original link is used again;
+ * a link whose new address keeps failing the first time it's reused is asked every time, as before.
+ *
+ * When the film keeps arriving slower than it plays, [ServerSwitch] has its connection break off and start again
+ * through the provider, which may send it to a less busy server.
+ *
+ * [readOnly] (the skip preview) goes where the film was sent but never changes what's remembered: the preview
+ * being turned away, often only because the film has the account's one connection, says nothing about the address.
+ */
+@OptIn(UnstableApi::class)
+class RedirectMemoryDataSource(
+    private val upstream: DataSource,
+    private val serverSwitch: ServerSwitch?,
+    private val readOnly: Boolean = false,
+) : DataSource {
+
+    /** Where a link was last sent, and whether going there directly has worked yet. */
+    private class Sent(val uri: Uri, val reused: Boolean)
+
+    // The link being read, while it's read from a server the provider sent us on to.
+    private var redirectedLink: String? = null
+    // How much has come since this connection opened.
+    private var readSinceOpen = 0L
+
+    // The film's index read from the box instead ([IndexCache]): from where, up to where, and the request to go on with
+    // from the server if more is wanted than was kept.
+    private var kept: IndexCache.Reader? = null
+    private var keptAt = 0L
+    private var keptSpec: DataSpec? = null
+    private var keptEnd = 0L
+    // The film's index as it comes from the server, to keep.
+    private var keeping: IndexCache.Writer? = null
+    // What has come of the index ahead of the player: it reads it a few bytes at a time, each read costing as much as a
+    // big one, so it's fetched in big ones and handed out from here.
+    private var ahead: ByteArray? = null
+    private var aheadFrom = 0
+    private var aheadTo = 0
+
+    override fun addTransferListener(transferListener: TransferListener) = upstream.addTransferListener(transferListener)
+
+    override fun open(dataSpec: DataSpec): Long {
+        redirectedLink = null
+        readSinceOpen = 0
+        val film = serverSwitch != null && !readOnly
+        val size = if (film) fileSizes[dataSpec.uri.toString()] ?: 0L else 0L
+        if (size > 0) {
+            IndexCache.open(dataSpec.uri.toString(), size, dataSpec.position)?.let { reader ->
+                val end = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.position + dataSpec.length else size
+                if (end <= size) {
+                    kept = reader
+                    keptAt = dataSpec.position
+                    keptSpec = dataSpec
+                    keptEnd = end
+                    return end - dataSpec.position
+                }
+                reader.close()
+            }
+        }
+        val length = openNetwork(dataSpec)
+        if (film && size > 0 && length != C.LENGTH_UNSET.toLong() && IndexCache.wanted(size, dataSpec.position)) {
+            keeping = IndexCache.Writer(dataSpec.uri.toString(), size, dataSpec.position)
+            ahead = ByteArray(AHEAD_BYTES)
+            aheadFrom = 0
+            aheadTo = 0
+        }
+        return length
+    }
+
+    private fun openNetwork(dataSpec: DataSpec): Long {
+        // A move asked for between connections: this one simply goes through the provider, nothing to break off.
+        if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
+        if (serverSwitch != null) filmOpenedAt = SystemClock.elapsedRealtime()
+        val length = openRemembering(dataSpec)
+        if (serverSwitch != null && !readOnly) speedFor(dataSpec.uri.toString())
+        // The film's whole size, from a reply that runs to its end: for its quality details.
+        if (serverSwitch != null && !readOnly && length != C.LENGTH_UNSET.toLong() &&
+            dataSpec.length == C.LENGTH_UNSET.toLong()) {
+            if (fileSizes.size >= MAX_REMEMBERED) fileSizes.clear()
+            fileSizes[dataSpec.uri.toString()] = dataSpec.position + length
+        }
+        if (upstream.uri != dataSpec.uri) {
+            redirectedLink = dataSpec.uri.toString()
+            // Subtitles opened with the film come straight from their own server; they don't say the film can't move.
+            serverSwitch?.possible = true
+        }
+        return length
+    }
+
+    private fun openRemembering(dataSpec: DataSpec): Long {
+        val link = dataSpec.uri.toString()
+        // An address that already turned the preview away isn't tried by it again (until the film is sent elsewhere).
+        val sent = remembered[link]?.takeUnless { readOnly && previewSkips[link] == it.uri }
+        if (sent != null) {
+            try {
+                val length = upstream.open(dataSpec.withUri(sent.uri))
+                if (!sent.reused && !readOnly) {
+                    remembered[link] = Sent(sent.uri, reused = true)
+                    misses.remove(link)
+                }
+                return length
+            } catch (e: HttpDataSource.HttpDataSourceException) {
+                // Cancelled, or asking for more than the file has: the original link would do no better. A server that
+                // doesn't answer in time is different: that's what going back to the provider is for.
+                val cause = e.cause
+                val cancelled = cause is InterruptedIOException && cause !is SocketTimeoutException
+                if (cancelled || DataSourceException.isCausedByPositionOutOfRange(e)) throw e
+                upstream.close()
+                if (readOnly) {
+                    if (previewSkips.size >= MAX_REMEMBERED) previewSkips.clear()
+                    previewSkips[link] = sent.uri
+                    return upstream.open(dataSpec)
+                }
+                remembered.remove(link)
+                // Once could be the server turning away a reconnect for a moment; twice, the address only works once.
+                if (!sent.reused) misses[link] = (misses[link] ?: 0) + 1
+            }
+        }
+        val length = upstream.open(dataSpec)
+        val landed = upstream.uri
+        if (!readOnly && landed != null && landed != dataSpec.uri && (misses[link] ?: 0) < MAX_MISSES) {
+            // A live stream's parts each have their own link; don't let those pile up.
+            if (remembered.size >= MAX_REMEMBERED) remembered.clear()
+            remembered[link] = Sent(landed, reused = false)
+        }
+        return length
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        ahead?.let { store ->
+            if (aheadFrom == aheadTo) {
+                val n = readServer(store, 0, store.size)
+                if (n <= 0) return n
+                aheadFrom = 0
+                aheadTo = n
+            }
+            val n = minOf(length, aheadTo - aheadFrom)
+            System.arraycopy(store, aheadFrom, buffer, offset, n)
+            aheadFrom += n
+            return n
+        }
+        kept?.let { reader ->
+            if (keptAt >= keptEnd) return C.RESULT_END_OF_INPUT
+            val n = reader.read(keptAt, buffer, offset, minOf(length.toLong(), keptEnd - keptAt).toInt())
+            if (n > 0) {
+                keptAt += n
+                return n
+            }
+            // More is wanted than was kept: the rest comes from the server.
+            reader.close()
+            kept = null
+            val spec = keptSpec!!
+            openNetwork(spec.subrange(keptAt - spec.position, if (spec.length == C.LENGTH_UNSET.toLong()) C.LENGTH_UNSET.toLong() else keptEnd - keptAt))
+        }
+        return readServer(buffer, offset, length)
+    }
+
+    private fun readServer(buffer: ByteArray, offset: Int, length: Int): Int {
+        val link = redirectedLink
+        // The film is coming too slowly from this server: forget it and break off, and the player reconnects where it
+        // left off, through the provider again, which may send it somewhere quicker. Only once this connection has
+        // brought something, so the player counts it as a hiccup on the way rather than a link that keeps failing.
+        if (link != null && readSinceOpen >= MIN_READ_BEFORE_MOVE && serverSwitch?.take() == true) {
+            remembered.remove(link)
+            throw IOException("Moving to another of the provider's servers")
+        }
+        val film = serverSwitch != null && !readOnly
+        val started = if (film) System.nanoTime() else 0L
+        if (film) gapBefore(started)
+        val read = try {
+            upstream.read(buffer, offset, length)
+        } catch (e: IOException) {
+            // The server dropped the film or went quiet: the reconnect asks the provider again rather than waiting on
+            // the same server. Not when the read was only cut short by a jump.
+            val cancelled = e.cause is InterruptedIOException && e.cause !is SocketTimeoutException
+            if (link != null && !readOnly && !cancelled) remembered.remove(link)
+            throw e
+        }
+        if (read > 0) {
+            readSinceOpen += read
+            if (film) timed(read, System.nanoTime() - started)
+            keeping?.add(buffer, offset, read)
+        }
+        return read
+    }
+
+    override fun getUri(): Uri? = if (kept != null) keptSpec?.uri else upstream.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> = if (kept != null) emptyMap() else upstream.responseHeaders
+
+    override fun close() {
+        redirectedLink = null
+        ahead = null
+        kept?.close()
+        kept = null
+        keptSpec = null
+        keeping?.let { w -> keeping = null; w.finish() }
+        upstream.close()
+    }
+
+    /** [serverSwitch] only for the film's own connection; [readOnly] for the skip preview's. */
+    class Factory(
+        private val upstream: DataSource.Factory,
+        private val serverSwitch: ServerSwitch?,
+        private val readOnly: Boolean = false,
+    ) : DataSource.Factory {
+        override fun createDataSource(): DataSource = RedirectMemoryDataSource(upstream.createDataSource(), serverSwitch, readOnly)
+    }
+
+    companion object {
+        // When the film last opened a connection (elapsedRealtime).
+        @Volatile private var filmOpenedAt = 0L
+
+        // The film's bytes, and the time they took to come while it was loading, since the speed was last worked out.
+        private var windowBytes = 0L
+        private var windowNanos = 0L
+        private var lastReadEnd = 0L
+        @Volatile private var lastBps = 0L
+        @Volatile private var speedLink: String? = null
+
+        /** A connection to [link] opened: another film's speed isn't this one's. */
+        @Synchronized
+        private fun speedFor(link: String) {
+            if (link == speedLink) return
+            speedLink = link
+            lastBps = 0
+            windowBytes = 0
+            windowNanos = 0
+            lastReadEnd = 0
+            warmUp = WARM_UP_BYTES
+        }
+
+        /**
+         * Only time spent loading counts: the reads and the short gaps between them while the player keeps reading, not
+         * the pauses while its buffer is full. So a film topped up now and then still shows the speed it comes at (or,
+         * if the player reads slower than the server sends, how fast it was taken: the server is at least that fast).
+         */
+        // After a pause the network has queued what fits in its buffer: that comes at once and isn't timed.
+        private var warmUp = WARM_UP_BYTES
+
+        @Synchronized
+        private fun gapBefore(now: Long) {
+            val gap = now - lastReadEnd
+            if (lastReadEnd != 0L && gap in 0..IDLE_NANOS) {
+                windowNanos += gap
+            } else {
+                windowBytes = 0
+                windowNanos = 0
+                warmUp = WARM_UP_BYTES
+            }
+        }
+
+        @Synchronized
+        private fun timed(bytes: Int, nanos: Long) {
+            lastReadEnd = System.nanoTime()
+            if (warmUp > 0) {
+                warmUp -= bytes
+                return
+            }
+            windowBytes += bytes
+            windowNanos += nanos
+            if (windowBytes >= SPEED_WINDOW_BYTES && windowNanos > 0) {
+                // The fastest stretch: topped up in short steps, the film comes only as fast as it plays, which says
+                // nothing of the server. So it's "at least" this fast.
+                lastBps = maxOf(lastBps, windowBytes * 8 * 1_000_000_000 / windowNanos)
+                windowBytes = 0
+                windowNanos = 0
+            }
+        }
+
+        /** How fast the film at [link] has come from the server at best while loading, bits a second; 0 before it's known. */
+        fun serverBps(link: String?): Long = if (link != null && link == speedLink) lastBps else 0L
+
+        private const val SPEED_WINDOW_BYTES = 16L * 1024 * 1024
+        private const val WARM_UP_BYTES = 6L * 1024 * 1024
+        /** A pause longer than this between reads is the player waiting with a full buffer, not loading. */
+        private const val IDLE_NANOS = 250_000_000L
+
+        // Each film's size in bytes, by its link.
+        private val fileSizes = ConcurrentHashMap<String, Long>()
+
+        /** The size of the film at [link], once a connection to it has said; 0 before. */
+        fun fileSize(link: String?): Long = link?.let { fileSizes[it] } ?: 0L
+
+        /** Whether the film opened a connection within the last [ms]; a server allowing one may have cut the preview off for it. */
+        fun filmOpenedWithin(ms: Long): Boolean = SystemClock.elapsedRealtime() - filmOpenedAt < ms
+
+        // Shared by the film and the skip preview, which open the same links.
+        private val remembered = ConcurrentHashMap<String, Sent>()
+        // How often in a row a link's new address failed the first time it was reused.
+        private val misses = ConcurrentHashMap<String, Int>()
+        // Remembered addresses that turned the skip preview away; it goes through the provider for those.
+        private val previewSkips = ConcurrentHashMap<String, Uri>()
+        private const val MAX_MISSES = 2
+        private const val MAX_REMEMBERED = 200
+        private const val MIN_READ_BEFORE_MOVE = 256 * 1024
+        private const val AHEAD_BYTES = 64 * 1024
+    }
+}

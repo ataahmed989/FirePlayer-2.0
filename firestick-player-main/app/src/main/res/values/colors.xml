@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="accent">#FF3D8BFF</color>
+    <color name="text">#FFF4F2EE</color>
+    <color name="text_muted">#FFC9CDD0</color>
+    <color name="text_dark">#FF111315</color>
+    <color name="focus_fill">#FFF4F2EE</color>
+    <color name="button_fill">#1FFFFFFF</color>
+    <color name="row_fill">#E61A1E24</color>
+    <!-- A row that keeps its dark look when selected (Picture & sound's top button), a little lighter than a row. -->
+    <color name="action_focus_fill">#F22A303A</color>
+    <!-- The same with the glass look: the glass stays, a shade darker. -->
+    <color name="action_focus_dim">#47000000</color>
+    <color name="panel_fill">#D60B0E12</color>
+    <color name="panel_stroke">#1FFFFFFF</color>
+    <color name="chip_fill">#26FFFFFF</color>
+    <color name="tooltip_fill">#B3000000</color>
+    <color name="black">#FF000000</color>
+
+    <!--
+        Badges on the key rows (Settings): Active in blue, Inactive in faded gray, a problem in soft red. On the white
+        selected row each turns darker, on a pale pill, so it stays readable.
+    -->
+    <color name="badge_on">#FF62A0FF</color>
+    <!-- An Active badge's word: light blue on its stronger blue pill, readable on any glass. -->
+    <color name="badge_on_text">#FFBBD6FF</color>
+    <color name="badge_on_fill">#613D8BFF</color>
+    <color name="badge_on_rim">#A678AFFF</color>
+    <color name="badge_on_focused">#FF1556C9</color>
+    <color name="badge_on_fill_focused">#243D8BFF</color>
+    <!-- A lighter blue pill, a step before badge_on: in use while it's confirmed ("Matched in 3 s"), "Rechecking". -->
+    <color name="badge_light_text">#FFE4EFFF</color>
+    <color name="badge_light_fill">#4D8DB9FF</color>
+    <color name="badge_light_rim">#B3BCD8FF</color>
+    <color name="badge_light_focused">#FF2F72D9</color>
+    <color name="badge_light_fill_focused">#1F8DB9FF</color>
+    <color name="badge_off">#FFEDEFF2</color>
+    <color name="badge_off_fill">#38FFFFFF</color>
+    <color name="badge_off_rim">#61FFFFFF</color>
+    <color name="badge_off_focused">#FF464C52</color>
+    <color name="badge_off_fill_focused">#0F000000</color>
+    <!-- Without the glass look, an "Off" setting's word (On uses badge_on). -->
+    <color name="value_off">#FF666C73</color>
+    <color name="value_off_focused">#FF6E747A</color>
+    <color name="badge_problem">#FFFF8A80</color>
+    <color name="badge_problem_fill">#40FF5A4F</color>
+    <color name="badge_problem_rim">#80FF5A4F</color>
+    <color name="badge_problem_focused">#FFB3261E</color>
+    <color name="badge_problem_fill_focused">#1AFF5A4F</color>
+
+    <!-- Headings in the settings windows: brighter than text_muted so they read on any glass; their icons light blue. -->
+    <color name="heading">#FFE3E6EA</color>
+    <color name="heading_icon">#FF9CC3FF</color>
+    <!-- A stepper's value and arrows ("‹ 50% ›"): blue, a deeper blue on the white selected row. -->
+    <color name="step_value">#FF7FB2FF</color>
+    <!-- Grouped rows (one card per section): the card, its rim, the lines between rows, a nested row's shade and dot. -->
+    <color name="group_fill_glass">#14FFFFFF</color>
+    <color name="group_rim_glass">#24FFFFFF</color>
+    <color name="group_divider">#1AFFFFFF</color>
+    <color name="group_sub_shade">#1A000000</color>
+    <color name="group_sub_dot">#73FFFFFF</color>
+
+    <!-- The slim bar under TiviMate's titles switch: a faint track and a blue fill. -->
+    <color name="progress_track">#24FFFFFF</color>
+    <color name="progress_track_glass">#33FFFFFF</color>
+    <color name="progress_fill_end">#FF6AA8FF</color>
+    <!-- The box with TiviMate's set-up details. -->
+    <color name="details_fill">#0FFFFFFF</color>
+    <color name="details_fill_glass">#14FFFFFF</color>
+    <color name="details_rim_glass">#1FFFFFFF</color>
+</resources>

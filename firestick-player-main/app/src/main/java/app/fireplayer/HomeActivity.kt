@@ -1,0 +1,195 @@
+package app.fireplayer
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.text.InputType
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
+import app.fireplayer.data.Prefs
+import app.fireplayer.subs.SubtitlePresets
+import app.fireplayer.titles.TitleService
+import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Glass
+import app.fireplayer.ui.Rows
+import app.fireplayer.ui.SettingsPanels
+import app.fireplayer.ui.SidePanel
+import app.fireplayer.update.Updater
+
+/** What opens from the Fire TV home screen: a link box and the same settings windows as the player. */
+class HomeActivity : AppCompatActivity() {
+
+    private lateinit var settingsPanels: SettingsPanels
+    private lateinit var panel: SidePanel
+    private lateinit var list: LinearLayout
+    private lateinit var styleRow: View
+    private lateinit var settingsRow: View
+    private var consumeBackUp = false
+    /** The look the rows were given, so a switch made in the player meanwhile shows here too. */
+    private var lookOn = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val prefs = Prefs(this)
+        Glass.on = prefs.glassLook
+        setContentView(R.layout.activity_home)
+        settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
+        panel = SidePanel(this)
+        list = findViewById(R.id.home_list)
+
+        val first = addRow("Open a link", R.drawable.ic_link) { openLink() }
+        styleRow = addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
+            openPanel("Subtitle style", from) {
+                settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
+            }
+        }
+        settingsRow = addRow("Settings", R.drawable.ic_settings) { from ->
+            openPanel("Settings", from) { settingsPanels.renderSettings(this) }
+        }
+        first.requestFocus()
+        lookOn = Glass.on
+        clipForLook()
+        settingsPanels.onLookChanged = { applyLook() }
+
+        val updater = Updater(this)
+        updater.check { release -> release?.let { updater.offer(it) } }
+        // Normally running since the TV started; the first time after installing, from here.
+        TitleService.start(this)
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        if (!::list.isInitialized || lookOn == Glass.on) return
+        // The look was switched in the player while this screen was behind it.
+        applyLook()
+        if (panel.isOpen) {
+            Glass.background(panel.root, Glass.Kind.PANEL)
+            panel.refresh()
+        }
+    }
+
+    /** Gives the rows the look Settings now has (the window redraws its own). */
+    private fun applyLook() {
+        lookOn = Glass.on
+        for (i in 0 until list.childCount) Glass.background(list.getChildAt(i), Glass.Kind.ROW)
+        // A selected row shows its look at once rather than fading in.
+        list.jumpDrawablesToCurrentState()
+        clipForLook()
+    }
+
+    /** The glass settings window's shadow falls outside it, which this screen would otherwise cut off. */
+    private fun clipForLook() {
+        (panel.root.parent as? ViewGroup)?.clipChildren = !Glass.on
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // A small window (a list of choices, a question) open over the screen takes the keys first.
+        if (FireDialog.dispatch(this, event)) return true
+        // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
+        // pressed again, it closes the window.
+        if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (panel.isOpen) panel.close()
+                else (if (Prefs(this).menuOpensStyle) styleRow else settingsRow).performClick()
+            }
+            return true
+        }
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_DOWN && panel.isOpen) {
+                consumeBackUp = true
+                panel.close()
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_UP && consumeBackUp) {
+                consumeBackUp = false
+                return true
+            }
+        }
+        if (!panel.isOpen) return super.dispatchKeyEvent(event)
+        val before = currentFocus
+        val handled = super.dispatchKeyEvent(event)
+        // Keep focus inside the window while it's open.
+        if (panel.isOpen && !panel.root.hasFocus()) {
+            if (before != null && before.isAttachedToWindow) before.requestFocus() else panel.focusRow(0)
+        }
+        return handled
+    }
+
+    private fun openPanel(title: String, from: View, render: SidePanel.() -> Unit) {
+        // The menu steps back while a window is open, so the window stands out against the plain background.
+        val column = findViewById<View>(R.id.home_column)
+        column.animate().alpha(0.35f).setDuration(160).start()
+        panel.open(title, onClose = {
+            column.animate().alpha(1f).setDuration(160).start()
+            from.requestFocus()
+        }, render = render)
+    }
+
+    private fun openLink() {
+        SidePanel.prompt(this, "Video link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) { text ->
+            var link = text.trim()
+            if (link.isEmpty()) return@prompt
+            // "example.com/movie.mkv" typed without http:// still opens.
+            if (!Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://").containsMatchIn(link)) link = "http://$link"
+            val scheme = Uri.parse(link).scheme?.lowercase()
+            if (scheme !in PLAYABLE_SCHEMES) {
+                FireDialog.ask(this, "FirePlayer can't open $scheme:// links.", listOf<Pair<String, () -> Unit>>("OK" to {}))
+                return@prompt
+            }
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link), this, PlayerActivity::class.java)
+            startActivity(intent)
+        }
+    }
+
+    private fun addRow(label: String, icon: Int, onClick: (View) -> Unit): View {
+        val density = resources.displayMetrics.density
+        val colors = ContextCompat.getColorStateList(this, R.color.sel_text_row)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            Glass.background(this, Glass.Kind.ROW)
+            minimumHeight = (44 * density).toInt()
+            val h = (14 * density).toInt()
+            setPadding(h, 0, h, 0)
+        }
+        val iconView = ImageView(this).apply {
+            setImageResource(icon)
+            imageTintList = colors
+            isDuplicateParentStateEnabled = true
+        }
+        val size = (20 * density).toInt()
+        row.addView(iconView, LinearLayout.LayoutParams(size, size).apply { marginEnd = (12 * density).toInt() })
+        row.addView(TextView(this).apply {
+            text = label
+            typeface = ResourcesCompat.getFont(this@HomeActivity, R.font.figtree_600)
+            setTextColor(colors)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            isDuplicateParentStateEnabled = true
+        })
+        row.setOnClickListener { onClick(it) }
+        // Up from the top row goes to the bottom one and the other way round, like the settings lists.
+        row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(list, v, keyCode, event) }
+        list.addView(
+            row,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = (8 * density).toInt() },
+        )
+        return row
+    }
+
+    companion object {
+        /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
+        private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+    }
+}

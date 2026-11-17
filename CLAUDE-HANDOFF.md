@@ -1,0 +1,60 @@
+# FirePlayer implementation handoff
+
+Prepared November 17, 2026. The user is handing implementation to Claude. Read this file, design-layout.md, design-brief.md, tivimate-feature-report.md, then inspect source and images before editing. tivimate-feature-report.md is the observable TiviMate feature surface (locked-scope source); its implementation is DexProtector-encrypted and was not recovered — use it as a feature checklist, not as code to copy. Written user decisions take precedence over generated concept inconsistencies. Settings remain partially specified; preserve existing functionality and document provisional choices rather than treating omissions as removal requests.
+
+## Workspace and portability
+
+- Public-upload signing correction (supersedes older signing notes below): hardcoded signing passwords were removed from app/build.gradle.kts. Debug now uses the standard development key; release reads FIREPLAYER_KEYSTORE_PATH, FIREPLAYER_STORE_PASSWORD, FIREPLAYER_KEY_ALIAS and FIREPLAYER_KEY_PASSWORD. Original release key stays local and ignored. Verify the change with a build; debug cannot update an installed release-signed app. Use an emulator for initial validation.
+- Repository preparation update: the outer workspace is being initialized for the empty public destination `ataahmed989/FirePlayer-2.0`; the Android source remains nested. The original signing key is excluded from Git. Gradle currently references it for both debug and release, so configure development signing for test builds or supply the original key privately before building. Do not assume the cloned repository builds unchanged, change production signing identity, or publish the key. The earlier local-verification statement below records the state before this preparation.
+- Local verification on November 17: neither this outer folder nor the nested Android project currently has a Git checkout (`git rev-parse` reports not a repository). The GitHub destination below is user-provided; local files have not been committed or uploaded by this handoff process. Claude reported remote folder access unavailable. Supply these documents and asset folders in the GitHub checkout before relying on them. Compare existing remote source layout before adding the Android project, to avoid duplicate source trees.
+- User update: the user has created the new FirePlayer 2.0 repository in this handoff folder. The user-supplied repository URL is https://github.com/ataahmed989/FirePlayer-2.0.git. Inspect the existing Git root and configured remote before working; use this repository rather than creating another one or assuming the old repository is the destination. Repository creation and URL are user-reported, not independently verified in this handoff. The URL alone does not authorize publishing or pushing changes.
+- Outer workspace: this folder. Android Gradle project: nested `firestick-player-main/` (contains gradlew and settings.gradle.kts).
+- `Wallpapers/` contains eight original/blurred variants. Use `Quiet-Hours-Blue-Trees-No-House-Heavy-Blur.png` for the latest Home direction; expose background blur independently of glass. Assets are generated previews, not native 4K.
+- `Design-References/` now contains portable copies of the Home base, revised Home, early Live concepts and latest density reference. Use these instead of absolute .codex paths in the earlier design log.
+- 01 is the approved visual base; 02 illustrates requested Home changes. 03/05 are early spacious guides superseded by the compact 06 density reference. 04 illustrates Live primary controls, with approximate sizing. All sample programs, accounts, posters and logos are fixtures, not production content or provider credentials.
+- `APPS/` and `Tools/` hold reference archives/tools, not app dependencies. Do not copy unrelated apps wholesale. Preserve original archives.
+- A true Claude cloud session needs repository files uploaded/synced; naming a Windows path does not mount this machine. If only the inner Android repo is synced, include these outer docs, Design-References and Wallpapers explicitly. Do not claim access to missing references.
+
+## Existing source and build
+
+Single Android app `app.fireplayer`, Kotlin, native Views/XML, Media3 1.8.0, FFmpeg audio, libass, bundled ML Kit OCR. JDK 17, compile SDK 36, target 35, min 22, Gradle wrapper 8.14.3. Existing UI is not Compose; adopting Compose is an architecture choice requiring compatibility/dependency work, not an existing capability. Retain original playback and subtitle behavior throughout.
+
+Important source: PlayerActivity.kt (~5930 lines), HomeActivity.kt (link opener/settings), player/PlayerFactory.kt, ui/Glass.kt, GlassDrawable.kt, GlassBackdrop.kt, SettingsPanels.kt, history/, titles/, subs/. Existing live/ has LiveDb, PlaylistManager, EpgStore, ParentalGate, SmartPlayOrchestrator; they are groundwork, not complete integrated Live TV. Inspect APIs and compile before trusting comments.
+
+Known static-review issues to verify/fix with appropriate tests:
+- EpgStore deletes expired programs before ingestion but can reinsert old programs; enforce retention during import. PlaylistManager.sync does not call EpgStore despite the latter's comment.
+- LiveDb replaces playlist rows without preserving later-added epg_url; examine schema/migrations and avoid clearing source configuration on refresh.
+- Playlist refresh upserts but does not reconcile removed channels/maps. Preserve user favorites/order while handling removed entries and changed URLs.
+- SmartPlay verify currently passes through TMDB ID; episode selection's real identity is not used by discover directly. Its fallback can return a candidate whose probe failed. Validate identity and distinguish confirmed/unknown/dead sources.
+- Per-orchestrator probe lock cannot enforce provider-wide connection limits. Coordinate playback, previews, probes and Multiview account-wide, respecting existing usage.
+- Existing KeyStore is ordinary private SharedPreferences, not encrypted Android Keystore. Avoid implying encryption. Do not log or bake credentials into APK/assets.
+
+37 Kotlin test/support files were found, but tests have NOT passed in this handoff. Earlier offline invocation failed accessing the Gradle cache lock. Build workflows assemble release but do not run unit tests; lint is nonblocking. Establish baseline and report actual results.
+
+Local Windows environment verified: JAVA_HOME=C:/Program Files/Microsoft/jdk-17.0.20.101-hotspot; Android SDK directory exists at C:/Users/ataah/AppData/Local/Android/Sdk. Installed SDK packages still need checking. Cloud/WSL paths differ and must be discovered there. API keys are entered in app settings, not required build environment variables.
+
+BUILD_NUMBER controls version code/name; unset defaults to code 1. Before producing an update for installed devices, choose a code greater than installed/released builds rather than guessing. EXTRA_ABIS is optional for emulator architecture, not required for ARM releases. Preserve existing package, signing identity and ContinueProvider authority `app.fireplayer.continue`. Do not publish a release or overwrite user installations as part of initial verification.
+
+## Product requirements that must survive implementation
+
+- One app combines Home, Movies, TV Shows, Live TV, My List, Search, Settings. Independent catalogs must load from configured playlists; do not depend on TiviMate filling TitleBook. No Trakt. Addon integration is not agreed scope.
+- Original VOD design is the source of truth for fonts, shapes, glass rendering and player interaction. Blue text/icons on white focus; playing-channel identity distinct from focused cell. Rounded corners, one FirePlayer brand mark. Classic uses original dark colors; same layout in glass.
+- Home rail collapses into content. Header rotates on idle. Horizontal shelf focus anchors left with enlarged selected tile and a small predecessor sliver, including at the last tile. Stable stationary blue background across tabs.
+- Top-right reserved area: across-tab live PiP when playing, recent-channel history otherwise. Long Back targets it; Center enters; Back leaves internal focus. Show PiP details/actions when selected. No sentence beneath window. Starting VOD stops live; returning to Live tab restores miniature playback. External PiP is separate and capability-gated.
+- Live guide: multiple expandable playlists, each with groups/Favorites/All channels; All playlists scope. Compact duration-proportional grid with numbers/logos/names; preview top left and details beside it. Density reference outranks spacious generated art. 10–12 rows and 2–3 hours are provisional targets, not rigid requirements if unreadable.
+- Own playlist EPG first; another playlist may provide fallback through reliable mapping. Multiple source inputs, unified guide. One day past history baseline; future horizon and automatic fallback selection remain open. Never assume identical channel display names prove equivalence.
+- First Center tunes a new channel in miniature, second on playing channel opens full screen. Hold Back from guide opens full screen; guide inactivity can also do so (timeout undecided). Back restores guide and focus.
+- Default hidden-controls Up/Down and Channel +/− change channels; Center reveals controls. Optional Channel buttons only allows Up/Down to reveal controls. Visible controls/guide consume D-pad for navigation.
+- Fullscreen Live: channel/program/current schedule/next/clock; original technical pods; nonselectable minimal program-time tracker. Guide and History left; Captions and Favorite right; more arrow below. Multiview and external PiP belong under more. History last ten channels.
+- Multiview default cap three, provider limits and device capability may lower it, only active screen audible. Avoid preallocating all decoders or assuming three 4K streams work. Surface/view lifecycle must respect Android/Media3 thread ownership; old brief phrase 'surfaces never held on UI thread' is not a literal implementation rule.
+- VOD and Live settings outline in design-layout.md must be retained. Shared app-level settings should not become unrelated duplicate preferences. Existing info pods, skip interval/hold controls, subtitle font/style/delay, resume and playback settings must not disappear.
+
+## Implementation order and review
+
+1. Inventory, run baseline build/tests, record failures and verify current screenshots if emulator available. Preserve user's local work. Resolve compile blockers in groundwork.
+2. Extract reusable PlayerHost incrementally with lifecycle tests; preserve VOD/subtitle/history behavior. Keep title-service/Glass Home contracts. Decide explicit database ownership/migrations across processes; WAL alone is not a global single-writer strategy.
+3. Deliver one vertical slice: playlist setup -> channel/EPG import -> compact guide -> miniature -> fullscreen -> controls -> return. Persist focus/favorites. Test fixture data and actual provider entry paths separately.
+4. Implement independent VOD catalogs, Home/navigation, title details, Smart Play and existing Continue Watching. Page/virtualize content, shared image cache with bounded prefetch, cancel obsolete requests.
+5. Add across-tab live window/history, capability-aware external PiP, Multiview and remaining agreed settings. Treat missing outline portions as open; reuse established defaults and expose major decisions for review.
+
+Advance through working increments, not a single giant rewrite. Do not block all development on unfinished low-impact design details; record reversible assumptions. Ask user for consequential unresolved product choices. Keep documentation and a progress checklist current. Show actual classic/glass screenshots at milestones, verify remote navigation and focus, build APK and relevant tests; report limitations honestly. A static image cannot establish runtime performance. Use mock provider fixtures for repeatable tests and never include personal credentials. No unsolicited new image concepts, deployment or release publishing.

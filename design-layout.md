@@ -1,0 +1,158 @@
+# FirePlayer design and settings draft
+
+Updated: November 17, 2026. Working specification from the design conversation; no app implementation is implied. User is still designing settings. Generated concepts illustrate direction, not approved final layouts or functional prototypes.
+
+## Visual system
+
+- Preserve original VOD Figtree typography, off-white text, blue #3D8BFF accent, rounded controls/panels, information pods, and focus motion.
+- Classic and optional glass share geometry. Glass uses blurred imagery, glaze, bright rims and soft shadows.
+- Focused items use white backgrounds and blue text/icons. Playing-channel identity stays blue when unfocused; focus and playing state are distinct.
+- All tabs share a stationary blue/fog background independent of the featured title. Latest direction: house-free forest/lake with bluish rather than green trees, heavily blurred for the concept. Background blur should be an appearance option; final artwork selection remains open.
+- Preserve the approved Home concept as the base; change only requested elements. Do not generate further revisions without a user request.
+
+## Home and app navigation
+
+- Navigation destinations: Home, Movies, TV Shows, Live TV, My List, Search, Settings.
+- Left tab rail collapses when moving right into content. Exact expansion/return gestures remain open.
+- Featured header rotates through several titles when idle. Timing, pause-on-focus and transition remain open.
+- Horizontal shelves keep the selected, enlarged tile anchored at the left, with a small sliver of its predecessor visible. Titles scroll smoothly, do not wrap indefinitely; final tile also reaches this anchor.
+- Keep the original hero, Continue Watching, portrait shelves and reserved top-right window structure.
+
+## Top-right window outside Live TV
+
+- When a live channel continues across tabs, it occupies the floating top-right player.
+- Long Back selects the window and reveals channel/program details plus sound, full-screen and close controls. D-pad can also reach it.
+- Remove the sentence beneath the original PiP window.
+- Without active PiP, the same reserved window shows scrollable recent-channel history and program details.
+- Long Back takes focus to the top/window; Center enters its internal list; Back leaves internal navigation and selects the outer window, permitting page navigation.
+- Starting VOD stops live playback. Returning to Live TV removes the floating overlay and restores live playback in the guide miniature; it does not stop that channel.
+- Full-screen action opens the Live TV player; Close stops the floating playback.
+- External/system PiP is a separate additional-controls action for leaving the app. Device support and unavailable-state presentation remain open.
+
+## Live TV guide and playback
+
+- November 17 refinement: prioritize information density, uncluttered presentation and fluid TiviMate-like navigation. Earlier generated concepts are too spacious to serve as final guide proportions.
+- Show only one FirePlayer brand mark in the navigation rail; do not repeat a large FirePlayer logo above the guide. Channel logos remain separate functional identifiers.
+- Glass and non-glass guide versions use identical structure and navigation. Non-glass uses original FirePlayer dark surfaces (panel #0B0E12 with original translucency, dark rows #1A1E24 and subtle fills), visually aligned with the supplied dark guide reference; it must not depend on video blur. Glass changes surface rendering, not information density.
+- Playlist/group column supports multiple expandable playlists, not a single flat group list. Include an All playlists entry; each playlist expands to Favorites, All channels and its own groups. Keep playlist scope visible and channel identity keyed by playlist plus channel ID. Global favorites/all-channels aggregation details remain open.
+- Guide information hierarchy: compact top-left miniature with selected-program details beside it; time header and dense channel grid below. Keep long descriptions in the details area rather than repeating them in program cells.
+- Proposed density targets, pending visual review: about 10–12 visible channel rows with preview/details, and more when using overlay/full-height guide; 2–3 hours visible depending on sidebar state and text size. These are design targets, not confirmed emulator measurements.
+- Program cells use duration-proportional widths, small rounded corners, narrow gaps, single-line ellipsized titles and restrained separators. Channel number, small logo and name share one compact column; avoid oversized pills and thick glowing borders on every cell.
+- Collapse playlist/group column when moving into the grid to gain time-axis width; provide a clear return path. Exact focus boundary gestures remain to be specified.
+- Smoothness requirements for later implementation: retain focus and scroll position through updates, load only visible guide regions plus a small buffer, avoid retuning playback on mere highlight changes, keep guide/network work off the input path, and avoid continuous decorative animations. Verify on target Fire TV hardware; static art cannot demonstrate fluidity.
+- Live TV tab and player form one experience, inspired by supplied TiviMate reference photos but using FirePlayer styling.
+- Guide supports playlist/groups sidebar, channel/program grid, top-left miniature player, and selected-program details. Sidebar-collapse guide state and transparent/glass full-screen overlay guide are required views.
+- Center on another channel/current program tunes the miniature; Center again on the playing channel opens full screen. No timed double-click.
+- Hold Back while browsing the guide returns playing channel to full screen.
+- Inactivity expands miniature playback to full screen; timeout is undecided (30 seconds was a suggestion only).
+- Back from unobstructed full screen returns to the guide with miniature playback and retained group/channel/time position.
+- Back closes the topmost panel first, then playback controls.
+- Default channel changing: both D-pad Up/Down and Channel +/−, where available. Center must reveal controls.
+- Alternative setting, suggested label **Channel changing buttons**: **D-pad + channel buttons** / **Channel buttons only**. In the latter mode Up/Down can also reveal controls. Reveal key must not also navigate on the same press.
+- When controls/guide are open, D-pad navigates that interface. Exact Channel +/− behavior in those states remains open.
+
+### Full-screen primary controls
+
+- Top: channel logo/name, current program title and schedule, next program, clock.
+- Bottom: original picture/sound/source pods above a minimal program tracker.
+- Tracker: thin blue scheduled-program progress, start/end and remaining time; not selectable or seekable for ordinary live playback. No guide data: omit misleading progress and show an unavailable state.
+- Left primary buttons: TV Guide, Channel History. Right: Captions, Favorite. Rounded FirePlayer circles/pills; additional-options chevron centered below.
+- Channel History contains last ten previously visited channels; deduplication and minimum dwell time remain open.
+- Additional controls include Multiview, external PiP and applicable existing VOD controls (audio, subtitle delay/style, audio delay, display size, dimmer, sleep, settings). Final order remains open. Favorite is a primary toggle; no duplicate is required.
+- Pause, restart, catch-up and seekable timeshift are conditional, not assumed available on every live stream.
+- Multiview: initial cap three, active tile owns sound; add/replace/enlarge/remove workflow. Equal-tile versus large-active-tile layouts, entry state and remote focus transitions remain open.
+
+## Settings ownership — proposed, not final
+
+- App settings own shared appearance, remote defaults, language/playback defaults, accounts and updates. VOD/Live panels expose applicable controls without divergent duplicate values.
+- Player settings also contain current-title/channel actions. A session adjustment and a persistent default must be visibly distinguishable.
+- API credential entry belongs in App settings; player Statuses shows status and a route to the corresponding App setting. Never show saved secrets in status rows.
+- User asks to retain substantial original FirePlayer settings; omission from an unfinished list is not authorization to remove a feature.
+
+## VOD player settings — user outline
+
+| Section | Entries |
+| --- | --- |
+| This Episode/Film | Matched TMDB Title or New Title; Show Details; Picture & Sound; Fix Match; Source |
+| Remote | Menu button opens |
+| Look | Glass look On/Off; Glass refresh |
+| Skip Intro and Credits | Skip buttons; Next episode / Exit countdown |
+| Skipping | Preview while skipping |
+| Defaults | Subtitle language; Audio language; Auto sync subtitles; Resume where I left off |
+| Playback | Play next episodes; Match frame rate; Surround passthrough |
+| Statuses | OpenSubtitles API; TMDB API key |
+| App | Check for updates |
+
+User requests OpenSubtitles API key, username and password all active in App settings. Clarify whether “active” means saved or successfully validated; existing code treats username/password as optional. Do not silently impose a new playback restriction. TMDB saved/configured and verified states should also remain distinct.
+
+Current-title label behavior for unmatched titles is unfinished. “New Title” is the user's provisional wording.
+
+## Live settings — user outline, incomplete
+
+### Playlists
+
+- Playlist list. Opening a playlist shows Name, EPG sources, Xtream Code parameters, Manage groups, Update interval, Update playlist, Delete playlist.
+- Xtream parameters: Server, Username, Password, Output format, Include TV channels, Include VOD, expiration details, number of simultaneous streams.
+- Expiration and provider-reported connection allowance should be read-only account information; distinguish allowance from actual active streams and device Multiview capacity. Exact UI is not final.
+- Add playlist; Update all playlists; Reorder playlists.
+- M3U-specific detail fields remain to be designed; do not present Xtream-only fields as universal.
+
+### EPG
+
+- EPG sources; Past days to keep EPG (one day); Update interval; Update EPG; Clear EPG; Last status.
+- EPG primarily comes from each playlist's own source. When a playlist is missing EPG, support using another playlist's EPG as a fallback where its channels can be mapped reliably. Preserve playlist-specific channel identity and do not assume equal display names identify the same channel.
+- Multiple playlist-provided sources feed the app-wide guide through channel-to-EPG mappings. This supersedes the original single-input-source constraint; a unified guide does not require a single source URL.
+- Open details: automatic versus manual fallback selection, whether fallback also fills individual missing channels/programs, and handling ambiguous matches. These are not yet approved behaviors.
+- One day refers to past history. Future horizon and whether the one-day value is fixed or adjustable remain open.
+
+### Appearance
+
+- Glass look. Remaining settings forthcoming from user.
+
+### App settings
+
+User has opened this category but has not completed its outline. Shared appearance, accounts and defaults above are organizational proposals, not a completed approved menu.
+
+## Original settings to preserve or explicitly resolve
+
+Source checked: app/src/main/java/app/fireplayer/ui/SettingsPanels.kt.
+
+- Info pods visibility controls.
+- D-pad Left/Right skip interval; Rewind/Fast-forward interval; Hold to speed up.
+- Custom subtitle font import and restoration of built-in font.
+- Glass refresh currently offers 2, 4 or 8 updates per second and appears only with glass enabled.
+- Existing TiviMate title-proxy settings need an explicit retained/relocated decision as standalone catalogs arrive; Glass Home compatibility remains protected.
+- Original subtitle styling and per-playback audio/subtitle adjustments remain part of the product.
+
+## Open design work
+
+- Live player settings hierarchy and current-channel section; shared-versus-specific setting ownership.
+- Guide density, logos/numbers, scroll/focus restoration, time navigation and return-to-now.
+- Catch-up/restart capability presentation; future/past program actions.
+- Favorites, group management, search, parental PIN/blocking and lockout interfaces.
+- Channel switching feedback, buffering, unavailable stream, missing EPG, offline/expired playlist and update failures.
+- Multiview controls, sound ownership indication, resource/provider-limit states and exit behavior.
+- PiP unsupported-device behavior and Back/long-Back precedence across page/window/player contexts.
+- Accessibility: text size, contrast/transparency, motion and long-press discoverability.
+- Settings change scope, reset behavior, destructive-action handling and credential validation status.
+- Generated images cannot prove timing, motion or remote behavior; those need an interactive review later.
+
+## Architecture questions carried forward
+
+- Define independent VOD catalog import/refresh; do not rely on TiviMate warming TitleBook. Addon scope is unresolved.
+- Define correct-title/episode verification, startup fallback and failure-during-playback rules.
+- Provider-wide playback/probe coordination is needed in addition to per-tile serialization.
+- Resolve shared persistence ownership across titles.db and live.db and the separate title-service process.
+- Define target-device performance budgets and acceptance checks before claiming three-screen reliability.
+
+## Concept references (local preview artifacts)
+
+- Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png
+- Latest Home illustration: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-56a052a7-15b4-436e-ac0c-bc7fa3300f72.png
+- Blue house-free sharp artwork: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-8c58bc49-eb10-43d9-ac61-f93b8e60767d.png
+- Strongly blurred background: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-d0843ccf-d734-4699-9298-f2a019cec44a.png
+- Live guide: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-87bf2151-f567-489a-8805-e38189b87e12.png
+- Full-screen Live controls: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-7ed51ce9-1aa9-4704-a99b-f619dc06f09a.png
+- Overlay guide: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-81a719be-5a58-43e6-8591-5473cf45fa43.png
+
+Concept discrepancies are not specifications: generated miniature shows transport controls not agreed for guide preview; group focus differs from white/blue rule; timeline cells and clip sizes are approximate. Written interaction requirements take precedence. Generated artwork requested as 4K was returned at 1672x941; do not label it native 4K.
