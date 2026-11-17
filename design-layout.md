@@ -234,6 +234,35 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Manage groups: Hide/Show — a switch per group, "Hide all", "Show all", and a "Hide new groups" switch (groups a
     later update adds start hidden). Reorder — hidden groups aren't listed; press a group to pick it up, move it
     anywhere with Up/Down, press again to drop it; each group also has a "Move to top" button beside it.
+- 2026-11-17 · How the spec was built (assumptions marked):
+  - One function draws each setting (ui/SettingsPanels sections), so the VOD window, the Live window and App
+    settings read and write the same saved value. The full window is now called **App settings** (the home screen's
+    Settings tab row, and a row under App in both player windows — assumption, so every setting the player windows
+    leave out stays reachable from the player too). Its order is unchanged until the main Settings page is planned.
+  - Statuses ▾ = a "Services and font" row with a summary badge (All working / n of 2 working / Needs a look / Not
+    set up) that opens to OpenSubtitles, TMDB API and Subtitle font from phone. Each opens its App settings section
+    as a sub-window; Back returns to the row it came from. Key states: Not set, Set · not checked, Checking…,
+    Working, Not accepted, Couldn't check. A check runs after a key is saved, from "Check the keys now", and when the
+    Statuses list is opened for keys not yet checked. Results are saved with a one-way fingerprint of the
+    credentials (a new key is "not checked" again); keys are never shown.
+  - Live FirePlayer Settings opens with Menu on the Live TV tab (when "Menu button opens" is Settings) and from the
+    Settings button in full screen; the guide dims behind it. The Settings tab keeps its Playlists, EPG and Live TV
+    windows (Live TV also holds Hide controls after / Full screen after no key presses, not in the spec).
+  - Assumption: the Live window's "Update interval" is the EPG update interval (EPGs older than it are read again at
+    start-up); each playlist keeps its own update interval in its settings.
+  - Assumption: Live Defaults leaves out Auto sync subtitles (live channels don't support it: "only where supported").
+  - Channel changing buttons: the two ways as rows (the chosen one ticked) with what it does underneath.
+  - Playlist settings: the M3U link is never shown in full (it often carries the sign-in), only its host. Active
+    connections is asked from the provider when the window opens ("1 of 2"). "Own EPG status" shows the last import.
+  - Manage groups: hidden groups and their channels leave the groups column, All channels and All playlists;
+    favorites keep them. The order changes the groups column only (assumption: All channels keeps the provider's
+    order). Every move is saved as it happens. Reorder playlists works the same way.
+  - Live full-screen extra row (Down from the buttons), VOD style: Multiview and External PiP dimmed (user), Audio,
+    Audio delay (per channel, back to 0 ms on another channel), Display size (the VOD setting, full screen only),
+    Screen dimmer (the VOD customs), Sleep timer (adds "End of this programme" from the guide), Settings. Under each
+    button is its current value, as on VOD's row.
+  - Measured on the Max: redrawing a window of 350+ rows takes 0.7–1.7 s, so group switches and moves change their
+    rows in place; opening Manage groups still takes about a second (the side window isn't a recycled list).
 
 ## Concept references (local preview artifacts)
 

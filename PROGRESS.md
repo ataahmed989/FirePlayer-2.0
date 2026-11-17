@@ -86,6 +86,26 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - [~] "All playlists" (32,686 channels) took 2–4 s to list → per-playlist reads in index order, one cursor window;
       entering the grid for the scope already shown no longer reloads it. Built, not yet re-measured on the Max.
 
+## 3c. Contextual player settings (user spec, November 17)
+
+- [x] VOD FirePlayer Settings (This episode/film, Remote, Look, Skip intro and credits, Skipping, Defaults,
+      Playback, Statuses, App) — on the Max, classic and glass.
+- [x] Live FirePlayer Settings (Playlists and EPG, Remote with channel changing buttons, Look, Defaults, Statuses,
+      App) from Menu and the full-screen Settings button — on the Max, classic and glass (over full screen it blurs
+      the live picture).
+- [x] Shared settings: one function per setting, one saved value; App settings keeps every setting (VOD panel's
+      missing rows preserved there and linked from both player windows).
+- [x] Statuses with saved key checks (configured vs working), linked to App settings sub-windows; Back returns.
+- [x] Individual playlist settings incl. Include VOD (off, locked), account expiry/allowance, active connections
+      ("1 of 2" from the provider) — on the Max.
+- [x] Manage groups (switches, Show/Hide all, Hide new groups, reorder with pick-up/move/drop and Move to top),
+      Reorder playlists — on the Max (user's group order and visibility left as they were after testing).
+- [x] Live extra row: Multiview/PiP dimmed, Audio, Audio delay, Display size, Screen dimmer, Sleep timer,
+      Settings — row seen on the Max; individual windows built and unit-tested (display geometry, sleep timer),
+      not each exercised on the Max yet.
+- [x] Code review of the first Fire TV fixes: 15 confirmed findings fixed. A second review (settings work) runs.
+- [ ] Opening Manage groups takes ~1 s with 353 groups (side window isn't recycled); switches/moves are instant.
+
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
 
 - [ ] Independent VOD catalogs from playlists; Home rail/hero/shelves (Home becomes the launcher destination when it
