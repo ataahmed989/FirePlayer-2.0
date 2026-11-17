@@ -38,12 +38,19 @@ android {
         }
         debug {
             // Use Android's standard development key for test builds.
+            // A separate app beside the user's FirePlayer: its own package, name, icon and Continue Watching address
+            // (app.fireplayer.next.continue), so Glass Home and the installed FirePlayer are never touched.
+            applicationIdSuffix = ".next"
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     testOptions {

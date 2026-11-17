@@ -172,7 +172,7 @@
         -->
         <provider
             android:name=".history.ContinueProvider"
-            android:authorities="app.fireplayer.continue"
+            android:authorities="${applicationId}.continue"
             android:exported="true" />
 
         <provider

@@ -1,32 +1,45 @@
 package app.fireplayer.live.ui
 
 import android.content.Context
-import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.text.format.DateFormat
-import android.view.Gravity
+import android.util.AttributeSet
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
+import androidx.media3.common.Format
+import androidx.media3.common.util.UnstableApi
 import app.fireplayer.R
+import app.fireplayer.data.Prefs
 import app.fireplayer.live.Channel
 import app.fireplayer.live.Programme
+import app.fireplayer.player.FpsMeter
+import app.fireplayer.player.MediaSpec
 import app.fireplayer.playback.PlayerHost
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * The full-screen live controls (design-layout, "Full-screen primary controls"): channel, programme, schedule, next
- * and a clock at the top; the original picture/sound/source pods, a thin non-selectable programme tracker, and the
- * primary buttons at the bottom — TV Guide and Channel History on the left, Captions and Favorite on the right, the
- * more-options chevron centred below. The same layout in both looks; glass only changes the button surfaces.
+ * The full-screen live controls (res/layout/live_controls.xml), built to the VOD player's measurements so both
+ * players read as one: the same top block, pods (and the same Settings › Look › Info pods choices), time line, round
+ * buttons and pills, and names that appear under a button only while it's selected.
+ *
+ * Left: TV Guide and Channel History. While the channel is paused or behind live, Play/Pause and Go live come first
+ * and push them along. Right: Captions and Favorite. Down opens more options (the chevron), as in the VOD player.
  */
 class LiveControls(context: Context, private val t: Tokens) : FrameLayout(context) {
 
@@ -35,187 +48,105 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         fun onHistory()
         fun onCaptions()
         fun onFavorite()
-        fun onMore()
+        fun onPlayPause()
+        fun onGoLive()
     }
 
     var actions: Actions? = null
 
-    private val logo = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-    private val channelName = t.label(context, 20f, t.semibold)
-    private val title = t.label(context, 28f, t.bold)
-    private val schedule = t.label(context, 16f)
-    private val next = t.label(context, 16f, color = t.textMuted)
-    private val clock = t.label(context, 17f)
-    private val pods = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-    private val startTime = t.label(context, 15f)
-    private val endTime = t.label(context, 15f)
-    private val tracker = Tracker(context)
-    private val noGuide = t.label(context, 15f, color = t.textMuted).apply { text = "No programme information" }
-    private val top = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val bottom = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val topScrim = View(context).apply { setBackgroundResource(R.drawable.scrim_top) }
-    private val bottomScrim = View(context).apply { setBackgroundResource(R.drawable.scrim_bottom) }
+    private val prefs = Prefs(context)
 
-    val guideButton: View
-    private val historyButton: View
-    private val captionsButton: View
-    private val captionsText: TextView
-    private val favoriteButton: View
-    private val favoriteIcon: ImageView
-    private val moreButton: ImageView
-    private val buttons = ArrayList<View>()
+    // Inflated first: the view properties below look into it as they're initialised.
+    init {
+        LayoutInflater.from(context).inflate(R.layout.live_controls, this, true)
+    }
+    private val top: View = findViewById(R.id.live_top)
+    private val bottom: View = findViewById(R.id.live_bottom)
+    private val scrimTop: View = findViewById(R.id.live_scrim_top)
+    private val scrimBottom: View = findViewById(R.id.live_scrim_bottom)
+    private val logo: ImageView = findViewById(R.id.live_logo)
+    private val logoDivider: View = findViewById(R.id.live_logo_divider)
+    private val channelName: TextView = findViewById(R.id.live_channel)
+    private val title: TextView = findViewById(R.id.live_title)
+    private val schedule: TextView = findViewById(R.id.live_schedule)
+    private val next: TextView = findViewById(R.id.live_next)
+    private val clock: TextView = findViewById(R.id.live_clock)
+    private val chipsRow: ViewGroup = findViewById(R.id.live_chips)
+    private val chipResolution: TextView = findViewById(R.id.live_chip_resolution)
+    private val chipFps: TextView = findViewById(R.id.live_chip_fps)
+    private val chipFormat: TextView = findViewById(R.id.live_chip_format)
+    private val chipAudio: TextView = findViewById(R.id.live_chip_audio)
+    private val chipSource: TextView = findViewById(R.id.live_chip_source)
+    private val startTime: TextView = findViewById(R.id.live_start)
+    private val endTime: TextView = findViewById(R.id.live_end)
+    private val noGuide: TextView = findViewById(R.id.live_no_guide)
+    private val line: ProgrammeLine = findViewById(R.id.live_line)
+
+    private val btnPlay: ImageButton = findViewById(R.id.live_btn_play)
+    private val goLiveGroup: View = findViewById(R.id.live_go_live_group)
+    private val btnGoLive: ImageButton = findViewById(R.id.live_btn_go_live)
+    val guideButton: ImageButton = findViewById(R.id.live_btn_guide)
+    private val btnHistory: ImageButton = findViewById(R.id.live_btn_history)
+    private val btnCaptions: View = findViewById(R.id.live_btn_cc)
+    private val captionsValue: TextView = findViewById(R.id.live_cc_value)
+    private val btnFavorite: ImageButton = findViewById(R.id.live_btn_favorite)
+    private val favoriteLabel: TextView = findViewById(R.id.live_favorite_label)
 
     /** Info only (after a channel change) versus the full controls. */
     var controlsShown = false
         private set
 
+    /** Play/Pause and Go live are showing (the channel is paused or behind live). */
+    var catchUpShown = false
+        private set
+
+    private var playlistName = ""
+    private var programme: Programme? = null
+
     init {
-        val pad = t.dp(28)
-        addView(topScrim, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(190), Gravity.TOP))
-        addView(bottomScrim, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(230), Gravity.BOTTOM))
-
-        // Top left: logo | name, programme, schedule, next.
-        val identity = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(logo, LinearLayout.LayoutParams(t.dp(44), t.dp(30)))
-            addView(View(context).apply { setBackgroundColor(0x80FFFFFF.toInt()) }, LinearLayout.LayoutParams(t.dp(1), t.dp(22)).apply { leftMargin = t.dp(12); rightMargin = t.dp(12) })
-            addView(channelName)
-        }
-        top.addView(identity)
-        top.addView(title, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(10) })
-        top.addView(schedule, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(8) })
-        top.addView(next, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(6) })
-        addView(top, LayoutParams(t.dp(600), LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { leftMargin = pad; topMargin = t.dp(22) })
-        addView(clock, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { rightMargin = pad; topMargin = t.dp(26) })
-
-        // Bottom: pods, tracker, buttons, chevron.
-        bottom.addView(pods, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        val trackRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(startTime)
-            addView(tracker, LinearLayout.LayoutParams(0, t.dp(14), 1f).apply { leftMargin = t.dp(14); rightMargin = t.dp(14) })
-            addView(endTime)
-            addView(noGuide)
-        }
-        bottom.addView(trackRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(12) })
-
-        val row = FrameLayout(context)
-        val left = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val right = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val guide = circleButton(R.drawable.ic_guide, "TV Guide") { actions?.onGuide() }
-        guideButton = guide.second
-        left.addView(guide.first)
-        val history = circleButton(R.drawable.ic_history, "Channel History") { actions?.onHistory() }
-        historyButton = history.second
-        left.addView(history.first, spaced())
-        val cc = pillButton("Captions") { actions?.onCaptions() }
-        captionsButton = cc.first
-        captionsText = cc.second
-        right.addView(captionsButton)
-        val fav = circleButton(R.drawable.ic_star, "Favorite") { actions?.onFavorite() }
-        favoriteButton = fav.second
-        favoriteIcon = fav.second.getChildAt(0) as ImageView
-        right.addView(fav.first, spaced())
-        row.addView(left, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.START))
-        row.addView(right, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.END))
-        bottom.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(16) })
-
-        moreButton = ImageView(context).apply {
-            setImageResource(R.drawable.ic_chevron_down)
-            imageTintList = iconColors()
-            isFocusable = true
-            contentDescription = "More options"
-            setPadding(t.dp(8), t.dp(4), t.dp(8), t.dp(4))
-            background = focusPill()
-            setOnClickListener { actions?.onMore() }
-        }
-        buttons += moreButton
-        bottom.addView(moreButton, LinearLayout.LayoutParams(t.dp(44), t.dp(28)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = t.dp(2) })
-        addView(bottom, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply { leftMargin = pad; rightMargin = pad; bottomMargin = t.dp(10) })
-
-        // Left stops at TV Guide rather than wandering off the controls.
-        guideButton.nextFocusLeftId = guideButton.id
         isFocusable = false
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
         visibility = GONE
+        // As the VOD player: circles grow 1.08, pills 1.04, and the name fades in under the selected one.
+        focusEffect(btnPlay, Tokens.GROW_CIRCLE, null)
+        focusEffect(btnGoLive, Tokens.GROW_CIRCLE, findViewById(R.id.live_go_live_label))
+        focusEffect(guideButton, Tokens.GROW_CIRCLE, findViewById(R.id.live_guide_label))
+        focusEffect(btnHistory, Tokens.GROW_CIRCLE, findViewById(R.id.live_history_label))
+        focusEffect(btnCaptions, Tokens.GROW_PILL, findViewById(R.id.live_cc_label))
+        focusEffect(btnFavorite, Tokens.GROW_CIRCLE, favoriteLabel)
+        btnPlay.setOnClickListener { actions?.onPlayPause() }
+        btnGoLive.setOnClickListener { actions?.onGoLive() }
+        guideButton.setOnClickListener { actions?.onGuide() }
+        btnHistory.setOnClickListener { actions?.onHistory() }
+        btnCaptions.setOnClickListener { actions?.onCaptions() }
+        btnFavorite.setOnClickListener { actions?.onFavorite() }
+        // Left stops at the first button rather than wandering off the controls; right at the last.
+        listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnCaptions, btnFavorite).forEach { if (it.id == View.NO_ID) it.id = generateViewId() }
+        applyLook()
     }
 
-    private fun spaced() = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(26) }
-
-    private fun iconColors() = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text))
-
-    private fun focusPill() = android.graphics.drawable.StateListDrawable().apply {
-        addState(intArrayOf(android.R.attr.state_focused), android.graphics.drawable.GradientDrawable().apply { setColor(t.focusFill); cornerRadius = t.dpf(14f) })
+    private fun focusEffect(button: View, scale: Float, label: View?) {
+        button.setOnFocusChangeListener { v, hasFocus ->
+            val s = if (hasFocus) scale else 1f
+            v.animate().scaleX(s).scaleY(s).setDuration(Tokens.FADE_MS).setInterpolator(EASE).start()
+            if (label != null) {
+                label.pivotX = v.left + v.width / 2f - label.left
+                label.pivotY = v.top + v.height / 2f - label.top
+                if (hasFocus) label.visibility = VISIBLE
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(Tokens.FADE_MS).setInterpolator(EASE)
+                    .withEndAction { if (!v.isFocused) label.visibility = INVISIBLE }
+                    .start()
+            }
+        }
     }
 
-    /** A circle button with its label underneath: returns the column (to lay out) and the circle (to focus). */
-    private fun circleButton(icon: Int, label: String, onClick: () -> Unit): Pair<View, FrameLayout> {
-        val circle = FrameLayout(context).apply {
-            isFocusable = true
-            id = generateViewId()
-            contentDescription = label
-            Glass.background(this, Glass.Kind.CIRCLE)
-            setOnClickListener { onClick() }
-            addView(ImageView(context).apply {
-                setImageResource(icon)
-                imageTintList = iconColors()
-                isDuplicateParentStateEnabled = true
-            }, LayoutParams(t.dp(24), t.dp(24), Gravity.CENTER))
-        }
-        Tokens.growOnFocus(circle, Tokens.GROW_CIRCLE)
-        buttons += circle
-        val text = t.label(context, 14f).apply { this.text = label; gravity = Gravity.CENTER }
-        val column = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            addView(circle, LinearLayout.LayoutParams(t.dp(50), t.dp(50)))
-            addView(text, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(6) })
-        }
-        return column to circle
-    }
-
-    private fun pillButton(label: String, onClick: () -> Unit): Pair<View, TextView> {
-        val text = t.label(context, 15f).apply {
-            this.text = "Off"
-            setTextColor(iconColors())
-            isDuplicateParentStateEnabled = true
-        }
-        val pill = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isFocusable = true
-            contentDescription = label
-            setPadding(t.dp(16), 0, t.dp(18), 0)
-            Glass.background(this, Glass.Kind.PILL)
-            setOnClickListener { onClick() }
-            addView(ImageView(context).apply {
-                setImageResource(R.drawable.ic_cc)
-                imageTintList = iconColors()
-                isDuplicateParentStateEnabled = true
-            }, LinearLayout.LayoutParams(t.dp(24), t.dp(24)).apply { rightMargin = t.dp(8) })
-            addView(text)
-        }
-        Tokens.growOnFocus(pill, Tokens.GROW_PILL)
-        buttons += pill
-        val caption = t.label(context, 14f).apply { this.text = label; gravity = Gravity.CENTER }
-        val column = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            addView(pill, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(50)))
-            addView(caption, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(6) })
-        }
-        return column to text
-    }
-
-    /** Re-applies the look to the button surfaces (Settings › Look changed). */
+    /** The look's surfaces, exactly as the VOD player gives its own (Glass.background keeps sizes). */
     fun applyLook() {
-        for (b in buttons) {
-            if (b === moreButton) continue
-            Glass.background(b, if (b is LinearLayout) Glass.Kind.PILL else Glass.Kind.CIRCLE)
-        }
-        for (i in 0 until pods.childCount) Glass.background(pods.getChildAt(i), Glass.Kind.CHIP)
+        for (b in listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnFavorite)) Glass.background(b, Glass.Kind.CIRCLE)
+        Glass.background(btnCaptions, Glass.Kind.PILL)
+        for (chip in listOf(chipResolution, chipFps, chipFormat, chipAudio, chipSource)) Glass.background(chip, Glass.Kind.CHIP)
+        chipsRow.clipChildren = !Glass.on
+        (chipsRow as? ViewGroup)?.clipToPadding = !Glass.on
     }
 
     // ---- Content --------------------------------------------------------------------------------------------------
@@ -223,42 +154,39 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     fun setChannel(channel: Channel, now: Programme?, nextUp: Programme?, playlistName: String, logoBitmap: Bitmap?, clockNow: Long) {
         val tf = DateFormat.getTimeFormat(context)
         channelName.text = channel.name
-        if (logoBitmap != null) { logo.setImageBitmap(logoBitmap); logo.visibility = VISIBLE } else logo.visibility = GONE
-        (channelName.parent as View).let { (it as ViewGroup).getChildAt(1).visibility = logo.visibility }
+        if (logoBitmap != null) logo.setImageBitmap(logoBitmap)
+        logo.visibility = if (logoBitmap != null) VISIBLE else GONE
+        logoDivider.visibility = logo.visibility
         title.text = now?.title?.takeIf { it.isNotBlank() } ?: channel.name
         schedule.text = if (now != null) "${tf.format(Date(now.start))} – ${tf.format(Date(now.stop))}" else ""
         schedule.visibility = if (now != null) VISIBLE else GONE
         next.text = nextUp?.let { "Next: ${it.title} · ${tf.format(Date(it.start))}" } ?: ""
         next.visibility = if (nextUp != null) VISIBLE else GONE
-        favoriteIcon.setImageResource(if (channel.favorite) R.drawable.ic_star_filled else R.drawable.ic_star)
-        favoriteButton.contentDescription = if (channel.favorite) "Remove from Favorites" else "Add to Favorites"
+        btnFavorite.setImageResource(if (channel.favorite) R.drawable.ic_star_filled else R.drawable.ic_star)
+        val favText = if (channel.favorite) "Remove from Favorites" else "Add to Favorites"
+        btnFavorite.contentDescription = favText
         this.playlistName = playlistName
         setProgramme(now, clockNow)
         tick(clockNow)
     }
 
-    private var playlistName = ""
-    private var programme: Programme? = null
-
     private fun setProgramme(p: Programme?, now: Long) {
         programme = p
-        val tf = DateFormat.getTimeFormat(context)
         val has = p != null
         startTime.visibility = if (has) VISIBLE else GONE
         endTime.visibility = if (has) VISIBLE else GONE
-        tracker.visibility = if (has) VISIBLE else GONE
+        line.visibility = if (has) VISIBLE else GONE
         noGuide.visibility = if (has) GONE else VISIBLE
         if (p != null) {
-            startTime.text = tf.format(Date(p.start))
+            startTime.text = DateFormat.getTimeFormat(context).format(Date(p.start))
             updateEnd(p, now)
         }
     }
 
     private fun updateEnd(p: Programme, now: Long) {
-        val tf = DateFormat.getTimeFormat(context)
         val left = ((p.stop - now) / 60_000).coerceAtLeast(0)
-        endTime.text = "${tf.format(Date(p.stop))}  |  $left min left"
-        tracker.fraction = ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f)
+        endTime.text = "${DateFormat.getTimeFormat(context).format(Date(p.stop))} · $left min left"
+        line.fraction = ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f)
     }
 
     /** Clock and tracker, every few seconds while shown. */
@@ -267,59 +195,70 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         programme?.let { updateEnd(it, now) }
     }
 
+    /** Pods as the VOD player writes them, each hidden when turned off in Settings › Look › Info pods. */
+    @OptIn(UnstableApi::class)
     fun setStatus(s: PlayerHost.Status) {
-        val labels = ArrayList<String>()
-        s.video?.let { v ->
-            val w = if (s.videoSize.width > 0) s.videoSize.width else v.width
-            val h = if (s.videoSize.height > 0) s.videoSize.height else v.height
-            if (w > 0 && h > 0) labels += "${w}×$h"
-            if (v.frameRate > 0) labels += String.format(java.util.Locale.US, if (v.frameRate % 1f == 0f) "%.0f FPS" else "%.2f FPS", v.frameRate)
-            val codec = when {
-                v.sampleMimeType?.contains("hevc") == true -> "HEVC"
-                v.sampleMimeType?.contains("avc") == true -> "H.264"
-                v.sampleMimeType?.contains("av01") == true -> "AV1"
-                v.sampleMimeType?.contains("mpeg2") == true -> "MPEG-2"
-                else -> v.codecs?.substringBefore('.')?.uppercase()
-            }
-            val hdr = when (v.colorInfo?.colorTransfer) {
-                androidx.media3.common.C.COLOR_TRANSFER_ST2084 -> "HDR10"
-                androidx.media3.common.C.COLOR_TRANSFER_HLG -> "HLG"
-                else -> "SDR"
-            }
-            if (codec != null) labels += "$codec · $hdr"
+        val hidden = prefs.hiddenChips
+        fun pod(chip: TextView, key: String, text: String?) {
+            val shown = text?.takeIf { key !in hidden }
+            chip.text = shown
+            chip.visibility = if (shown == null) GONE else VISIBLE
         }
-        s.audio?.let { a ->
-            labels += when (a.channelCount) {
-                1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> if (a.channelCount > 0) "${a.channelCount} ch" else "Sound"
-            }
-        }
-        if (playlistName.isNotBlank()) labels += playlistName
-        pods.removeAllViews()
-        for ((i, l) in labels.withIndex()) {
-            val chip = t.label(context, 15f).apply {
-                text = l
-                setPadding(t.dp(14), t.dp(6), t.dp(14), t.dp(6))
-                Glass.background(this, Glass.Kind.CHIP)
-            }
-            pods.addView(chip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { if (i > 0) leftMargin = t.dp(10) })
-        }
+        val v = s.video
+        val w = s.videoSize.width.takeIf { it > 0 } ?: v?.width ?: 0
+        val h = s.videoSize.height.takeIf { it > 0 } ?: v?.height ?: 0
+        pod(chipResolution, "quality", if (w > 0 && h > 0) "$w×$h" else null)
+        val fps = v?.frameRate ?: Format.NO_VALUE.toFloat()
+        pod(chipFps, "fps", if (fps > 0) fpsLabel(fps) else null)
+        val spec = if (v != null || s.audio != null) MediaSpec.of(v, s.audio) else null
+        pod(chipFormat, "format", spec?.pictureLine())
+        pod(chipAudio, "sound", spec?.soundLine() ?: MediaSpec.channelsLabel(s.audio?.channelCount ?: Format.NO_VALUE))
+        pod(chipSource, "source", playlistName.takeIf { it.isNotBlank() })
         val cc = s.captions.firstOrNull { it.selected }
-        captionsText.text = cc?.label ?: "Off"
+        captionsValue.text = cc?.label ?: "Off"
+        setCatchUp(s.paused, s.behindLive)
+    }
+
+    private fun fpsLabel(fps: Float): String {
+        val value = FpsMeter.snap(fps)
+        val text = if (abs(value - value.roundToInt()) < 0.001f) value.roundToInt().toString()
+            else "%.3f".format(Locale.US, value).trimEnd('0')
+        return "$text FPS"
+    }
+
+    /**
+     * Play/Pause and Go live while the channel is paused or behind live (they take the start of the row and move
+     * TV Guide and Channel History along); gone once it's back at live.
+     */
+    private fun setCatchUp(paused: Boolean, behind: Boolean) {
+        btnPlay.setImageResource(if (paused) R.drawable.ic_play else R.drawable.ic_pause)
+        btnPlay.contentDescription = if (paused) "Play" else "Pause"
+        val show = paused || behind
+        if (show == catchUpShown) return
+        catchUpShown = show
+        val hadFocus = btnPlay.hasFocus() || btnGoLive.hasFocus()
+        btnPlay.visibility = if (show) VISIBLE else GONE
+        goLiveGroup.visibility = if (show) VISIBLE else GONE
+        // Focus that was on a button that just went moves to TV Guide.
+        if (!show && hadFocus && controlsShown) guideButton.requestFocus()
     }
 
     // ---- Visibility -----------------------------------------------------------------------------------------------
 
-    /** The full controls with focus on [focus] (TV Guide by default). */
+    /** The full controls; focus on Play/Pause when it shows (paused), else on TV Guide, unless [focus] is given. */
     fun showControls(focus: View? = null) {
         visibility = VISIBLE
         controlsShown = true
-        bottom.visibility = VISIBLE
         top.visibility = VISIBLE
-        clock.visibility = VISIBLE
-        bottomScrim.visibility = VISIBLE
-        topScrim.visibility = VISIBLE
+        bottom.visibility = VISIBLE
+        scrimTop.visibility = VISIBLE
+        scrimBottom.visibility = VISIBLE
         alpha = 1f
-        (focus ?: guideButton).requestFocus()
+        (focus ?: if (catchUpShown) btnPlay else guideButton).requestFocus()
+    }
+
+    fun focusPlay() {
+        if (catchUpShown) btnPlay.requestFocus()
     }
 
     /** Only the channel and programme at the top (after a channel change): nothing takes focus. */
@@ -327,10 +266,9 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         visibility = VISIBLE
         controlsShown = false
         top.visibility = VISIBLE
-        clock.visibility = VISIBLE
-        topScrim.visibility = VISIBLE
+        scrimTop.visibility = VISIBLE
         bottom.visibility = GONE
-        bottomScrim.visibility = GONE
+        scrimBottom.visibility = GONE
     }
 
     fun hideAll() {
@@ -338,27 +276,33 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         controlsShown = false
     }
 
-    /** The thin blue programme progress line: drawn, never focused or seekable. */
-    private inner class Tracker(context: Context) : View(context) {
-        var fraction = 0f
-            set(v) { field = v; invalidate() }
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val r = RectF()
+    private companion object {
+        val EASE = DecelerateInterpolator(1.4f)
+    }
+}
 
-        init {
-            isFocusable = false
-            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
+/** The thin blue programme progress line (VOD time line's 4dp track): drawn only, never focused or seekable. */
+class ProgrammeLine @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    var fraction = 0f
+        set(v) { field = v; invalidate() }
+    private val density = resources.displayMetrics.density
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val r = RectF()
+    private val accent = ContextCompat.getColor(context, R.color.accent)
 
-        override fun onDraw(canvas: Canvas) {
-            val h = t.dpf(4f)
-            val cy = height / 2f
-            r.set(0f, cy - h / 2, width.toFloat(), cy + h / 2)
-            p.color = 0x4DFFFFFF
-            canvas.drawRoundRect(r, h, h, p)
-            r.right = width * fraction
-            p.color = t.accent
-            canvas.drawRoundRect(r, h, h, p)
-        }
+    init {
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val h = 4f * density
+        val cy = height / 2f
+        r.set(0f, cy - h / 2, width.toFloat(), cy + h / 2)
+        p.color = 0x4DFFFFFF
+        canvas.drawRoundRect(r, h, h, p)
+        r.right = width * fraction
+        p.color = accent
+        canvas.drawRoundRect(r, h, h, p)
     }
 }

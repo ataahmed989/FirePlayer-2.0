@@ -227,7 +227,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onHistory() = showHistory()
             override fun onCaptions() = chooseCaptions()
             override fun onFavorite() = toggleFavorite()
-            override fun onMore() = showMore()
+            override fun onPlayPause() = togglePause()
+            override fun onGoLive() = goLive()
         }
     }
 
@@ -659,8 +660,25 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun bumpControls() {
         main.removeCallbacks(hideControls)
+        // Paused, the controls stay up (the picture is still and Play is what's wanted next).
+        if (player.paused) return
         val s = prefs.controlsHideSec
         if (s > 0) main.postDelayed(hideControls, s * 1000L)
+    }
+
+    /** Play/pause (the remote's key or the Play button): the controls show, with Play selected while paused. */
+    private fun togglePause() {
+        if (!fullScreen) return
+        player.togglePause()
+        controls.setStatus(player.status())
+        if (!controls.controlsShown) showControls() else bumpControls()
+        if (player.paused) controls.focusPlay()
+    }
+
+    private fun goLive() {
+        player.goLive()
+        controls.setStatus(player.status())
+        bumpControls()
     }
 
     private fun showHistory() {
@@ -765,10 +783,25 @@ class LivePage(private val activity: Activity, private val host: Host) {
             return false
         }
 
+        if (code in PLAY_PAUSE_KEYS) {
+            if (down && event.repeatCount == 0) {
+                val wantsPause = code == KeyEvent.KEYCODE_MEDIA_PAUSE
+                val wantsPlay = code == KeyEvent.KEYCODE_MEDIA_PLAY
+                if ((wantsPause && !player.paused) || (wantsPlay && player.paused) || (!wantsPause && !wantsPlay)) togglePause()
+                else if (!controls.controlsShown) showControls()
+            }
+            return true
+        }
+
         if (controls.controlsShown) {
             // The key that showed the controls doesn't also act on them while it's held (design-layout).
             if (code == revealKey) {
                 if (!down) revealKey = 0
+                return true
+            }
+            // Down from the buttons: more options, as in the VOD player.
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (down && event.repeatCount == 0) showMore()
                 return true
             }
             if (down) bumpControls()
@@ -828,6 +861,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     companion object {
         private const val INFO_MS = 4_000L
+        private val PLAY_PAUSE_KEYS = setOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE)
         private val HANDLED_UP = setOf(
             KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU,

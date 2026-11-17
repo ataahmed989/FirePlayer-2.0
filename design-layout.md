@@ -184,6 +184,27 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-17 · Assumption: the miniature has no transport controls (the generated concept's play/pause and
   full-screen buttons were noted as not agreed); without a channel playing it shows a hint panel.
 
+- 2026-11-17 · User: the brand mark is a **hollow** blue play triangle with rounded corners and an even ring thickness
+  (drawn as one 5.6-unit stroke along a rounded triangle, round joins). Supersedes the solid version.
+- 2026-11-17 · User: full-screen Live controls follow the VOD player's sizes: pods are the VOD Chip pods (same size,
+  same Info pods setting), round buttons are the VOD medium 39dp circles (TV Guide, Channel History, Favorite), the
+  Captions pill is the VOD 39dp pill (CC icon kept), and button names show underneath only while selected. New icons
+  for TV Guide (channel blocks and programme bars) and Channel History (clock in a circling arrow) from the user's
+  pictures.
+- 2026-11-17 · User: pausing live shows Play/Pause (51dp, as VOD's play) and Go live (39dp) at the start of the row,
+  moving TV Guide and Channel History along; they stay until playback is back at live (Go live, or the stream
+  reconnecting at live). No recording feature. Implementation: remote play/pause keys or the Play button; controls stay
+  up while paused; Down opens more options as in VOD.
+- 2026-11-17 · Assumption: Live controls use blue icons/text on the white selected button (written focus rule); the
+  VOD player uses dark icons on its selected buttons. Open: should VOD switch to blue too?
+- 2026-11-17 · User: **films and shows will not come from IPTV playlists**; VOD comes from Stremio add-ons with a debrid
+  service. Organisation of titles, covers and rows is still open. Supersedes the handoff's "independent catalogs from
+  configured playlists" and makes add-on integration agreed scope. The playlist "Include VOD" switch is hidden.
+- 2026-11-17 · Assumption (user asked about a second app): debug/test builds are a separate app beside the user's
+  FirePlayer — package `app.fireplayer.next`, name "FirePlayer 2.0", the hollow-logo icon and banner, Continue Watching
+  at `app.fireplayer.next.continue` (Glass Home only reads `app.fireplayer.continue`, so it never sees the test app),
+  and no TiviMate title server (port 8000 belongs to the installed FirePlayer). Release builds are unchanged.
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

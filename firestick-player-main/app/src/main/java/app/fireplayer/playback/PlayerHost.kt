@@ -45,6 +45,10 @@ class PlayerHost private constructor(context: Context) {
         val videoSize: VideoSize,
         val captions: List<Track>,
         val audioTracks: List<Track>,
+        /** The viewer paused the channel. */
+        val paused: Boolean = false,
+        /** Playing (or paused) behind the live edge: Go live is offered until it's back at live. */
+        val behindLive: Boolean = false,
     )
 
     data class Track(val groupIndex: Int, val trackIndex: Int, val label: String, val selected: Boolean)
@@ -134,6 +138,52 @@ class PlayerHost private constructor(context: Context) {
 
     fun setMuted(muted: Boolean) { player?.volume = if (muted) 0f else 1f }
 
+    /** Paused by the viewer (not by the app going to the background, which closes the stream). */
+    var paused = false
+        private set
+
+    /** Behind the live edge since a pause, until Go live or a reconnect brings it back. */
+    private var behind = false
+
+    /** Pauses or carries on. A paused channel falls behind live; it keeps its place while the buffer lasts. */
+    fun togglePause() {
+        val p = player ?: return
+        if (session.playingKey == null) return
+        paused = !paused
+        if (paused) behind = true
+        p.playWhenReady = !paused
+        publish()
+    }
+
+    /**
+     * Back to the live edge: a live HLS/DASH window seeks to its default position; a plain stream (MPEG-TS), which
+     * can't seek, is opened again, which is where the provider is now.
+     */
+    fun goLive() {
+        val p = player ?: return
+        val source = session.source ?: return
+        if (session.playingKey == null) return
+        paused = false
+        behind = false
+        if (p.isCurrentMediaItemDynamic && p.isCurrentMediaItemSeekable) {
+            p.seekToDefaultPosition()
+            p.playWhenReady = true
+        } else {
+            openStream(source)
+        }
+        publish()
+    }
+
+    /** Whether playback is still behind live: a seekable live window says by its offset; a plain stream until reopened. */
+    private fun stillBehind(p: ExoPlayer): Boolean {
+        if (!behind) return false
+        if (!paused && p.isCurrentMediaItemLive && p.isCurrentMediaItemDynamic) {
+            val offset = p.currentLiveOffset
+            if (offset != C.TIME_UNSET && offset <= LIVE_EDGE_SLACK_MS) behind = false
+        }
+        return behind
+    }
+
     fun selectCaption(track: Track?) {
         val p = player ?: return
         val b = p.trackSelectionParameters.buildUpon()
@@ -161,6 +211,9 @@ class PlayerHost private constructor(context: Context) {
         main.removeCallbacks(retry)
         retries = 0
         error = null
+        // A fresh stream starts at live.
+        paused = false
+        behind = false
         val p = playerFor(source.headers)
         p.setMediaItem(mediaItem(source))
         p.prepare()
@@ -178,6 +231,8 @@ class PlayerHost private constructor(context: Context) {
         player = null
         builtHeaders = null
         error = null
+        paused = false
+        behind = false
     }
 
     private fun playerFor(headers: Map<String, String>): ExoPlayer {
@@ -208,6 +263,9 @@ class PlayerHost private constructor(context: Context) {
     /** Reconnects after an error or a dropped stream: back to the live edge, prepared again. */
     private val retry = Runnable {
         val p = player ?: return@Runnable
+        // Reconnecting lands at the live edge: whatever was behind has recalibrated itself.
+        behind = false
+        paused = false
         p.seekToDefaultPosition()
         if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) p.prepare()
         p.playWhenReady = true
@@ -275,6 +333,8 @@ class PlayerHost private constructor(context: Context) {
             videoSize = p?.videoSize ?: VideoSize.UNKNOWN,
             captions = tracksOf(tracks, C.TRACK_TYPE_TEXT),
             audioTracks = tracksOf(tracks, C.TRACK_TYPE_AUDIO),
+            paused = paused && session.playingKey != null,
+            behindLive = p != null && session.playingKey != null && stillBehind(p),
         )
     }
 
@@ -293,6 +353,8 @@ class PlayerHost private constructor(context: Context) {
     companion object {
         private const val TAG = "FirePlayerLive"
         private val RETRY_DELAYS_MS = longArrayOf(1_000, 2_000, 4_000)
+        /** Within this of the live edge counts as live again (the player itself sits a few seconds back). */
+        private const val LIVE_EDGE_SLACK_MS = 20_000L
 
         /** Every stream the app opens counts here, per provider account. */
         val budget = ConnectionBudget()

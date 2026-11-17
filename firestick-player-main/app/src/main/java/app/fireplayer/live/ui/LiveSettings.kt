@@ -114,7 +114,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 save(pl.copy(output = if (i == 1) "m3u8" else "ts"))
             }
             row("Include TV channels", if (pl.includeLive) "On" else "Off") { save(pl.copy(includeLive = !pl.includeLive)) }
-            row("Include VOD", if (pl.includeVod) "On" else "Off") { save(pl.copy(includeVod = !pl.includeVod)) }
+            // "Include VOD" isn't offered: films and shows come from Stremio add-ons, not IPTV playlists (user decision).
             header("Account")
             // Read-only, as the provider reports them: the allowance isn't the streams in use or what Multiview can do.
             message(buildString {
