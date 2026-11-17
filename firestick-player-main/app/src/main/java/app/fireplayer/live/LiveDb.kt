@@ -132,6 +132,9 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val db = writableDatabase
         db.beginTransaction()
         try {
+            // Deleted while its update was running: nothing to store (no orphan rows).
+            val exists = db.rawQuery("SELECT 1 FROM playlist WHERE id = ?", arrayOf(playlistId)).use { it.moveToFirst() }
+            if (!exists) return 0
             db.execSQL("CREATE TEMP TABLE IF NOT EXISTS seen_channel(id TEXT PRIMARY KEY)")
             db.execSQL("CREATE TEMP TABLE IF NOT EXISTS seen_group(id TEXT PRIMARY KEY)")
             db.execSQL("DELETE FROM seen_channel")
@@ -200,32 +203,52 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     /**
-     * Replaces everything [source]'s EPG listed with what [fill] inserts, in one transaction, and drops every
-     * source's programmes that ended before [keepFrom]. Readers keep seeing the old listings until it commits.
+     * Replaces everything [source]'s EPG listed with what [fill] inserts. The download is read into staging rows in
+     * small transactions (the database is never held for a whole download, so favorites and history writes don't
+     * wait), then one short transaction swaps them in and drops every source's programmes that ended before
+     * [keepFrom]. The guide keeps showing the old listings until the swap.
      */
     fun replaceProgrammes(source: String, url: String, keepFrom: Long, now: Long, fill: ((String, Programme) -> Unit) -> Int): Int {
         val db = writableDatabase
+        val staging = "$source$STAGING"
+        db.delete("program", "source = ?", arrayOf(staging))
+        val insert = db.compileStatement(
+            "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        var inBatch = 0
         db.beginTransaction()
         try {
-            db.delete("program", "source = ?", arrayOf(source))
-            db.delete("program", "stop < ?", arrayOf(keepFrom.toString()))
-            val insert = db.compileStatement(
-                "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            )
             val count = fill { ref, p ->
                 insert.clearBindings()
-                insert.bindString(1, source); insert.bindString(2, ref); insert.bindLong(3, p.start); insert.bindLong(4, p.stop)
+                insert.bindString(1, staging); insert.bindString(2, ref); insert.bindLong(3, p.start); insert.bindLong(4, p.stop)
                 insert.bindString(5, p.title); bindOrNull(insert, 6, p.description); bindOrNull(insert, 7, p.category)
                 insert.executeInsert()
+                if (++inBatch >= BATCH) {
+                    db.setTransactionSuccessful()
+                    db.endTransaction()
+                    inBatch = 0
+                    db.beginTransaction()
+                }
             }
+            db.setTransactionSuccessful()
+            db.endTransaction()
+            db.beginTransaction()
+            db.delete("program", "source = ?", arrayOf(source))
+            db.execSQL("UPDATE program SET source = ? WHERE source = ?", arrayOf(source, staging))
+            db.delete("program", "stop < ?", arrayOf(keepFrom.toString()))
             val v = ContentValues().apply {
                 put("source", source); put("url", url); put("last_sync", now); put("status", "OK"); put("programmes", count)
             }
             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()
             return count
+        } catch (t: Throwable) {
+            // A failed download leaves the old listings as they were; its partial staging rows go.
+            runCatching { if (db.inTransaction()) db.endTransaction() }
+            runCatching { db.delete("program", "source = ?", arrayOf(staging)) }
+            throw t
         } finally {
-            db.endTransaction()
+            if (db.inTransaction()) db.endTransaction()
         }
     }
 
@@ -372,6 +395,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     companion object {
         private const val VERSION = 2
         const val RECENT_KEEP = 10
+        private const val STAGING = "#new"
+        private const val BATCH = 2_000
         private const val PLAYLIST_COLS = "id, name, kind, url, username, password, epg_url, output, include_live, include_vod, " +
             "position, update_hours, last_sync, last_status, expires_at, max_connections"
 

@@ -152,15 +152,21 @@ object XtreamParser {
     }
 
     /** get_live_categories and get_live_streams, in the provider's order, as one playlist's groups and channels. */
+    /**
+     * Null when either answer isn't a JSON list (an error page, a login problem): that's a failed update, never
+     * "the provider has no channels", which would remove every channel and group.
+     */
     fun live(
         playlistId: String,
         categoriesJson: String,
         streamsJson: String,
         streamUrl: (streamId: String, extension: String?) -> String,
-    ): ParsedPlaylist {
+    ): ParsedPlaylist? {
+        val categories = runCatching { JSONArray(categoriesJson.trim()) }.getOrNull() ?: return null
+        val streamsArr = runCatching { JSONArray(streamsJson.trim()) }.getOrNull() ?: return null
         val groups = ArrayList<ChannelGroup>()
         val known = HashSet<String>()
-        runCatching { JSONArray(categoriesJson) }.getOrNull()?.let { arr ->
+        categories.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val id = o.optString("category_id").takeIf { it.isNotBlank() } ?: continue
@@ -169,7 +175,7 @@ object XtreamParser {
         }
         val channels = ArrayList<Channel>()
         val seen = HashSet<String>()
-        runCatching { JSONArray(streamsJson) }.getOrNull()?.let { arr ->
+        streamsArr.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val id = o.opt("stream_id")?.toString()?.takeIf { it.isNotBlank() && it != "null" } ?: continue
@@ -205,7 +211,10 @@ object XmltvReader {
 
     class Item(val channel: String, val programme: Programme)
 
-    /** Reads programmes until the end, handing each kept one to [onProgramme]; returns how many were kept. */
+    /**
+     * Reads programmes until the end, handing each kept one to [onProgramme]; returns how many were kept. A programme
+     * without a stop time ends where the channel's next one starts (the last one of a channel: an hour).
+     */
     fun read(
         parser: XmlPullParser,
         wanted: Set<String>,
@@ -215,6 +224,13 @@ object XmltvReader {
         onProgramme: (Item) -> Unit,
     ): Int {
         var kept = 0
+        val open = HashMap<String, Programme>()
+        fun emit(ref: String, p: Programme) {
+            if (p.start > 0 && p.stop > p.start && p.stop > keepFrom && p.start < keepUntil) {
+                onProgramme(Item(ref, p))
+                kept++
+            }
+        }
         var ref: String? = null
         var start = 0L
         var stop = 0L
@@ -230,8 +246,9 @@ object XmltvReader {
                         ref = parser.getAttributeValue(null, "channel")
                         inProgramme = ref != null && ref in wanted
                         if (inProgramme) {
-                            start = epoch(parser.getAttributeValue(null, "start")) + offsetMs
-                            stop = epoch(parser.getAttributeValue(null, "stop")) + offsetMs
+                            // A time that's missing or unreadable stays 0, whatever the offset.
+                            start = epoch(parser.getAttributeValue(null, "start")).let { if (it > 0) it + offsetMs else 0L }
+                            stop = epoch(parser.getAttributeValue(null, "stop")).let { if (it > 0) it + offsetMs else 0L }
                             title = null; desc = null; category = null
                         }
                     }
@@ -241,15 +258,18 @@ object XmltvReader {
                 }
             } else if (event == XmlPullParser.END_TAG && parser.name == "programme") {
                 val r = ref
-                if (inProgramme && r != null && start > 0 && stop > start && stop > keepFrom && start < keepUntil) {
-                    onProgramme(Item(r, Programme(start, stop, title?.takeIf { it.isNotBlank() } ?: "", desc?.takeIf { it.isNotBlank() }, category)))
-                    kept++
+                if (inProgramme && r != null && start > 0) {
+                    // A programme left open (no stop) ends where this one starts.
+                    open.remove(r)?.let { prev -> if (start > prev.start) emit(r, prev.copy(stop = start)) }
+                    val p = Programme(start, stop, title?.takeIf { it.isNotBlank() } ?: "", desc?.takeIf { it.isNotBlank() }, category)
+                    if (stop <= 0L) open[r] = p else emit(r, p)
                 }
                 inProgramme = false
                 ref = null
             }
             event = parser.next()
         }
+        for ((r, p) in open) emit(r, p.copy(stop = p.start + 60 * 60_000L))
         return kept
     }
 

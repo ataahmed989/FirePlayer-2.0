@@ -130,13 +130,20 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun onStart() {
         super.onStart()
+        // This screen's surface shows live again (another instance may have taken it meanwhile).
+        player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
     }
 
     override fun onStop() {
         live.stop()
+        root.keepScreenOn = false
         super.onStop()
     }
+
+    override val videoOwner: Any get() = surface
+
+    override fun overlayOpen(): Boolean = panel.isOpen || FireDialog.isShowing(this)
 
     override fun onDestroy() {
         root.viewTreeObserver.removeOnGlobalFocusChangeListener(focusWatcher)
@@ -228,7 +235,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     private fun restore(from: View) {
         settingsPage.animate().alpha(1f).setDuration(160).start()
-        from.requestFocus()
+        // The row it was opened from, if it's on screen (Menu can open Settings over the Live TV tab).
+        if (from.isShown) from.requestFocus() else focusPage()
     }
 
     private fun openPanel(title: String, from: View, render: SidePanel.() -> Unit) {
@@ -356,6 +364,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private var lastSize: VideoSize = VideoSize.UNKNOWN
     private val videoSizeListener = object : PlayerHost.Listener {
         override fun onLiveStatus(status: PlayerHost.Status) {
+            // The screen stays on while a channel plays (the Fire TV screensaver would cover it), as films do.
+            root.keepScreenOn = status.key != null && status.error == null
             if (status.videoSize != lastSize) {
                 lastSize = status.videoSize
                 layoutVideo()
@@ -374,27 +384,31 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     // ---- Keys -----------------------------------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val isBack = event.keyCode == KeyEvent.KEYCODE_BACK
+        if (!isBack && event.action == KeyEvent.ACTION_DOWN) consumeBackUp = false
+        // A Back that closes a dialog: its release (and repeats) must not act again on what's underneath.
+        if (isBack && event.action == KeyEvent.ACTION_DOWN && FireDialog.isShowing(this)) consumeBackUp = true
         // A small window (a list of choices, a question) open over the screen takes the keys first.
         if (FireDialog.dispatch(this, event)) return true
+        if (isBack && consumeBackUp) {
+            if (event.action == KeyEvent.ACTION_UP) consumeBackUp = false
+            return true
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
         // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
         // pressed again, it closes the window.
         if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                if (panel.isOpen) panel.close()
-                else (if (Prefs(this).menuOpensStyle) styleRow else settingsRow).performClick()
+                if (panel.isOpen) panel.close() else openMenuWindow()
             }
             return true
         }
-        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+        if (isBack) {
             if (event.action == KeyEvent.ACTION_DOWN && panel.isOpen) {
                 consumeBackUp = true
                 panel.close()
-                return true
-            }
-            if (event.action == KeyEvent.ACTION_UP && consumeBackUp) {
-                consumeBackUp = false
                 return true
             }
             // Back from a page goes to the rail; Back on the rail leaves the app.
@@ -411,6 +425,22 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             if (before != null && before.isAttachedToWindow) before.requestFocus() else panel.focusRow(0)
         }
         return handled
+    }
+
+    /**
+     * Menu: Settings (or Subtitle style, as chosen) over whichever tab shows. From the Settings tab it opens from its
+     * row; elsewhere focus returns to where it was when the window closes.
+     */
+    private fun openMenuWindow() {
+        val style = Prefs(this).menuOpensStyle
+        if (rail.selected == NavRail.Tab.SETTINGS) {
+            (if (style) styleRow else settingsRow).performClick()
+            return
+        }
+        val back = currentFocus
+        val onClose: () -> Unit = { if (back != null && back.isShown) back.requestFocus() else focusPage() }
+        if (style) panel.open("Subtitle style", onClose) { settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {}) }
+        else panel.open("Settings", onClose) { settingsPanels.renderSettings(this) }
     }
 
     companion object {

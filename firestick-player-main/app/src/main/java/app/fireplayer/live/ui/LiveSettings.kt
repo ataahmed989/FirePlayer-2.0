@@ -6,10 +6,12 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.text.format.DateFormat
+import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveDb
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.Playlist
 import app.fireplayer.live.PlaylistKind
+import app.fireplayer.playback.PlayerHost
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.SidePanel
 import java.util.Date
@@ -142,6 +144,9 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         row("Delete playlist") {
             FireDialog.ask(activity, "Delete \"${pl.name}\"? Its channels, favorites and guide go too.", listOf(
                 "Delete" to {
+                    // Its channel stops if it's the one playing (or remembered), and isn't brought back later.
+                    PlayerHost.peek()?.let { h -> if (ChannelKey.parse(h.currentKey)?.playlistId == pl.id) h.stop() }
+                    if (prefs.lastChannel?.playlistId == pl.id) prefs.lastChannel = null
                     io.execute {
                         db.deletePlaylist(pl.id)
                         main.post { panel.close() }

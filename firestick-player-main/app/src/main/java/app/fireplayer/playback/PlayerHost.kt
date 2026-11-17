@@ -81,9 +81,19 @@ class PlayerHost private constructor(context: Context) {
 
     /** Plays [source] (or keeps playing it when it already is). */
     fun tune(source: LiveSession.Source): LiveSession.Tune {
-        val result = session.tune(source)
+        var result = session.tune(source)
+        if (result == LiveSession.Tune.AlreadyPlaying && streamDead()) {
+            // The channel is still ours (its lease is held) but the stream gave up: try it again from the start.
+            openStream(source)
+            result = LiveSession.Tune.Started
+        }
         publish()
         return result
+    }
+
+    private fun streamDead(): Boolean {
+        val p = player ?: return true
+        return error != null || p.playbackState == Player.STATE_IDLE
     }
 
     /** Shows live video on [view] (the guide's surface). Safe to call again with the same view. */
@@ -106,7 +116,12 @@ class PlayerHost private constructor(context: Context) {
         return resumed
     }
 
-    fun onScreenStopped() {
+    /**
+     * The screen showing live stopped. [owner] is that screen's surface: when another screen has attached its own
+     * surface since (a new activity instance), this stale stop is ignored rather than stopping the new one's stream.
+     */
+    fun onScreenStopped(owner: Any? = null) {
+        if (owner != null && surface != null && owner !== surface) return
         session.suspend()
         publish()
     }
@@ -190,9 +205,11 @@ class PlayerHost private constructor(context: Context) {
         return b.build()
     }
 
+    /** Reconnects after an error or a dropped stream: back to the live edge, prepared again. */
     private val retry = Runnable {
         val p = player ?: return@Runnable
-        p.prepare()
+        p.seekToDefaultPosition()
+        if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) p.prepare()
         p.playWhenReady = true
     }
 
@@ -229,9 +246,9 @@ class PlayerHost private constructor(context: Context) {
         override fun onPlaybackStateChanged(state: Int) {
             // A live channel doesn't end: the provider dropped the stream. Reconnect, with the same back-off as errors.
             if (state != Player.STATE_ENDED || session.playingKey == null) return
-            val p = player ?: return
+            if (player == null) return
             if (retries < RETRY_DELAYS_MS.size) {
-                p.seekToDefaultPosition()
+                main.removeCallbacks(retry)
                 main.postDelayed(retry, RETRY_DELAYS_MS[retries++])
             } else {
                 error = "The channel stopped"

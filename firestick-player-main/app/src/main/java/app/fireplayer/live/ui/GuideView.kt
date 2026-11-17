@@ -107,6 +107,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     /** Shows [list]; focus goes to [focus] (or stays on the same channel, or the first). */
     fun setChannels(list: List<Channel>, focus: ChannelKey?) {
+        animator?.cancel()
         val keep = focus ?: channels.getOrNull(focusRow)?.key
         channels = list
         focusRow = list.indexOfFirst { it.key == keep }.coerceAtLeast(0)
@@ -155,6 +156,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     /** The same scope re-read (a favorite changed): focus stays on its channel, or the nearest row. */
     fun updateChannels(list: List<Channel>) {
+        animator?.cancel()
         val key = focusedChannel()?.key
         channels = list
         val i = list.indexOfFirst { it.key == key }
@@ -202,14 +204,26 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         if (dir < 0) {
             val cell = cells.getOrNull(i)
             // From what's on now (or earlier), Left leaves the grid for the groups column.
-            if (cell == null || cell.start <= now || i == 0) {
+            if (cell == null || cell.start <= now) {
                 callbacks?.onLeaveLeft()
+                return
+            }
+            if (i == 0) {
+                // A later stretch is loaded but not back to now: load it rather than leave the grid.
+                requested = null
+                ensureLoaded(force = true)
                 return
             }
             val prev = cells[i - 1]
             cursor = GuideCells.cursorFor(prev, now)
         } else {
-            val next = cells.getOrNull(i + 1) ?: return
+            val next = cells.getOrNull(i + 1)
+            if (next == null) {
+                // The end of what's loaded: ask for the hours after it; the next Right carries on.
+                requested = null
+                ensureLoaded(force = true, until = (rows[ch.key]?.to ?: windowStart) + windowMs() + 4 * 60 * 60_000L)
+                return
+            }
             cursor = GuideCells.cursorFor(next, now)
         }
         val cell = focusedCell() ?: return
@@ -283,16 +297,23 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         if (am?.isEnabled == true && isFocused) sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED)
     }
 
-    /** Asks for listings around what's visible: two screens of rows each way, the window plus a few hours. */
-    private fun ensureLoaded() {
+    /**
+     * Asks for listings around what's visible: two screens of rows each way, from before now to the window plus a
+     * few hours ([until] reaches further). Every loaded row covers now, so its first cell is never in the future.
+     */
+    private fun ensureLoaded(force: Boolean = false, until: Long = 0L) {
         if (channels.isEmpty() || height == 0) return
         val visible = visibleRows()
-        val top = (scrollY / rowH).toInt()
+        val top = (scrollY / rowH).toInt().coerceIn(0, channels.size)
         val from = (top - visible * 2).coerceAtLeast(0)
         val to = (top + visible * 3).coerceAtMost(channels.size)
-        val tFrom = windowStart - GuideCells.SLOT_MS * 2
-        val tTo = windowStart + windowMs() + 4 * 60 * 60_000L
-        val missing = channels.subList(from, to).filter { c -> rows[c.key].let { it == null || it.from > windowStart || it.to < windowStart + windowMs() } }
+        if (from >= to) return
+        val base = minOf(windowStart, GuideCells.slotStart(clock()))
+        val tFrom = base - GuideCells.SLOT_MS * 2
+        val tTo = maxOf(windowStart + windowMs() + 4 * 60 * 60_000L, until)
+        val missing = channels.subList(from, to).filter { c ->
+            rows[c.key].let { it == null || it.from > base || it.to < windowStart + windowMs() || (force && it.to < tTo) }
+        }
         if (missing.isEmpty()) return
         val key = "${missing.first().key}|${missing.size}|$tFrom"
         if (key == requested) return
@@ -302,6 +323,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        animator?.cancel()
         scrollY = targetScroll(focusRow) * rowH
         requested = null
         ensureLoaded()

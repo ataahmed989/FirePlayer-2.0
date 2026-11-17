@@ -41,13 +41,18 @@ class LiveSync private constructor(context: Context) {
     fun addListener(l: Listener) { listeners += l }
     fun removeListener(l: Listener) { listeners -= l }
 
-    /** Updates one playlist's channels, then its EPG. */
+    /**
+     * Updates one playlist's channels, then its EPG. A playlist without an EPG of its own gets its listings from the
+     * others (fallback by exact EPG id), so their EPGs are read again to cover its channels.
+     */
     fun update(playlistId: String, epg: Boolean = true) = submit {
         val p = db.playlist(playlistId) ?: return@submit
         syncChannels(p)
         notify(p.id)
         if (epg) {
-            db.playlist(playlistId)?.let { syncEpg(it) }
+            val fresh = db.playlist(playlistId) ?: return@submit
+            val sources = if (epgUrl(fresh) != null) listOf(fresh) else db.playlists().filter { epgUrl(it) != null }
+            for (src in sources) { syncEpg(src); notify(src.id) }
             notify(p.id)
         }
     }
@@ -62,9 +67,18 @@ class LiveSync private constructor(context: Context) {
     /** On app start: playlists not updated within their interval are updated now. */
     fun updateDue(now: Long = System.currentTimeMillis()) = submit {
         val due = db.playlists().filter { now - it.lastSync >= it.updateHours.coerceAtLeast(1) * HOUR_MS }
+        if (due.isEmpty()) {
+            db.pruneProgrammes(now - PAST_KEEP_MS)
+            return@submit
+        }
         for (p in due) { syncChannels(p); notify(p.id) }
-        for (p in due) { db.playlist(p.id)?.let { syncEpg(it) }; notify(p.id) }
+        // The due playlists' EPGs, plus every EPG when a due playlist has none of its own (it borrows theirs).
+        val all = db.playlists()
+        val dueIds = due.map { it.id }.toSet()
+        val needFallback = all.any { it.id in dueIds && epgUrl(it) == null }
+        val sources = all.filter { epgUrl(it) != null && (it.id in dueIds || needFallback) }
         db.pruneProgrammes(now - PAST_KEEP_MS)
+        for (p in sources) { syncEpg(p); notify(p.id) }
     }
 
     fun updateEpg(playlistId: String? = null) = submit {
@@ -86,6 +100,8 @@ class LiveSync private constructor(context: Context) {
                 Log.w(TAG, "Live sync failed: ${t.javaClass.simpleName}")
             } finally {
                 running.decrementAndGet()
+                // One last word once nothing is running, so "Updating…" never sticks.
+                notify(ANY)
             }
         }
     }
@@ -110,19 +126,23 @@ class LiveSync private constructor(context: Context) {
                         return
                     }
                     if (!p.includeLive) {
+                        val empty = ParsedPlaylist(emptyList(), emptyList())
+                        db.applySync(p.id, empty)
                         db.setPlaylistStatus(p.id, "Updated (TV channels turned off)", now, account.expiresAt, account.maxConnections)
-                        ParsedPlaylist(emptyList(), emptyList())
-                    } else {
-                        val cats = api.get("get_live_categories") ?: "[]"
-                        val streams = api.get("get_live_streams")
-                        if (streams == null) {
-                            db.setPlaylistStatus(p.id, "Couldn't load the channel list", syncedAt = null)
-                            return
-                        }
-                        val result = XtreamParser.live(p.id, cats, streams) { id, _ -> api.streamUrl(id) }
-                        db.setPlaylistStatus(p.id, "Updated: ${result.channels.size} channels", now, account.expiresAt, account.maxConnections)
-                        result
+                        return
                     }
+                    // Both lists or nothing: a failed or garbled answer is a failed update, never "no channels".
+                    val cats = api.get("get_live_categories")
+                    val streams = api.get("get_live_streams")
+                    val result = if (cats != null && streams != null) XtreamParser.live(p.id, cats, streams) { id, _ -> api.streamUrl(id) } else null
+                    if (result == null) {
+                        db.setPlaylistStatus(p.id, "Couldn't load the channel list", syncedAt = null, expiresAt = account.expiresAt, maxConnections = account.maxConnections)
+                        return
+                    }
+                    val removed = db.applySync(p.id, result)
+                    db.setPlaylistStatus(p.id, "Updated: ${result.channels.size} channels", now, account.expiresAt, account.maxConnections)
+                    Log.i(TAG, "Playlist \"${p.name}\": ${result.channels.size} channels, ${result.groups.size} groups, $removed removed")
+                    return
                 }
                 PlaylistKind.M3U -> {
                     val text = Http.text(p.url, MAX_PLAYLIST_CHARS)
@@ -135,12 +155,12 @@ class LiveSync private constructor(context: Context) {
                         db.setPlaylistStatus(p.id, "That link isn't an M3U playlist", syncedAt = null)
                         return
                     }
-                    val result = M3uParser.toPlaylist(p.id, parsed)
-                    db.setPlaylistStatus(p.id, "Updated: ${result.channels.size} channels", now, playlistEpgUrl = result.epgUrl ?: "")
-                    result
+                    M3uParser.toPlaylist(p.id, parsed)
                 }
             }
+            // Stored first; only then recorded as updated (a failure leaves the last good update's time and EPG link).
             val removed = db.applySync(p.id, parsed)
+            db.setPlaylistStatus(p.id, "Updated: ${parsed.channels.size} channels", now, playlistEpgUrl = parsed.epgUrl ?: "")
             Log.i(TAG, "Playlist \"${p.name}\": ${parsed.channels.size} channels, ${parsed.groups.size} groups, $removed removed")
         } catch (t: Throwable) {
             db.setPlaylistStatus(p.id, "Update failed", syncedAt = null)
@@ -191,6 +211,8 @@ class LiveSync private constructor(context: Context) {
     companion object {
         private const val TAG = "FirePlayerLive"
         private const val HOUR_MS = 60L * 60 * 1000
+        /** The id sent when a run of jobs finishes (listeners reload whatever they show). */
+        const val ANY = "*"
         /** One day of past programmes is kept (design-layout: "Past days to keep EPG", one day). */
         const val PAST_KEEP_MS = 24 * HOUR_MS
         /** How far ahead programmes are kept: provisional, the design leaves the future horizon open. */

@@ -53,6 +53,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fun setChromeVisible(visible: Boolean)
         fun focusRail()
         fun railHasFocus(): Boolean
+        /** The settings window or a dialog is open over the page: its timers wait. */
+        fun overlayOpen(): Boolean
+        /** What owns the live picture on this screen (its surface): a stale screen's stop is ignored. */
+        val videoOwner: Any
         fun openPlaylists()
     }
 
@@ -207,7 +211,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     prefs.scope = scope
                     loadChannels(focus = null, enterGrid = enter)
                 } else if (enter) {
-                    guide.requestFocus()
+                    // The same scope again: reload it and go in only if it has channels (a preview load may still be
+                    // on its way with the old list).
+                    loadChannels(focus = guide.focusedChannel()?.key, enterGrid = true)
                 }
             }
         }
@@ -255,42 +261,70 @@ class LivePage(private val activity: Activity, private val host: Host) {
         started = false
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
-        player.onScreenStopped()
+        player.onScreenStopped(host.videoOwner)
         placedAt = null
         main.removeCallbacks(idleToFull)
         main.removeCallbacks(clockTick)
         main.removeCallbacks(hideControls)
         main.removeCallbacks(hideNotice)
+        // The controls' timer is gone: don't leave them up for the return.
+        if (fullScreen) controls.hideAll()
+        revealKey = 0
+        backDownSeen = false
     }
 
     fun release() {
         stop()
+        released = true
+        ++reloadSerial
+        ++loadSerial
         io.shutdown()
     }
 
-    /** Where focus goes when this tab is entered from the rail. */
+    /** Background work, unless the page is gone (its executor is shut down then). Main thread only. */
+    private fun bg(task: () -> Unit) {
+        if (!released) io.execute(task)
+    }
+
+    private var released = false
+    private var loaded = false
+    private var focusPending = false
+
+    /** Where focus goes when this tab is entered from the rail (once its data has loaded). */
     fun takeFocus() {
-        if (playlists.isEmpty()) { emptyButton.requestFocus(); return }
+        if (!loaded) { focusPending = true; return }
+        focusPending = false
+        if (playlists.isEmpty()) { if (empty.visibility == View.VISIBLE) emptyButton.requestFocus(); return }
         if (sidebarOpen) sidebar.focusCurrent() else guide.requestFocus()
+    }
+
+    /** Any key while this tab shows: the guide's inactivity timer starts again. */
+    fun noteKey() {
+        if (started && !fullScreen) scheduleIdle()
     }
 
     // ---- Data -----------------------------------------------------------------------------------------------------
 
+    private var reloadSerial = 0
+
     private fun reload(keepFocus: Boolean) {
-        val serial = ++loadSerial
-        io.execute {
+        val serial = ++reloadSerial
+        bg {
             val pls = db.playlists()
             val groups = pls.associate { it.id to db.groups(it.id) }
             main.post {
-                if (serial != loadSerial) return@post
+                if (serial != reloadSerial || released) return@post
                 playlists = pls
+                val first = !loaded
+                loaded = true
                 showEmpty(pls.isEmpty())
-                if (pls.isEmpty()) return@post
-                if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
-                sidebar.setData(pls, groups, scope)
-                loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
-                // First load after opening: focus wasn't placed yet (the page had nothing to focus).
-                if (!fullScreen && root.isShown && activity.currentFocus.let { it == null || !isInPage(it) && !host.railHasFocus() }) takeFocus()
+                if (pls.isNotEmpty()) {
+                    if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
+                    sidebar.setData(pls, groups, scope)
+                    loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
+                }
+                // The first load: focus wasn't placed yet (the page had nothing to focus).
+                if (focusPending || (first && !fullScreen && root.isShown && activity.currentFocus.let { it == null || !isInPage(it) && !host.railHasFocus() })) takeFocus()
             }
         }
     }
@@ -305,10 +339,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
         val s = scope
         val serial = ++loadSerial
-        io.execute {
+        bg {
             val list = db.channels(s)
             main.post {
-                if (serial != loadSerial) return@post
+                if (serial != loadSerial || released) return@post
                 guide.clearProgrammes()
                 guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
                 if (list.isEmpty()) {
@@ -321,9 +355,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun loadProgrammes(channels: List<Channel>, from: Long, to: Long) {
-        io.execute {
+        bg {
             val map = db.programmes(channels, from, to)
-            main.post { guide.putProgrammes(channels, map, from, to) }
+            main.post { if (!released) guide.putProgrammes(channels, map, from, to) }
         }
     }
 
@@ -335,7 +369,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun showEmpty(noPlaylists: Boolean) {
         empty.visibility = if (noPlaylists) View.VISIBLE else View.GONE
-        guideLayer.visibility = if (noPlaylists) View.INVISIBLE else View.VISIBLE
+        guideLayer.visibility = if (noPlaylists || fullScreen) View.INVISIBLE else View.VISIBLE
         if (noPlaylists) {
             emptyText.text = "Add a playlist to watch Live TV"
             host.placeVideo(null, 0f, false)
@@ -380,6 +414,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun showDetailsEmpty(text: String) {
+        // Nothing focused: the clock's refresh mustn't bring back the previous scope's channel.
+        detailChannelObj = null
+        detailCell = null
         detailChannel.text = ""
         detailTitle.text = text
         detailTime.text = ""
@@ -397,7 +434,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private fun nextAfter(channel: Channel, at: Long): Programme? = guide.programmesOf(channel).firstOrNull { it.start >= at }
 
     private fun pick(channel: Channel) {
-        if (channel.key.toString() == player.playingKey) {
+        // The playing channel goes full screen; one that failed (or anything else) is tuned (again).
+        if (channel.key.toString() == player.playingKey && player.status().error == null) {
             toFull()
         } else {
             tune(channel)
@@ -412,7 +450,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             return false
         }
         prefs.lastChannel = channel.key
-        io.execute { db.noteRecent(channel.key, System.currentTimeMillis()) }
+        playingChannel = channel
+        bg { db.noteRecent(channel.key, System.currentTimeMillis()) }
         if (!fullScreen) placeMini()
         return true
     }
@@ -422,10 +461,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
      * like TiviMate's "turn on last channel on app start", on by default here). Its playlist is read here too:
      * the page's own list may not have loaded yet.
      */
+    /** The channel playing, kept here: it may not be in the scope the guide shows. */
+    private var playingChannel: Channel? = null
+
     private fun resumeLast(key: ChannelKey) {
-        io.execute {
-            val ch = db.channel(key) ?: return@execute
-            val pl = db.playlist(ch.playlistId) ?: return@execute
+        bg {
+            val ch = db.channel(key) ?: return@bg
+            val pl = db.playlist(ch.playlistId) ?: return@bg
             main.post { if (started && player.currentKey == null) tune(ch, pl) }
         }
     }
@@ -482,6 +524,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun toFull() {
         if (player.playingKey == null || fullScreen) return
         fullScreen = true
+        revealKey = 0
         focusBeforeFull = guide.focusedChannel()?.key
         zappedInFull = false
         main.removeCallbacks(idleToFull)
@@ -501,6 +544,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun toGuide() {
         if (!fullScreen) return
         fullScreen = false
+        revealKey = 0
         controls.hideAll()
         host.setChromeVisible(true)
         guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -516,14 +560,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun refreshControls() {
         val key = ChannelKey.parse(player.currentKey) ?: return
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: detailChannelObj?.takeIf { it.key == key } ?: return
-        val progs = guide.programmesOf(ch)
+        // The guide's copy first (fresh favorite state), else the channel as tuned: it may be outside this scope.
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key }
+        if (ch == null) {
+            bg {
+                val found = db.channel(key) ?: return@bg
+                main.post { if (!released && player.currentKey == key.toString()) { playingChannel = found; refreshControls() } }
+            }
+            return
+        }
         val now = System.currentTimeMillis()
+        val progs = guide.programmesOf(ch).ifEmpty { controlsProgrammes.takeIf { controlsProgrammesFor == ch.key }.orEmpty() }
+        if (progs.isEmpty() && controlsProgrammesFor != ch.key) {
+            // Not in the guide's loaded rows: read its programmes once for the controls.
+            controlsProgrammesFor = ch.key
+            bg {
+                val list = db.programmes(listOf(ch), now - 2 * 60 * 60_000L, now + 6 * 60 * 60_000L)[ch.key].orEmpty()
+                main.post { if (!released && controlsProgrammesFor == ch.key) { controlsProgrammes = list; refreshControls() } }
+            }
+        }
         val cur = progs.firstOrNull { it.isOn(now) }
         val nxt = progs.firstOrNull { it.start >= (cur?.stop ?: now) }
         val plName = playlists.firstOrNull { it.id == ch.playlistId }?.name ?: ""
         controls.setChannel(ch, cur, nxt, plName, ch.logo?.let { logos.get(it) }, now)
     }
+
+    private var controlsProgrammesFor: ChannelKey? = null
+    private var controlsProgrammes: List<Programme> = emptyList()
 
     private fun zap(delta: Int) {
         val list = guide.channelList()
@@ -542,7 +605,32 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private val hideControls = Runnable { if (fullScreen) { controls.hideAll(); activity.currentFocus?.clearFocus() } }
+    private val hideControls: Runnable = Runnable {
+        if (!fullScreen) return@Runnable
+        // A dialog or the settings window is open over the controls: wait for it rather than pulling focus out.
+        if (FireDialog.isShowing(activity) || host.overlayOpen()) {
+            main.postDelayed(hideControls, 2_000)
+            return@Runnable
+        }
+        hideControlsNow()
+    }
+
+    private fun hideControlsNow() {
+        main.removeCallbacks(hideControls)
+        val f = activity.currentFocus
+        controls.hideAll()
+        revealKey = 0
+        if (f != null && isInside(f, controls)) f.clearFocus()
+    }
+
+    private fun isInside(v: View, parent: View): Boolean {
+        var p: View? = v
+        while (p != null) { if (p === parent) return true; p = p.parent as? View }
+        return false
+    }
+
+    /** The key that showed the controls, while it's held: its repeats and release don't also move round them. */
+    private var revealKey = 0
 
     private fun showControls() {
         refreshControls()
@@ -557,7 +645,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun showHistory() {
-        io.execute {
+        bg {
             val recent = db.recent().filter { it.key.toString() != player.currentKey }
             main.post {
                 if (recent.isEmpty()) { showNotice("No other channels watched yet"); return@post }
@@ -580,13 +668,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun toggleFavorite() {
         val key = ChannelKey.parse(player.currentKey) ?: return
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: return
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return
         val fav = !ch.favorite
-        io.execute {
+        bg {
             db.setFavorite(key, fav, System.currentTimeMillis())
             val list = db.channels(scope)
+            val fresh = db.channel(key)
             main.post {
+                if (released) return@post
                 guide.updateChannels(list)
+                if (fresh != null) playingChannel = fresh
                 refreshControls()
                 showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
             }
@@ -616,7 +707,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     // ---- Idle and clock -------------------------------------------------------------------------------------------
 
-    private val idleToFull = Runnable { if (started && !fullScreen && root.isShown && !FireDialog.isShowing(activity)) toFull() }
+    private val idleToFull = Runnable {
+        if (!started || fullScreen || !root.isShown) return@Runnable
+        // Not while the viewer is in a dialog, the settings window or on the rail: try again later.
+        if (FireDialog.isShowing(activity) || host.overlayOpen() || host.railHasFocus()) { scheduleIdle(); return@Runnable }
+        // Not onto a channel that couldn't be played.
+        if (player.status().error != null) return@Runnable
+        toFull()
+    }
 
     private fun scheduleIdle() {
         main.removeCallbacks(idleToFull)
@@ -649,6 +747,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
 
         if (controls.controlsShown) {
+            // The key that showed the controls doesn't also act on them while it's held (design-layout).
+            if (code == revealKey) {
+                if (!down) revealKey = 0
+                return true
+            }
             if (down) bumpControls()
             return false
         }
@@ -659,11 +762,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
         when (code) {
             KeyEvent.KEYCODE_CHANNEL_UP -> zap(-1)
             KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(+1)
-            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) showControls() else zap(-1)
-            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) showControls() else zap(+1)
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> {
-                if (event.repeatCount == 0) showControls()
-            }
+            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(-1)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(+1)
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> reveal(code, event)
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
             KeyEvent.KEYCODE_GUIDE -> toGuide()
             else -> return false
@@ -671,21 +772,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
         return true
     }
 
+    private fun reveal(code: Int, event: KeyEvent) {
+        if (event.repeatCount != 0) return
+        revealKey = code
+        showControls()
+    }
+
+    /** A Back press this page took the DOWN of: only its UP acts (a stray UP after a dialog closed doesn't). */
+    private var backDownSeen = false
+
     private fun back(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             // Held Back in the guide: the playing channel goes full screen (design-layout).
-            if (!fullScreen && event.repeatCount >= 1 && !backLongPressed && player.playingKey != null) {
+            if (!fullScreen && event.repeatCount >= 1 && !backLongPressed && player.playingKey != null && player.status().error == null) {
                 backLongPressed = true
+                backDownSeen = false
                 toFull()
                 return true
             }
-            return fullScreen || guide.hasFocus() || backLongPressed
+            if (event.repeatCount == 0) backDownSeen = fullScreen || guide.hasFocus()
+            return backDownSeen || backLongPressed
         }
         // ACTION_UP
         if (backLongPressed) { backLongPressed = false; return true }
+        if (!backDownSeen) return false
+        backDownSeen = false
         if (fullScreen) {
-            if (controls.controlsShown) { controls.hideAll(); main.removeCallbacks(hideControls); activity.currentFocus?.clearFocus() }
-            else toGuide()
+            if (controls.controlsShown) hideControlsNow() else toGuide()
             return true
         }
         if (guide.hasFocus()) { openSidebar(focus = true); return true }

@@ -92,7 +92,7 @@ class LiveParsersTest {
             {"num":"6","name":"Orphan","stream_id":"102","stream_icon":"","epg_channel_id":null,"category_id":"99"},
             {"num":7,"name":"Twice","stream_id":101}
         ]"""
-        val p = XtreamParser.live("pl", cats, streams) { id, _ -> "http://s/live/u/p/$id.ts" }
+        val p = XtreamParser.live("pl", cats, streams) { id, _ -> "http://s/live/u/p/$id.ts" }!!
         assertEquals(2, p.groups.size)
         assertEquals(2, p.channels.size) // the repeated stream_id is dropped
         val a = p.channels[0]
@@ -109,7 +109,32 @@ class LiveParsersTest {
         assertNull(b.epgRef)
     }
 
+    @Test fun xtreamAnswersThatArentListsAreAFailedUpdateNotAnEmptyPlaylist() {
+        val url = { id: String, _: String? -> id }
+        assertNull(XtreamParser.live("pl", "[]", "<html>Login failed</html>", url))
+        assertNull(XtreamParser.live("pl", "{\"error\":1}", "[]", url))
+        assertNull(XtreamParser.live("pl", "", "[]", url))
+        // A real empty answer is still allowed (a provider with no live channels).
+        assertEquals(0, XtreamParser.live("pl", "[]", " [] ", url)!!.channels.size)
+    }
+
     // ---- XMLTV ----------------------------------------------------------------------------------------------------
+
+    @Test fun xmltvProgrammesWithoutStopEndAtTheNextOne() {
+        val doc = """<tv>
+          <programme start="20261117180000 +0000" channel="a"><title>First</title></programme>
+          <programme start="20261117183000 +0000" channel="b"><title>Other</title></programme>
+          <programme start="20261117190000 +0000" channel="a"><title>Second</title></programme>
+        </tv>"""
+        val from = XmltvReader.epoch("20261117000000 +0000")
+        val until = XmltvReader.epoch("20261120000000 +0000")
+        val items = read(doc, setOf("a", "b"), from, until).associateBy { it.programme.title }
+        assertEquals(XmltvReader.epoch("20261117190000 +0000"), items["First"]!!.programme.stop)
+        // The last one of a channel gets an hour.
+        assertEquals(XmltvReader.epoch("20261117200000 +0000"), items["Second"]!!.programme.stop)
+        assertEquals(XmltvReader.epoch("20261117193000 +0000"), items["Other"]!!.programme.stop)
+    }
+
 
     private fun read(xml: String, wanted: Set<String>, from: Long, until: Long): List<XmltvReader.Item> {
         val parser = KXmlParser()

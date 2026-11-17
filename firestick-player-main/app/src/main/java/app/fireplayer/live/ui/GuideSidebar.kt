@@ -74,7 +74,13 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
 
     /** Focus on the current scope's entry (coming back from the grid). */
     fun focusCurrent() {
-        val i = items.indexOfFirst { scopeOf(it) == current }.coerceAtLeast(0)
+        var i = items.indexOfFirst { scopeOf(it) == current }
+        if (i < 0) {
+            // Its playlist was folded: open it, so focus lands on the current entry (not "All playlists", whose
+            // preview would switch the scope).
+            playlistOf(current)?.let { if (expanded.add(it)) rebuild() }
+            i = items.indexOfFirst { scopeOf(it) == current }.coerceAtLeast(0)
+        }
         (layoutManager as LinearLayoutManager).scrollToPositionWithOffset(i, height / 3)
         post { findViewHolderForAdapterPosition(i)?.itemView?.requestFocus() ?: getChildAt(0)?.requestFocus() }
     }
