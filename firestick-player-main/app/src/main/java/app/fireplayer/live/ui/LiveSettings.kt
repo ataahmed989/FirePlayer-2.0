@@ -56,6 +56,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         }
     }
 
+    // ---- Live FirePlayer Settings (the contextual window over Live TV) ---------------------------------------------
+
+    /** Live FirePlayer Settings: Playlists and EPG, Remote, Look, Defaults, Statuses, App (user spec). */
+    fun openPlayerSettings(shared: app.fireplayer.ui.SettingsPanels, onClose: (() -> Unit)? = null) = reloadThen {
+        panel.open("Settings", onClose) { renderPlaylists(this, onClose) }
+    }
+
     // ---- Playlists ------------------------------------------------------------------------------------------------
 
     fun openPlaylists(onClose: (() -> Unit)? = null) = reloadThen {

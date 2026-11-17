@@ -217,6 +217,23 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
     once turned on they stay on from channel to channel until turned off.
   - Guide: channel numbers up to five digits get a wider number column so the ▶ playing marker sits before the
     number. While a playlist's first guide is loading, its empty rows read "Loading the guide…".
+  - Update buttons (Update all playlists, Update playlist, Update EPG) dim and ignore presses while an update runs;
+    otherwise they show when the last update was (user request).
+- 2026-11-17 · User spec: two contextual player settings panels (VOD FirePlayer Settings, Live FirePlayer Settings)
+  and Individual Playlist Settings, in the existing panel design (rounded panels/rows, Figtree, blue accents, white
+  focused rows with blue text/icons, optional glass; classic keeps the original dark colours). Shared settings keep
+  one saved value wherever they appear. Settings not listed in the panels (skip intervals, Hold to speed up,
+  subtitle font options, …) are preserved and stay reachable from the app's main Settings page; their final
+  placement there is still to be planned. "This Channel / Program" (details, Picture & Sound, Source, Fix EPG Match)
+  is a proposal awaiting approval: not built. Automatic versus manual EPG fallback remains undecided (the current
+  automatic exact-id fallback stays provisional).
+- 2026-11-17 · User answers for that spec:
+  - "Include VOD" is shown in Xtream parameters, Off, and can't be turned on (not a feature yet; no playlist VOD
+    loading is designed).
+  - Multiview and external PiP buttons are shown dimmed until they're built.
+  - Manage groups: Hide/Show — a switch per group, "Hide all", "Show all", and a "Hide new groups" switch (groups a
+    later update adds start hidden). Reorder — hidden groups aren't listed; press a group to pick it up, move it
+    anywhere with Up/Down, press again to drop it; each group also has a "Move to top" button beside it.
 
 ## Concept references (local preview artifacts)
 

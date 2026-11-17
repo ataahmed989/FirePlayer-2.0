@@ -64,6 +64,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
          */
         fun setFilmGlass(on: Boolean)
         fun openPlaylists()
+        /** The Live FirePlayer Settings window over this page (Menu, or the Settings button in full screen). */
+        fun openPlayerSettings()
     }
 
     private val t = host.tokens

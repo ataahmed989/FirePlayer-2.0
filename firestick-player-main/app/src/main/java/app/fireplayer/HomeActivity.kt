@@ -274,6 +274,12 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         liveSettings.openPlaylists(onClose = { live.takeFocus() })
     }
 
+    /** Live FirePlayer Settings over the Live TV tab; focus returns where it was when it closes. */
+    override fun openPlayerSettings() {
+        val back = currentFocus
+        liveSettings.openPlayerSettings(settingsPanels, onClose = { if (back != null && back.isShown) back.requestFocus() else focusPage() })
+    }
+
     private fun openLink() {
         SidePanel.prompt(this, "Video link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) { text ->
             var link = text.trim()
@@ -484,6 +490,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             (if (style) styleRow else settingsRow).performClick()
             return
         }
+        // On the Live TV tab, Settings means Live FirePlayer Settings (user spec).
+        if (!style && rail.selected == NavRail.Tab.LIVE) return openPlayerSettings()
         val back = currentFocus
         val onClose: () -> Unit = { if (back != null && back.isShown) back.requestFocus() else focusPage() }
         if (style) panel.open("Subtitle style", onClose) { settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {}) }

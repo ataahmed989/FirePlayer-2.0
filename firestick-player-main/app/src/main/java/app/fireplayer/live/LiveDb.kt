@@ -44,9 +44,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 "output TEXT NOT NULL DEFAULT 'ts', include_live INTEGER NOT NULL DEFAULT 1, include_vod INTEGER NOT NULL DEFAULT 1, " +
                 "position INTEGER NOT NULL DEFAULT 0, update_hours INTEGER NOT NULL DEFAULT 24, last_sync INTEGER NOT NULL DEFAULT 0, " +
                 "last_status TEXT NOT NULL DEFAULT '', expires_at INTEGER NOT NULL DEFAULT 0, max_connections INTEGER NOT NULL DEFAULT 0, " +
-                "playlist_epg_url TEXT NOT NULL DEFAULT '') WITHOUT ROWID",
+                "playlist_epg_url TEXT NOT NULL DEFAULT '', hide_new_groups INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
         )
-        db.execSQL("CREATE TABLE channel_group(playlist_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, blocked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(playlist_id, id)) WITHOUT ROWID")
+        // blocked: hidden by the viewer (Manage groups); user_position: the viewer's order (null: the provider's).
+        db.execSQL("CREATE TABLE channel_group(playlist_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, blocked INTEGER NOT NULL DEFAULT 0, user_position INTEGER, PRIMARY KEY(playlist_id, id)) WITHOUT ROWID")
         db.execSQL(
             "CREATE TABLE channel(playlist_id TEXT NOT NULL, id TEXT NOT NULL, number INTEGER NOT NULL, name TEXT NOT NULL, logo TEXT, " +
                 "group_id TEXT, url TEXT NOT NULL, epg_ref TEXT, archive_days INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL, " +
@@ -83,6 +84,11 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             // Imports switch generations instead of renaming every row (existing rows are generation 0).
             db.execSQL("ALTER TABLE epg_status ADD COLUMN gen INTEGER NOT NULL DEFAULT 0")
         }
+        // Version 5: Manage groups (the viewer's order of groups; new groups hidden if asked).
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE channel_group ADD COLUMN user_position INTEGER")
+            db.execSQL("ALTER TABLE playlist ADD COLUMN hide_new_groups INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     // ---- Playlists --------------------------------------------------------------------------------------------
@@ -104,7 +110,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             put("name", p.name); put("kind", p.kind.code); put("url", p.url); put("username", p.username)
             put("password", p.password); put("epg_url", p.epgUrl); put("output", p.output)
             put("include_live", if (p.includeLive) 1 else 0); put("include_vod", if (p.includeVod) 1 else 0)
-            put("position", p.position); put("update_hours", p.updateHours)
+            put("position", p.position); put("update_hours", p.updateHours); put("hide_new_groups", if (p.hideNewGroups) 1 else 0)
         }
         if (db.update("playlist", v, "id = ?", arrayOf(p.id)) == 0) {
             v.put("id", p.id)
@@ -169,7 +175,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             // UPDATE then INSERT OR IGNORE, not "ON CONFLICT DO UPDATE": that needs SQLite 3.24, and Fire OS 5
             // (API 22, still supported) ships 3.8.
             val setGroup = db.compileStatement("UPDATE channel_group SET name = ?, position = ? WHERE playlist_id = ? AND id = ?")
-            val addGroup = db.compileStatement("INSERT OR IGNORE INTO channel_group(playlist_id, id, name, position) VALUES (?, ?, ?, ?)")
+            val addGroup = db.compileStatement("INSERT OR IGNORE INTO channel_group(playlist_id, id, name, position, blocked) VALUES (?, ?, ?, ?, ?)")
+            // "Hide new groups": groups a later update adds start hidden (on the first update every group is new).
+            val hideNew = db.rawQuery("SELECT hide_new_groups FROM playlist WHERE id = ?", arrayOf(playlistId)).use { it.moveToFirst() && it.getInt(0) != 0 } &&
+                db.rawQuery("SELECT 1 FROM channel_group WHERE playlist_id = ? LIMIT 1", arrayOf(playlistId)).use { it.moveToFirst() }
             val seenGroup = db.compileStatement("INSERT OR IGNORE INTO seen_group(id) VALUES (?)")
             for (g in parsed.groups) {
                 setGroup.clearBindings()
@@ -177,6 +186,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 if (setGroup.executeUpdateDelete() == 0) {
                     addGroup.clearBindings()
                     addGroup.bindString(1, playlistId); addGroup.bindString(2, g.id); addGroup.bindString(3, g.name); addGroup.bindLong(4, g.position.toLong())
+                    addGroup.bindLong(5, if (hideNew) 1 else 0)
                     addGroup.executeInsert()
                 }
                 seenGroup.clearBindings(); seenGroup.bindString(1, g.id); seenGroup.executeInsert()
@@ -330,10 +340,56 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
 
     // ---- Guide reads ---------------------------------------------------------------------------------------------
 
-    fun groups(playlistId: String): List<ChannelGroup> =
-        readableDatabase.rawQuery("SELECT id, name, position FROM channel_group WHERE playlist_id = ? ORDER BY position", arrayOf(playlistId)).use { c ->
-            buildList { while (c.moveToNext()) add(ChannelGroup(playlistId, c.getString(0), c.getString(1), c.getInt(2))) }
+    /** The groups the guide's column lists: shown ones, in the viewer's order (the provider's where none is set). */
+    fun groups(playlistId: String): List<ChannelGroup> = groupsWhere(playlistId, "AND blocked = 0")
+
+    /** Every group, hidden ones too (Manage groups). */
+    fun allGroups(playlistId: String): List<ChannelGroup> = groupsWhere(playlistId, "")
+
+    private fun groupsWhere(playlistId: String, filter: String): List<ChannelGroup> =
+        readableDatabase.rawQuery(
+            "SELECT id, name, position, blocked FROM channel_group WHERE playlist_id = ? $filter ORDER BY user_position IS NULL, user_position, position",
+            arrayOf(playlistId),
+        ).use { c ->
+            buildList { while (c.moveToNext()) add(ChannelGroup(playlistId, c.getString(0), c.getString(1), c.getInt(2), hidden = c.getInt(3) != 0)) }
         }
+
+    fun setGroupHidden(playlistId: String, groupId: String, hidden: Boolean) {
+        val v = ContentValues().apply { put("blocked", if (hidden) 1 else 0) }
+        writableDatabase.update("channel_group", v, "playlist_id = ? AND id = ?", arrayOf(playlistId, groupId))
+    }
+
+    fun setAllGroupsHidden(playlistId: String, hidden: Boolean) {
+        val v = ContentValues().apply { put("blocked", if (hidden) 1 else 0) }
+        writableDatabase.update("channel_group", v, "playlist_id = ?", arrayOf(playlistId))
+    }
+
+    /** The viewer's order for [groupIds] (the shown groups, top first); groups not listed keep theirs. */
+    fun setGroupOrder(playlistId: String, groupIds: List<String>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val st = db.compileStatement("UPDATE channel_group SET user_position = ? WHERE playlist_id = ? AND id = ?")
+            groupIds.forEachIndexed { i, id ->
+                st.clearBindings(); st.bindLong(1, i.toLong()); st.bindString(2, playlistId); st.bindString(3, id); st.executeUpdateDelete()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Playlists in the viewer's order (top first). */
+    fun setPlaylistOrder(ids: List<String>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            ids.forEachIndexed { i, id -> db.update("playlist", ContentValues().apply { put("position", i) }, "id = ?", arrayOf(id)) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     /** The channels a guide scope lists, in guide order. Blocked channels are left out. */
     fun channels(scope: GuideScope): List<Channel> {
@@ -344,7 +400,9 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val (sql, args) = when (scope) {
             GuideScope.AllPlaylists -> error("handled above")
             is GuideScope.AllChannels ->
-                (select + "WHERE c.playlist_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId)
+                // Channels of hidden groups are left out (Manage groups).
+                (select + "WHERE c.playlist_id = ? AND c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
+                    "(SELECT id FROM channel_group WHERE playlist_id = ? AND blocked = 1)) ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
             is GuideScope.Favorites ->
                 (select + "WHERE c.playlist_id = ? AND f.channel_id IS NOT NULL AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
             is GuideScope.Group ->
@@ -446,6 +504,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         username = c.getString(4), password = c.getString(5), epgUrl = c.getString(6), output = c.getString(7),
         includeLive = c.getInt(8) != 0, includeVod = c.getInt(9) != 0, position = c.getInt(10), updateHours = c.getInt(11),
         lastSync = c.getLong(12), lastStatus = c.getString(13), expiresAt = c.getLong(14), maxConnections = c.getInt(15),
+        hideNewGroups = c.getInt(16) != 0,
     )
 
     private fun channelAt(c: Cursor) = Channel(
@@ -455,13 +514,13 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     )
 
     companion object {
-        private const val VERSION = 4
+        private const val VERSION = 5
         private const val TAG = "FirePlayerLive"
         const val RECENT_KEEP = 10
         private const val STAGING = "#new"
         private const val BATCH = 2_000
         private const val PLAYLIST_COLS = "id, name, kind, url, username, password, epg_url, output, include_live, include_vod, " +
-            "position, update_hours, last_sync, last_status, expires_at, max_connections"
+            "position, update_hours, last_sync, last_status, expires_at, max_connections, hide_new_groups"
 
         @Volatile private var instance: LiveDb? = null
 

@@ -39,6 +39,8 @@ data class Playlist(
     /** Provider-reported account details (read-only): when it expires, how many streams it allows. */
     val expiresAt: Long = 0,
     val maxConnections: Int = 0,
+    /** Manage groups: groups a later update adds start hidden. */
+    val hideNewGroups: Boolean = false,
 )
 
 data class ChannelKey(val playlistId: String, val channelId: String) {
@@ -74,7 +76,7 @@ data class Channel(
     val key get() = ChannelKey(playlistId, id)
 }
 
-data class ChannelGroup(val playlistId: String, val id: String, val name: String, val position: Int)
+data class ChannelGroup(val playlistId: String, val id: String, val name: String, val position: Int, val hidden: Boolean = false)
 
 data class Programme(
     val start: Long,
