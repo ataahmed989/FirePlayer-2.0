@@ -23,11 +23,14 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.Cue
 import androidx.media3.ui.SubtitleView
+import app.fireplayer.data.Dimmer
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.ui.LivePage
+import app.fireplayer.live.ui.LivePicture
 import app.fireplayer.live.ui.LiveSettings
 import app.fireplayer.playback.PlayerHost
+import app.fireplayer.player.PictureFit
 import app.fireplayer.shell.NavRail
 import app.fireplayer.shell.Tokens
 import app.fireplayer.shell.WallpaperView
@@ -81,8 +84,13 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private var videoTarget: RectF? = null
     private var videoFull = false
     private var videoRadius = 0f
+    /** Darkens the full-screen live picture (Screen dimmer), under the controls. */
+    private lateinit var liveDimmer: View
 
     private val player by lazy { PlayerHost.get(this) }
+    /** Display size (shared with the VOD player) and the screen dimmer's customs, read as the live picture is laid out. */
+    private val videoPrefs by lazy { Prefs(this) }
+    private val dimmer by lazy { Dimmer(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +101,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         root = findViewById(R.id.home_root)
         surface = findViewById(R.id.live_surface)
         captions = findViewById(R.id.live_captions)
+        liveDimmer = findViewById(R.id.live_dimmer)
         pages = findViewById(R.id.page_container)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
@@ -143,6 +152,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
+        // The dimmer may have been changed in the VOD player meanwhile.
+        applyLiveDim()
     }
 
     override fun onStop() {
@@ -155,6 +166,16 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     override val videoOwner: Any get() = surface
 
     override fun overlayOpen(): Boolean = panel.isOpen || FireDialog.isShowing(this)
+
+    override val sidePanel: SidePanel get() = panel
+
+    /** Glass made while the full-screen controls show the live picture is dimmed like the VOD player's glass. */
+    override val glassShowsFilm: Boolean get() = filmOn
+
+    override fun pictureChanged() {
+        layoutVideo()
+        applyLiveDim()
+    }
 
     override fun setFilmGlass(on: Boolean) {
         filmOn = on && Glass.on && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
@@ -362,9 +383,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         videoFull = full
         videoRadius = radius
         layoutVideo()
+        applyLiveDim()
     }
 
-    /** The surface fits the video's shape inside its target (black bars come from the window behind it). */
+    /**
+     * The surface fits the video's shape inside its target (black bars come from the window behind it). Full screen
+     * follows Display size, the VOD player's saved choice ([LivePicture]); a picture bigger than the screen (Fill
+     * screen, Zoom) starts above and left of it and the screen crops it.
+     */
     private fun layoutVideo() {
         val lp = surface.layoutParams as FrameLayout.LayoutParams
         val target = when {
@@ -380,28 +406,51 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             return
         }
         val size = player.status().videoSize
-        val aspect = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 16f / 9f
-        var w = target.width()
-        var h = w / aspect
-        if (h > target.height()) { h = target.height(); w = h * aspect }
-        lp.width = w.toInt()
-        lp.height = h.toInt()
-        lp.leftMargin = (target.left + (target.width() - w) / 2).toInt()
-        lp.topMargin = (target.top + (target.height() - h) / 2).toInt()
+        val aspect = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 0f
+        val mode = if (videoFull) videoPrefs.displayMode else PictureFit.NORMAL
+        val at = LivePicture.place(target.left, target.top, target.width(), target.height(), aspect, videoFull, mode)
+        lp.width = at.width
+        lp.height = at.height
+        lp.leftMargin = at.left
+        lp.topMargin = at.top
         lp.gravity = Gravity.TOP or Gravity.START
         surface.layoutParams = lp
         surface.visibility = View.VISIBLE
         wallpaper.setHole(target, if (videoFull) 0f else videoRadius, full = videoFull)
-        // Captions only over the full-screen picture (in the miniature they'd be too small to read).
+        // Captions only over the full-screen picture (in the miniature they'd be too small to read), and only over
+        // the part of it on screen.
         if (videoFull) {
-            captions.layoutParams = FrameLayout.LayoutParams(lp.width, lp.height).apply {
-                leftMargin = lp.leftMargin; topMargin = lp.topMargin; gravity = Gravity.TOP or Gravity.START
+            val shown = LivePicture.onScreen(at, root.width, root.height)
+            captions.layoutParams = FrameLayout.LayoutParams(shown.width, shown.height).apply {
+                leftMargin = shown.left; topMargin = shown.top; gravity = Gravity.TOP or Gravity.START
             }
             captions.visibility = View.VISIBLE
         } else {
             captions.setCues(emptyList())
             captions.visibility = View.GONE
         }
+    }
+
+    /**
+     * Screen dimmer, as the VOD player's applyDim: the full-screen live picture and its captions darken by the
+     * display amount (never the miniature, the controls or the windows), and glass by the glass amount. Only glass
+     * showing the live picture is dimmed ([glassShowsFilm]); the guide's glass over the wallpaper never is.
+     */
+    private fun applyLiveDim() {
+        val amounts = dimmer.amounts()
+        liveDimmer.alpha = amounts.display / 100f
+        liveDimmer.visibility = if (videoFull && amounts.display > 0) View.VISIBLE else View.GONE
+        val glass = amounts.glass / 100f
+        if (Glass.dim != glass) {
+            Glass.dim = glass
+            // Every glass shape reads it as it draws: draw them all again.
+            redrawAll(window.decorView)
+        }
+    }
+
+    private fun redrawAll(view: View) {
+        view.invalidate()
+        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
     }
 
     private var lastSize: VideoSize = VideoSize.UNKNOWN

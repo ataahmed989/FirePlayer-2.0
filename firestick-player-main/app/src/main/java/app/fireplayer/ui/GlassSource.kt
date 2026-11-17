@@ -33,6 +33,12 @@ interface GlassSource {
     /** An activity whose glass shows something other than a film (the app's own screens). */
     interface Host {
         val glassSource: GlassSource?
+
+        /**
+         * Its glass shows a live picture just now (Home's full-screen live controls): glass made meanwhile is dimmed
+         * by the screen dimmer's glass amount, as the VOD player's is ([Glass.inPlayer]).
+         */
+        val glassShowsFilm: Boolean get() = false
     }
 }
 

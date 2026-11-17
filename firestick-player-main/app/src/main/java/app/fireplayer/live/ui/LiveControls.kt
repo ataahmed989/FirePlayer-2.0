@@ -14,6 +14,7 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
@@ -39,7 +40,9 @@ import kotlin.math.roundToInt
  * buttons and pills, and names that appear under a button only while it's selected.
  *
  * Left: TV Guide and Channel History. While the channel is paused or behind live, Play/Pause and Go live come first
- * and push them along. Right: Captions and Favorite. Down opens more options (the chevron), as in the VOD player.
+ * and push them along. Right: Captions and Favorite. Down swaps them for the extra row under the chevron, as the VOD
+ * player's icon row: Multiview and External PiP (dimmed: not built yet), Audio, Audio delay, Display size, Screen
+ * dimmer, Sleep timer and Settings, each with its value under it. Up brings the buttons back.
  */
 class LiveControls(context: Context, private val t: Tokens) : FrameLayout(context) {
 
@@ -50,6 +53,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         fun onFavorite()
         fun onPlayPause()
         fun onGoLive()
+        /** An extra-row button ([AUDIO], [DISPLAY], …) was pressed; [from] is the button, for focus to come back to. */
+        fun onMore(key: String, from: View)
     }
 
     var actions: Actions? = null
@@ -91,9 +96,21 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     private val captionsValue: TextView = findViewById(R.id.live_cc_value)
     private val btnFavorite: ImageButton = findViewById(R.id.live_btn_favorite)
     private val favoriteLabel: TextView = findViewById(R.id.live_favorite_label)
+    private val mainRow: View = findViewById(R.id.live_main_row)
+    private val moreRow: LinearLayout = findViewById(R.id.live_more_row)
+    private val arrowDown: View = findViewById(R.id.live_arrow_down)
+    private val arrowUp: View = findViewById(R.id.live_arrow_up)
+
+    /** An extra-row button: the whole item (what takes focus), its round icon (the look's surface) and its value. */
+    private class MoreItem(val view: View, val icon: View, val value: TextView)
+    private val moreItems = LinkedHashMap<String, MoreItem>()
 
     /** Info only (after a channel change) versus the full controls. */
     var controlsShown = false
+        private set
+
+    /** The extra row is showing in place of the buttons. */
+    var moreShown = false
         private set
 
     /** Play/Pause and Go live are showing (the channel is paused or behind live). */
@@ -122,7 +139,47 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         btnFavorite.setOnClickListener { actions?.onFavorite() }
         // Left stops at the first button rather than wandering off the controls; right at the last.
         listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnCaptions, btnFavorite).forEach { if (it.id == View.NO_ID) it.id = generateViewId() }
+        buildMoreRow()
         applyLook()
+    }
+
+    /**
+     * The extra row, built as the VOD player builds its icon row (item_more: a round icon, its value under it, the
+     * whole item growing a little when selected). Multiview and External PiP are dimmed and passed over by the D-pad,
+     * as a settings row that can't be used is ([app.fireplayer.ui.SidePanel.row] with enabled = false).
+     */
+    private fun buildMoreRow() {
+        fun add(key: String, icon: Int, name: String, enabled: Boolean = true) {
+            val v = LayoutInflater.from(context).inflate(R.layout.item_more, moreRow, false)
+            val iconView = v.findViewById<ImageView>(R.id.more_icon)
+            iconView.setImageResource(icon)
+            v.contentDescription = name
+            val value = v.findViewById<TextView>(R.id.more_value)
+            value.text = name
+            if (enabled) {
+                v.setOnClickListener { actions?.onMore(key, v) }
+                focusEffect(v, MORE_GROW, null)
+            } else {
+                v.isFocusable = false
+                v.isClickable = false
+                v.alpha = DIMMED
+            }
+            moreRow.addView(v)
+            moreItems[key] = MoreItem(v, iconView.parent as View, value)
+        }
+        add(MULTIVIEW, R.drawable.ic_multiview, "Multiview", enabled = false)
+        add(PIP, R.drawable.ic_pip, "External PiP", enabled = false)
+        add(AUDIO, R.drawable.ic_audio, "Audio")
+        add(AUDIO_DELAY, R.drawable.ic_audio_delay, "Audio delay")
+        add(DISPLAY, R.drawable.ic_display, "Display size")
+        add(DIM, R.drawable.ic_dim, "Screen dimmer")
+        add(SLEEP, R.drawable.ic_sleep, "Sleep timer")
+        add(SETTINGS, R.drawable.ic_settings, "Settings")
+    }
+
+    /** The value shown under an extra-row button. */
+    fun setMoreValue(key: String, text: String) {
+        moreItems[key]?.value?.let { if (it.text.toString() != text) it.text = text }
     }
 
     private fun focusEffect(button: View, scale: Float, label: View?) {
@@ -144,6 +201,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     fun applyLook() {
         for (b in listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnFavorite)) Glass.background(b, Glass.Kind.CIRCLE)
         Glass.background(btnCaptions, Glass.Kind.PILL)
+        // The extra row's round icons, as the VOD player's icon row.
+        for (item in moreItems.values) Glass.background(item.icon, Glass.Kind.MORE_ICON)
         for (chip in listOf(chipResolution, chipFps, chipFormat, chipAudio, chipSource)) Glass.background(chip, Glass.Kind.CHIP)
         chipsRow.clipChildren = !Glass.on
         (chipsRow as? ViewGroup)?.clipToPadding = !Glass.on
@@ -216,6 +275,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         pod(chipSource, "source", playlistName.takeIf { it.isNotBlank() })
         val cc = s.captions.firstOrNull { it.selected }
         captionsValue.text = cc?.label ?: "Off"
+        // As the VOD player's Audio item: the track playing, or just "Audio".
+        setMoreValue(AUDIO, s.audioTracks.firstOrNull { it.selected }?.label ?: "Audio")
         setCatchUp(s.paused, s.behindLive)
     }
 
@@ -245,7 +306,10 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
 
     // ---- Visibility -----------------------------------------------------------------------------------------------
 
-    /** The full controls; focus on Play/Pause when it shows (paused), else on TV Guide, unless [focus] is given. */
+    /**
+     * The full controls; focus on Play/Pause when it shows (paused), else on TV Guide, unless [focus] is given. A
+     * [focus] in the extra row (a window opened from it closed) comes back to that row, as in the VOD player.
+     */
     fun showControls(focus: View? = null) {
         visibility = VISIBLE
         controlsShown = true
@@ -254,11 +318,13 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         scrimTop.visibility = VISIBLE
         scrimBottom.visibility = VISIBLE
         alpha = 1f
-        (focus ?: if (catchUpShown) btnPlay else guideButton).requestFocus()
+        val target = focus ?: firstButton()
+        if (target.parent === moreRow) showMoreRow(target, animate = false) else showMainRow(focusRow = false, animate = false)
+        target.requestFocus()
     }
 
     fun focusPlay() {
-        if (catchUpShown) btnPlay.requestFocus()
+        if (catchUpShown && !moreShown) btnPlay.requestFocus()
     }
 
     /** Only the channel and programme at the top (after a channel change): nothing takes focus. */
@@ -269,15 +335,95 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         scrimTop.visibility = VISIBLE
         bottom.visibility = GONE
         scrimBottom.visibility = GONE
+        // The buttons are what shows first next time, as the VOD player's controls do.
+        showMainRow(focusRow = false, animate = false)
     }
 
     fun hideAll() {
         visibility = GONE
         controlsShown = false
+        showMainRow(focusRow = false, animate = false)
     }
 
-    private companion object {
-        val EASE = DecelerateInterpolator(1.4f)
+    // ---- The extra row (VOD player's showMoreRow / showMainRow / swapRows) -----------------------------------------
+
+    /** The row's first button: Play/Pause while it shows, else TV Guide. */
+    private fun firstButton(): View = if (catchUpShown) btnPlay else guideButton
+
+    /** The extra row in place of the buttons; focus on [focus], else on its first button that can be used. */
+    fun showMoreRow(focus: View? = null, animate: Boolean = true) {
+        val changed = !moreShown
+        moreShown = true
+        swapRows(show = moreRow, hide = mainRow, showArrow = arrowUp, hideArrow = arrowDown, up = true, animate = animate && changed)
+        (focus ?: moreItems.values.firstOrNull { it.view.isFocusable }?.view)?.requestFocus()
+    }
+
+    /** The buttons again; [focusRow] puts focus on the first of them. */
+    fun showMainRow(focusRow: Boolean = true, animate: Boolean = true) {
+        val changed = moreShown
+        moreShown = false
+        swapRows(show = mainRow, hide = moreRow, showArrow = arrowDown, hideArrow = arrowUp, up = false, animate = animate && changed)
+        if (focusRow) firstButton().requestFocus()
+    }
+
+    /**
+     * Left from the extra row's first usable button goes to its last, right from the last to the first (the VOD
+     * player's icon row). Only on a [fresh] press, so holding the D-pad stops at the end instead of spinning round.
+     * True when the key was used here.
+     */
+    fun wrapMore(left: Boolean, fresh: Boolean): Boolean {
+        if (!moreShown) return false
+        val items = moreItems.values.map { it.view }.filter { it.visibility == VISIBLE && it.isFocusable }
+        val at = items.indexOfFirst { it.isFocused }
+        if (at < 0 || items.size < 2) return false
+        if (!(left && at == 0 || !left && at == items.size - 1)) return false
+        if (fresh) (if (left) items.last() else items.first()).requestFocus()
+        return true
+    }
+
+    /**
+     * Swaps the buttons and the extra row under the chevron as the VOD player does: the old row fades out drifting
+     * the way the D-pad pointed while the new one glides in from the other side, in 220 ms.
+     */
+    private fun swapRows(show: View, hide: View, showArrow: View, hideArrow: View, up: Boolean, animate: Boolean) {
+        val shift = resources.displayMetrics.density * 14f * (if (up) -1 else 1)
+        for (v in listOf(show, hide, showArrow, hideArrow)) v.animate().cancel()
+        show.visibility = VISIBLE
+        showArrow.visibility = VISIBLE
+        if (!animate) {
+            for (v in listOf(show, showArrow)) { v.alpha = 1f; v.translationY = 0f }
+            for (v in listOf(hide, hideArrow)) { v.visibility = GONE; v.alpha = 1f; v.translationY = 0f }
+            return
+        }
+        val ease = DecelerateInterpolator(1.6f)
+        if (show.alpha >= 1f) { show.alpha = 0f; show.translationY = -shift }
+        if (showArrow.alpha >= 1f) showArrow.alpha = 0f
+        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).withLayer().start()
+        showArrow.animate().alpha(1f).setStartDelay(80).setDuration(160).setInterpolator(ease).start()
+        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withLayer().withEndAction {
+            hide.visibility = GONE; hide.alpha = 1f; hide.translationY = 0f
+        }.start()
+        hideArrow.animate().alpha(0f).setStartDelay(0).setDuration(100).withEndAction {
+            hideArrow.visibility = GONE; hideArrow.alpha = 1f
+        }.start()
+    }
+
+    companion object {
+        private val EASE = DecelerateInterpolator(1.4f)
+        /** The VOD player's icon-row items grow this much when selected. */
+        private const val MORE_GROW = 1.06f
+        /** A button that can't be used yet, as a disabled settings row. */
+        private const val DIMMED = 0.38f
+
+        // The extra row's buttons, in order.
+        const val MULTIVIEW = "multiview"
+        const val PIP = "pip"
+        const val AUDIO = "audio"
+        const val AUDIO_DELAY = "audioDelay"
+        const val DISPLAY = "display"
+        const val DIM = "dim"
+        const val SLEEP = "sleep"
+        const val SETTINGS = "settings"
     }
 }
 

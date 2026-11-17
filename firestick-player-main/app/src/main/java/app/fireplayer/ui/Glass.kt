@@ -54,11 +54,15 @@ object Glass {
     fun drawable(context: Context, kind: Kind): Drawable =
         GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
 
-    /** Whether [context] is the player's (Home's glass is never dimmed: it has no film and no dimmer). */
+    /**
+     * Whether [context] is the player's, or a screen whose glass shows a live picture just now (Home's full-screen
+     * live controls, [GlassSource.Host.glassShowsFilm]): glass made there is dimmed by the screen dimmer. Home's glass
+     * over the wallpaper never is.
+     */
     fun inPlayer(context: Context): Boolean {
         var c: Context? = context
         while (c is ContextWrapper) {
-            if (c is Activity) return c is GlassBackdrop.Host
+            if (c is Activity) return c is GlassBackdrop.Host || (c as? GlassSource.Host)?.glassShowsFilm == true
             c = c.baseContext
         }
         return false
