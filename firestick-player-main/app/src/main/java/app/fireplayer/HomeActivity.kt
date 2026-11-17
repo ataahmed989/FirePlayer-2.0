@@ -369,6 +369,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun focusRail() = rail.focusSelected()
 
+    override fun railHasFocus(): Boolean = rail.hasFocus() || panel.isOpen
+
     // ---- Keys -----------------------------------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

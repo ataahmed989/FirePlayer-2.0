@@ -52,6 +52,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fun placeVideo(rect: RectF?, radius: Float, full: Boolean)
         fun setChromeVisible(visible: Boolean)
         fun focusRail()
+        fun railHasFocus(): Boolean
         fun openPlaylists()
     }
 
@@ -67,7 +68,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val guideLayer = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
     private val sidebarPanel = FrameLayout(ctx)
     val sidebar = GuideSidebar(ctx, t)
-    private val videoSlot = View(ctx)
+    /** Where the miniature goes. With nothing playing it's a panel with a hint; while playing it's see-through. */
+    private val videoSlot = t.label(ctx, 14f, color = t.textMuted).apply {
+        text = "Press OK on a channel to watch it here"
+        gravity = Gravity.CENTER
+        maxLines = 2
+        setPadding(t.dp(24), 0, t.dp(24), 0)
+    }
+    private var placedAt: RectF? = null
     private val details = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     private val detailChannel = t.label(ctx, 13f, t.semibold, t.textMuted)
     private val detailTitle = t.label(ctx, 19f, t.bold)
@@ -169,10 +177,21 @@ class LivePage(private val activity: Activity, private val host: Host) {
         Glass.background(emptyButton, Glass.Kind.PILL)
         guide.glass = Glass.on
         controls.applyLook()
+        if (placeholder == true) { placeholder = null; showSlotPlaceholder(true) }
     }
 
     private fun wire() {
-        videoSlot.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!fullScreen && root.isShown) placeMini() }
+        // The slot moves when the column opens or closes (its parent moves, not the slot within it): every layout pass
+        // compares where it is on screen with where the video was put.
+        root.viewTreeObserver.addOnGlobalLayoutListener {
+            if (fullScreen || !root.isShown) return@addOnGlobalLayoutListener
+            if (player.currentKey == null) {
+                if (placeholder != true) placeMini()
+                return@addOnGlobalLayoutListener
+            }
+            val r = rectOf(videoSlot) ?: return@addOnGlobalLayoutListener
+            if (r != placedAt) placeMini()
+        }
         guide.callbacks = object : GuideView.Callbacks {
             override fun onFocusMoved(channel: Channel, cell: Cell?) = showDetails(channel, cell)
             override fun onPick(channel: Channel, cell: Cell?) = pick(channel)
@@ -237,6 +256,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
         player.onScreenStopped()
+        placedAt = null
         main.removeCallbacks(idleToFull)
         main.removeCallbacks(clockTick)
         main.removeCallbacks(hideControls)
@@ -269,6 +289,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
                 sidebar.setData(pls, groups, scope)
                 loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
+                // First load after opening: focus wasn't placed yet (the page had nothing to focus).
+                if (!fullScreen && root.isShown && activity.currentFocus.let { it == null || !isInPage(it) && !host.railHasFocus() }) takeFocus()
             }
         }
     }
@@ -303,6 +325,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
             val map = db.programmes(channels, from, to)
             main.post { guide.putProgrammes(channels, map, from, to) }
         }
+    }
+
+    private fun isInPage(v: View): Boolean {
+        var p: View? = v
+        while (p != null) { if (p === root) return true; p = p.parent as? View }
+        return false
     }
 
     private fun showEmpty(noPlaylists: Boolean) {
@@ -376,8 +404,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private fun tune(channel: Channel): Boolean {
-        val playlist = playlists.firstOrNull { it.id == channel.playlistId } ?: return false
+    private fun tune(channel: Channel, known: Playlist? = null): Boolean {
+        val playlist = known ?: playlists.firstOrNull { it.id == channel.playlistId } ?: return false
         val result = player.tune(LiveSession.Source(channel.key.toString(), channel.url, playlist.id, playlist.maxConnections))
         if (result == LiveSession.Tune.NoConnection) {
             showNotice("This playlist's connection limit is reached")
@@ -389,10 +417,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         return true
     }
 
+    /**
+     * The channel last watched plays again in the miniature when Live TV opens with nothing playing (provisional:
+     * like TiviMate's "turn on last channel on app start", on by default here). Its playlist is read here too:
+     * the page's own list may not have loaded yet.
+     */
     private fun resumeLast(key: ChannelKey) {
         io.execute {
             val ch = db.channel(key) ?: return@execute
-            main.post { if (started && player.currentKey == null) tune(ch) }
+            val pl = db.playlist(ch.playlistId) ?: return@execute
+            main.post { if (started && player.currentKey == null) tune(ch, pl) }
         }
     }
 
@@ -409,9 +443,27 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun placeMini() {
-        if (playlists.isEmpty()) { host.placeVideo(null, 0f, false); return }
+        val playing = player.currentKey != null
+        if (playlists.isEmpty() || !playing) {
+            placedAt = null
+            host.placeVideo(null, 0f, false)
+            showSlotPlaceholder(true)
+            return
+        }
         val r = rectOf(videoSlot) ?: return
+        placedAt = r
+        showSlotPlaceholder(false)
         host.placeVideo(r, t.dpf(12f), false)
+    }
+
+    /** Whether the miniature's slot shows its placeholder panel (null: not decided yet, or the look changed). */
+    private var placeholder: Boolean? = null
+
+    private fun showSlotPlaceholder(on: Boolean) {
+        if (placeholder == on) return
+        placeholder = on
+        if (on) Glass.background(videoSlot, Glass.Kind.PANEL) else videoSlot.background = null
+        videoSlot.setTextColor(if (on) t.textMuted else 0)
     }
 
     private fun rectOf(v: View): RectF? {
@@ -438,6 +490,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         activity.currentFocus?.clearFocus()
         guideLayer.visibility = View.INVISIBLE
         host.setChromeVisible(false)
+        placedAt = null
         host.placeVideo(null, 0f, true)
         refreshControls()
         controls.showInfo()
@@ -499,7 +552,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun bumpControls() {
         main.removeCallbacks(hideControls)
-        main.postDelayed(hideControls, CONTROLS_MS)
+        val s = prefs.controlsHideSec
+        if (s > 0) main.postDelayed(hideControls, s * 1000L)
     }
 
     private fun showHistory() {
@@ -642,7 +696,6 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     companion object {
         private const val INFO_MS = 4_000L
-        private const val CONTROLS_MS = 6_000L
         private val HANDLED_UP = setOf(
             KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU,
@@ -690,6 +743,11 @@ class LivePrefs(context: Context) {
     var channelButtonsOnly: Boolean
         get() = sp.getBoolean("channel_buttons_only", false)
         set(v) = sp.edit().putBoolean("channel_buttons_only", v).apply()
+
+    /** Seconds the full-screen controls stay without a key press; 0 = until Back ("Panels timeout"). Default 6 s. */
+    var controlsHideSec: Int
+        get() = sp.getInt("controls_hide_s", 6)
+        set(v) = sp.edit().putInt("controls_hide_s", v).apply()
 
     /** Seconds without a key press before the guide's miniature goes full screen; 0 = never. Provisional: 30 s. */
     var fullScreenAfterSec: Int

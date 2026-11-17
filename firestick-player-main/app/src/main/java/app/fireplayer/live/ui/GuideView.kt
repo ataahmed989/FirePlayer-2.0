@@ -110,11 +110,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val keep = focus ?: channels.getOrNull(focusRow)?.key
         channels = list
         focusRow = list.indexOfFirst { it.key == keep }.coerceAtLeast(0)
+        // The time window catches up with now (it may have been opened a while ago), unless the viewer had moved
+        // ahead into later programmes.
         val now = clock()
-        if (cursor < now - GuideCells.SLOT_MS) {
-            windowStart = GuideCells.slotStart(now)
-            cursor = now
-        }
+        if (cursor < now) cursor = now
+        if (windowStart < GuideCells.slotStart(now)) windowStart = GuideCells.slotStart(now)
         windowX = 0f
         scrollY = targetScroll(focusRow).toFloat() * rowH
         requested = null
@@ -467,9 +467,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
                 cursor = now
                 notifyFocus()
             }
-            if (GuideCells.slotStart(now) > windowStart && cursor >= now) {
+            if (GuideCells.slotStart(now) > windowStart) {
                 windowStart = GuideCells.slotStart(now)
+                if (cursor < now) cursor = now
+                requested = null
                 ensureLoaded()
+                notifyFocus()
             }
             invalidate()
             postDelayed(this, 30_000)

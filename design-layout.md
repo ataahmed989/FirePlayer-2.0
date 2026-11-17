@@ -168,6 +168,21 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-17 · Assumption: glass on Home/guide blurs the stationary wallpaper once (cached), not live video.
 - 2026-11-17 · Assumption: test APKs are debug-signed (user: the original key is only needed for an update that
   installs over the existing FirePlayer).
+- 2026-11-17 · User: brand mark is the solid blue rounded play triangle (no lighter facet), colour #0068FC sampled
+  from the Home references; "FirePlayer" in bold white beside it when the rail is expanded. One mark only.
+- 2026-11-17 · Assumption (from the TiviMate checklist, "Panels timeout"): Live TV › Hide controls after 4 / 6 / 10 s /
+  Never, default 6 s. The quick info shown after a channel change hides after 4 s.
+- 2026-11-17 · Assumption: guide inactivity → full screen defaults to 30 s (the suggested value), adjustable in
+  Live TV › Full screen after no key presses (Never / 30 s / 1 / 2 / 5 min).
+- 2026-11-17 · Assumption: opening Live TV with nothing playing resumes the last channel in the miniature (like
+  TiviMate's "turn on last channel on app start"). Reversible; could become a setting.
+- 2026-11-17 · Assumption: until the top-right live window exists, leaving the Live TV tab stops live playback
+  (the stream is released and the channel remembered for when Live TV is opened again).
+- 2026-11-17 · Assumption: EPG keeps programmes from 1 day back to 3 days ahead (future horizon was open).
+- 2026-11-17 · Assumption: Left from the programme on air returns to the playlist/group column; browsing past
+  programmes (TiviMate's long Left) is not implemented yet.
+- 2026-11-17 · Assumption: the miniature has no transport controls (the generated concept's play/pause and
+  full-screen buttons were noted as not agreed); without a channel playing it shows a hint panel.
 
 ## Concept references (local preview artifacts)
 

@@ -96,7 +96,14 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         row("Name", pl.name) { edit("Name", pl.name) { v -> save(pl.copy(name = v.ifBlank { pl.name })) } }
         if (pl.kind == PlaylistKind.XTREAM) {
             header("Xtream Codes parameters")
-            row("Server", pl.url) { edit("Server address", pl.url, uri = true) { v -> save(pl.copy(url = v.trim())) } }
+            row("Server", pl.url) {
+                edit("Server address", pl.url, uri = true) { v ->
+                    val url = normalized(v)
+                    // A name made from the old address follows the new one; a name the viewer chose stays.
+                    val name = if (pl.name == hostName(pl.url)) hostName(url) else pl.name
+                    save(pl.copy(url = url, name = name))
+                }
+            }
             row("Username", pl.username) { edit("Username", pl.username) { v -> save(pl.copy(username = v.trim())) } }
             row("Password", if (pl.password.isNotEmpty()) "Set" else "Not set") {
                 SidePanel.prompt(activity, "Password", "", password = true) { v -> if (v.isNotEmpty()) save(pl.copy(password = v)) }
@@ -114,7 +121,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             })
         } else {
             header("M3U playlist")
-            row("Playlist link", pl.url) { edit("Playlist link", pl.url, uri = true) { v -> save(pl.copy(url = v.trim())) } }
+            row("Playlist link", pl.url) {
+                edit("Playlist link", pl.url, uri = true) { v ->
+                    val url = normalized(v)
+                    val name = if (pl.name == hostName(pl.url)) hostName(url) else pl.name
+                    save(pl.copy(url = url, name = name))
+                }
+            }
         }
         header("EPG sources")
         row("EPG link", pl.epgUrl.ifBlank { if (pl.kind == PlaylistKind.XTREAM) "The server's own" else "The playlist's own" }) {
@@ -243,6 +256,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             header("Remote")
             choice("Channel changing buttons", listOf("D-pad + channel buttons", "Channel buttons only"), if (prefs.channelButtonsOnly) 1 else 0) { i ->
                 prefs.channelButtonsOnly = i == 1
+            }
+            header("Full screen")
+            val hide = listOf(4, 6, 10, 0)
+            choice("Hide controls after", listOf("4 seconds", "6 seconds", "10 seconds", "Never"), hide.indexOf(prefs.controlsHideSec).let { if (it < 0) 1 else it }) { i ->
+                prefs.controlsHideSec = hide[i]
             }
             header("Guide")
             val secs = listOf(0, 30, 60, 120, 300)

@@ -137,32 +137,45 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             db.execSQL("DELETE FROM seen_channel")
             db.execSQL("DELETE FROM seen_group")
 
-            val upGroup = db.compileStatement(
-                "INSERT INTO channel_group(playlist_id, id, name, position) VALUES (?, ?, ?, ?) " +
-                    "ON CONFLICT(playlist_id, id) DO UPDATE SET name = excluded.name, position = excluded.position",
-            )
+            // UPDATE then INSERT OR IGNORE, not "ON CONFLICT DO UPDATE": that needs SQLite 3.24, and Fire OS 5
+            // (API 22, still supported) ships 3.8.
+            val setGroup = db.compileStatement("UPDATE channel_group SET name = ?, position = ? WHERE playlist_id = ? AND id = ?")
+            val addGroup = db.compileStatement("INSERT OR IGNORE INTO channel_group(playlist_id, id, name, position) VALUES (?, ?, ?, ?)")
             val seenGroup = db.compileStatement("INSERT OR IGNORE INTO seen_group(id) VALUES (?)")
             for (g in parsed.groups) {
-                upGroup.clearBindings()
-                upGroup.bindString(1, playlistId); upGroup.bindString(2, g.id); upGroup.bindString(3, g.name); upGroup.bindLong(4, g.position.toLong())
-                upGroup.executeInsert()
+                setGroup.clearBindings()
+                setGroup.bindString(1, g.name); setGroup.bindLong(2, g.position.toLong()); setGroup.bindString(3, playlistId); setGroup.bindString(4, g.id)
+                if (setGroup.executeUpdateDelete() == 0) {
+                    addGroup.clearBindings()
+                    addGroup.bindString(1, playlistId); addGroup.bindString(2, g.id); addGroup.bindString(3, g.name); addGroup.bindLong(4, g.position.toLong())
+                    addGroup.executeInsert()
+                }
                 seenGroup.clearBindings(); seenGroup.bindString(1, g.id); seenGroup.executeInsert()
             }
 
-            val upChannel = db.compileStatement(
-                "INSERT INTO channel(playlist_id, id, number, name, logo, group_id, url, epg_ref, archive_days, position) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(playlist_id, id) DO UPDATE SET number = excluded.number, " +
-                    "name = excluded.name, logo = excluded.logo, group_id = excluded.group_id, url = excluded.url, " +
-                    "epg_ref = excluded.epg_ref, archive_days = excluded.archive_days, position = excluded.position",
+            val setChannel = db.compileStatement(
+                "UPDATE channel SET number = ?, name = ?, logo = ?, group_id = ?, url = ?, epg_ref = ?, archive_days = ?, position = ? " +
+                    "WHERE playlist_id = ? AND id = ?",
+            )
+            val addChannel = db.compileStatement(
+                "INSERT OR IGNORE INTO channel(playlist_id, id, number, name, logo, group_id, url, epg_ref, archive_days, position) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             val seenChannel = db.compileStatement("INSERT OR IGNORE INTO seen_channel(id) VALUES (?)")
             for (c in parsed.channels) {
-                upChannel.clearBindings()
-                upChannel.bindString(1, playlistId); upChannel.bindString(2, c.id); upChannel.bindLong(3, c.number.toLong())
-                upChannel.bindString(4, c.name); bindOrNull(upChannel, 5, c.logo); bindOrNull(upChannel, 6, c.groupId)
-                upChannel.bindString(7, c.url); bindOrNull(upChannel, 8, c.epgRef); upChannel.bindLong(9, c.archiveDays.toLong())
-                upChannel.bindLong(10, c.position.toLong())
-                upChannel.executeInsert()
+                setChannel.clearBindings()
+                setChannel.bindLong(1, c.number.toLong()); setChannel.bindString(2, c.name); bindOrNull(setChannel, 3, c.logo)
+                bindOrNull(setChannel, 4, c.groupId); setChannel.bindString(5, c.url); bindOrNull(setChannel, 6, c.epgRef)
+                setChannel.bindLong(7, c.archiveDays.toLong()); setChannel.bindLong(8, c.position.toLong())
+                setChannel.bindString(9, playlistId); setChannel.bindString(10, c.id)
+                if (setChannel.executeUpdateDelete() == 0) {
+                    addChannel.clearBindings()
+                    addChannel.bindString(1, playlistId); addChannel.bindString(2, c.id); addChannel.bindLong(3, c.number.toLong())
+                    addChannel.bindString(4, c.name); bindOrNull(addChannel, 5, c.logo); bindOrNull(addChannel, 6, c.groupId)
+                    addChannel.bindString(7, c.url); bindOrNull(addChannel, 8, c.epgRef); addChannel.bindLong(9, c.archiveDays.toLong())
+                    addChannel.bindLong(10, c.position.toLong())
+                    addChannel.executeInsert()
+                }
                 seenChannel.clearBindings(); seenChannel.bindString(1, c.id); seenChannel.executeInsert()
             }
 
