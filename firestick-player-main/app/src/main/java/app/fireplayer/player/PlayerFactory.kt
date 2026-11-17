@@ -152,6 +152,41 @@ object PlayerFactory {
     }
 
     /**
+     * A player for live channels (Live TV guide miniature and full screen share this one player). Same decoders and
+     * sound handling as films (hardware first, FFmpeg for sound the TV can't decode, passthrough as set), but a short
+     * live buffer so a channel starts in a second or two, and plain HTTP: live links are often tokenised, so a
+     * remembered redirect ([RedirectMemoryDataSource]) could replay an expired token. No libass, no frame-rate or
+     * vsync machinery here: those belong to the full-screen film player.
+     */
+    fun buildLive(context: Context, headers: Map<String, String>, passthrough: Boolean): ExoPlayer {
+        val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
+        val http = DefaultHttpDataSource.Factory()
+            .setUserAgent(userAgent ?: "FirePlayer/2.0 (Linux; Android) ExoPlayer")
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(10_000)
+            .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
+        val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), DefaultExtractorsFactory())
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
+        val loadControl = DefaultLoadControl.Builder()
+            // Starts after 1.5 s of picture (3 s after a stall), keeps up to 30 s ahead.
+            .setBufferDurationsMs(15_000, 30_000, 1_500, 3_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val renderers = LiveRenderersFactory(context, passthrough)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
+        return ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSources)
+            .setRenderersFactory(renderers)
+            .setLoadControl(loadControl)
+            .setHandleAudioBecomingNoisy(true)
+            .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .build()
+    }
+
+    /**
      * Builds a player tuned for streaming on a Fire TV:
      * hardware decoders first, FFmpeg for audio the device can't decode, a deeper
      * buffer for IPTV streams, and libass for styled ASS/SSA subtitles.
@@ -613,6 +648,19 @@ class ServerSwitch {
 
 /** Lets the user turn surround passthrough off, so FFmpeg decodes to stereo/PCM instead. */
 @OptIn(UnstableApi::class)
+/** Renderers for live channels: the film's decoders and sound choice, without its pacing and speech taps. */
+private class LiveRenderersFactory(context: Context, private val passthrough: Boolean) : DefaultRenderersFactory(context) {
+    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink? {
+        if (passthrough) return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+        @Suppress("DEPRECATION")
+        return DefaultAudioSink.Builder()
+            .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+            .setEnableFloatOutput(enableFloatOutput)
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .build()
+    }
+}
+
 private class TvRenderersFactory(
     context: Context,
     private val passthrough: Boolean,

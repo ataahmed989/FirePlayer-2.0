@@ -11,7 +11,7 @@ import app.fireplayer.titles.TitleBook
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Where [SmartPlayOrchestrator] hands a confirmed source; [app.fireplayer.PlayerHost] implements it. */
+/** Where [SmartPlayOrchestrator] hands a confirmed source; the VOD player will implement it (step 4). */
 interface PlaybackSink {
     fun play(uri: Uri, startPositionMs: Long, headers: Map<String, String>, spec: MediaSpec)
 }

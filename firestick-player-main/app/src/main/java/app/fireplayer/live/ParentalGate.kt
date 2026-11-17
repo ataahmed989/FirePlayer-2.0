@@ -23,7 +23,7 @@ class ParentalGate(context: Context) {
     private val app = context.applicationContext
     private val secrets: SharedPreferences = app.getSharedPreferences(KeyStore.FILE, Context.MODE_PRIVATE)
     private val settings: SharedPreferences = app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
-    private val live = LiveDb(app)
+    private val live = LiveDb.get(app)
 
     init {
         val db = live.writableDatabase

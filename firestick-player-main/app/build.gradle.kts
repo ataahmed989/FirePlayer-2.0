@@ -72,5 +72,8 @@ dependencies {
     implementation(libs.ass.media)
     implementation(libs.ffmpeg.decoder)
     implementation(libs.mlkit.text.recognition)
+    implementation(libs.androidx.recyclerview)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    testImplementation(libs.kxml2)
 }

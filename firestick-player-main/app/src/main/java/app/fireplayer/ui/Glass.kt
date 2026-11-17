@@ -64,11 +64,14 @@ object Glass {
         return false
     }
 
-    /** The blurred film of the player this view belongs to, or null where there's none (Home): glass is then dark. */
-    fun backdropFor(context: Context): GlassBackdrop? {
+    /**
+     * The blurred film of the player this view belongs to, the blurred wallpaper of the app's own screens
+     * ([GlassSource.Host]), or null where there's neither: glass is then dark.
+     */
+    fun backdropFor(context: Context): GlassSource? {
         var c: Context? = context
         while (c is ContextWrapper) {
-            if (c is Activity) return (c as? GlassBackdrop.Host)?.glassBackdrop
+            if (c is Activity) return (c as? GlassBackdrop.Host)?.glassBackdrop ?: (c as? GlassSource.Host)?.glassSource
             c = c.baseContext
         }
         return null

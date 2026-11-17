@@ -1,0 +1,698 @@
+package app.fireplayer.live.ui
+
+import android.app.Activity
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
+import android.text.format.DateFormat
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import app.fireplayer.live.Channel
+import app.fireplayer.live.ChannelGroup
+import app.fireplayer.live.ChannelKey
+import app.fireplayer.live.GuideScope
+import app.fireplayer.live.LiveDb
+import app.fireplayer.live.LiveSync
+import app.fireplayer.live.Playlist
+import app.fireplayer.live.Programme
+import app.fireplayer.playback.LiveSession
+import app.fireplayer.playback.PlayerHost
+import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Glass
+import java.util.Date
+import java.util.concurrent.Executors
+
+/**
+ * The Live TV tab: one experience of guide and player (design-layout, "Live TV guide and playback").
+ *
+ * Guide: playlist/group column, the miniature top left with the selected programme's details beside it, and the
+ * compact grid below. The column collapses while the grid has focus. First Center on another channel tunes it in the
+ * miniature; Center on the playing channel opens full screen; holding Back opens full screen; so does a period
+ * without key presses ([LivePrefs.fullScreenAfterSec]). The miniature and full screen are the same player and
+ * surface, so going between them never retunes.
+ *
+ * Full screen: with the controls hidden, Up/Down and Channel +/- change channel (or only Channel +/- when
+ * "Channel buttons only" is set, and then Up/Down show the controls); Center shows the controls; Back returns to
+ * the guide with its group, channel and time as they were. With the controls shown, the D-pad moves round them and
+ * Back hides them first.
+ */
+class LivePage(private val activity: Activity, private val host: Host) {
+
+    interface Host {
+        val tokens: Tokens
+        /** Live video at [rect] (root coordinates) with rounded corners, or the whole screen, or nowhere (null). */
+        fun placeVideo(rect: RectF?, radius: Float, full: Boolean)
+        fun setChromeVisible(visible: Boolean)
+        fun focusRail()
+        fun openPlaylists()
+    }
+
+    private val t = host.tokens
+    private val ctx: Context = activity
+    private val db = LiveDb.get(ctx)
+    private val sync = LiveSync.get(ctx)
+    private val player = PlayerHost.get(ctx)
+    private val prefs = LivePrefs(ctx)
+    private val main = Handler(Looper.getMainLooper())
+
+    val root = FrameLayout(ctx)
+    private val guideLayer = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+    private val sidebarPanel = FrameLayout(ctx)
+    val sidebar = GuideSidebar(ctx, t)
+    private val videoSlot = View(ctx)
+    private val details = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+    private val detailChannel = t.label(ctx, 13f, t.semibold, t.textMuted)
+    private val detailTitle = t.label(ctx, 19f, t.bold)
+    private val detailTime = t.label(ctx, 14f)
+    private val detailBar = ProgressLine(ctx, t)
+    private val detailLeft = t.label(ctx, 14f, color = t.textMuted)
+    private val detailDesc = t.label(ctx, 14f, color = t.textMuted).apply { maxLines = 3 }
+    private val detailNext = t.label(ctx, 14f, color = t.textMuted)
+    private val gridPanel = FrameLayout(ctx)
+    val guide = GuideView(ctx, t)
+    private val controls = LiveControls(ctx, t)
+    private val empty = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+    private val emptyText = t.label(ctx, 18f, t.semibold).apply { maxLines = 3; gravity = Gravity.CENTER }
+    private val emptyButton = t.label(ctx, 16f, t.semibold)
+    private val notice = t.label(ctx, 15f).apply { maxLines = 2 }
+
+    private val logos = LogoCache(t.dp(76)) { guide.invalidate(); refreshControls() }
+    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
+
+    private var playlists: List<Playlist> = emptyList()
+    private var scope: GuideScope = prefs.scope ?: GuideScope.AllPlaylists
+    private var fullScreen = false
+    private var sidebarOpen = true
+    private var started = false
+    private var backLongPressed = false
+    private var focusBeforeFull: ChannelKey? = null
+    private var zappedInFull = false
+    private var detailCell: Cell? = null
+    private var detailChannelObj: Channel? = null
+    private var loadSerial = 0
+
+    init {
+        build()
+        wire()
+    }
+
+    // ---- Layout ---------------------------------------------------------------------------------------------------
+
+    private fun build() {
+        val m = t.dp(12)
+        // Column: playlists and groups.
+        sidebarPanel.addView(sidebar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        guideLayer.addView(sidebarPanel, LinearLayout.LayoutParams(t.dp(212), ViewGroup.LayoutParams.MATCH_PARENT).apply { rightMargin = t.dp(10) })
+
+        val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val topRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        val previewH = t.dp(140)
+        topRow.addView(videoSlot, LinearLayout.LayoutParams(previewH * 16 / 9, previewH))
+        details.setPadding(t.dp(16), t.dp(10), t.dp(16), t.dp(10))
+        details.addView(detailChannel)
+        details.addView(detailTitle, lp(top = 6))
+        val timeRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(detailTime)
+            addView(detailBar, LinearLayout.LayoutParams(t.dp(56), t.dp(8)).apply { leftMargin = t.dp(12); rightMargin = t.dp(10) })
+            addView(detailLeft)
+        }
+        details.addView(timeRow, lp(top = 6))
+        details.addView(detailDesc, lp(top = 8))
+        details.addView(detailNext, lp(top = 6))
+        topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(12) })
+        right.addView(topRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, previewH))
+        gridPanel.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6))
+        gridPanel.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        right.addView(gridPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = t.dp(10) })
+        guideLayer.addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(m, m, m, m) })
+
+        // Nothing to show yet: a way to add a playlist.
+        emptyButton.apply {
+            text = "Add a playlist"
+            isFocusable = true
+            setPadding(t.dp(22), t.dp(10), t.dp(22), t.dp(10))
+            setTextColor(android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text)))
+            Glass.background(this, Glass.Kind.PILL)
+            setOnClickListener { host.openPlaylists() }
+        }
+        empty.addView(emptyText)
+        empty.addView(emptyButton, lp(top = 18).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        root.addView(empty, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        empty.visibility = View.GONE
+
+        notice.setPadding(t.dp(16), t.dp(10), t.dp(16), t.dp(10))
+        root.addView(controls, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(notice, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = t.dp(30) })
+        notice.visibility = View.GONE
+        applyLook()
+    }
+
+    private fun lp(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(top) }
+
+    /** Panels get the look's surface (glass over the blurred wallpaper, or the original dark panel). */
+    fun applyLook() {
+        Glass.background(sidebarPanel, Glass.Kind.PANEL)
+        Glass.background(details, Glass.Kind.PANEL)
+        Glass.background(gridPanel, Glass.Kind.PANEL)
+        Glass.background(notice, Glass.Kind.POPUP)
+        Glass.background(emptyButton, Glass.Kind.PILL)
+        guide.glass = Glass.on
+        controls.applyLook()
+    }
+
+    private fun wire() {
+        videoSlot.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!fullScreen && root.isShown) placeMini() }
+        guide.callbacks = object : GuideView.Callbacks {
+            override fun onFocusMoved(channel: Channel, cell: Cell?) = showDetails(channel, cell)
+            override fun onPick(channel: Channel, cell: Cell?) = pick(channel)
+            override fun onLeaveLeft() = openSidebar(focus = true)
+            override fun needProgrammes(channels: List<Channel>, from: Long, to: Long) = loadProgrammes(channels, from, to)
+            override fun logo(url: String): Bitmap? = logos.get(url)
+        }
+        guide.setOnFocusChangeListener { _, has -> if (has) closeSidebar() }
+        sidebar.callbacks = object : GuideSidebar.Callbacks {
+            override fun onScope(scope: GuideScope, enter: Boolean) {
+                if (scope != this@LivePage.scope) {
+                    this@LivePage.scope = scope
+                    prefs.scope = scope
+                    loadChannels(focus = null, enterGrid = enter)
+                } else if (enter) {
+                    guide.requestFocus()
+                }
+            }
+        }
+        controls.actions = object : LiveControls.Actions {
+            override fun onGuide() = toGuide()
+            override fun onHistory() = showHistory()
+            override fun onCaptions() = chooseCaptions()
+            override fun onFavorite() = toggleFavorite()
+            override fun onMore() = showMore()
+        }
+    }
+
+    // ---- Lifecycle ------------------------------------------------------------------------------------------------
+
+    private val statusListener = object : PlayerHost.Listener {
+        override fun onLiveStatus(status: PlayerHost.Status) {
+            guide.playingKey = ChannelKey.parse(status.key)
+            controls.setStatus(status)
+            status.error?.let { showNotice(it) }
+        }
+    }
+
+    private val dataListener = object : LiveSync.Listener {
+        override fun onLiveDataChanged(playlistId: String) = reload(keepFocus = true)
+    }
+
+    /** The tab is showing (activity started, or switched to this tab). */
+    fun start() {
+        if (started) return
+        started = true
+        player.addListener(statusListener)
+        sync.addListener(dataListener)
+        // A channel that was playing comes back in the miniature (not full screen).
+        if (!player.onScreenStarted() && player.currentKey == null) {
+            prefs.lastChannel?.let { key -> resumeLast(key) }
+        }
+        reload(keepFocus = true)
+        scheduleIdle()
+        main.post(clockTick)
+    }
+
+    /** The tab is hidden or the activity stopped: the stream is released, the channel remembered. */
+    fun stop() {
+        if (!started) return
+        started = false
+        player.removeListener(statusListener)
+        sync.removeListener(dataListener)
+        player.onScreenStopped()
+        main.removeCallbacks(idleToFull)
+        main.removeCallbacks(clockTick)
+        main.removeCallbacks(hideControls)
+        main.removeCallbacks(hideNotice)
+    }
+
+    fun release() {
+        stop()
+        io.shutdown()
+    }
+
+    /** Where focus goes when this tab is entered from the rail. */
+    fun takeFocus() {
+        if (playlists.isEmpty()) { emptyButton.requestFocus(); return }
+        if (sidebarOpen) sidebar.focusCurrent() else guide.requestFocus()
+    }
+
+    // ---- Data -----------------------------------------------------------------------------------------------------
+
+    private fun reload(keepFocus: Boolean) {
+        val serial = ++loadSerial
+        io.execute {
+            val pls = db.playlists()
+            val groups = pls.associate { it.id to db.groups(it.id) }
+            main.post {
+                if (serial != loadSerial) return@post
+                playlists = pls
+                showEmpty(pls.isEmpty())
+                if (pls.isEmpty()) return@post
+                if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
+                sidebar.setData(pls, groups, scope)
+                loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
+            }
+        }
+    }
+
+    private fun scopeValid(s: GuideScope, pls: List<Playlist>, groups: Map<String, List<ChannelGroup>>): Boolean = when (s) {
+        GuideScope.AllPlaylists -> true
+        is GuideScope.AllChannels -> pls.any { it.id == s.playlistId }
+        is GuideScope.Favorites -> pls.any { it.id == s.playlistId }
+        is GuideScope.Group -> groups[s.playlistId].orEmpty().any { it.id == s.groupId }
+    }
+
+    private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
+        val s = scope
+        val serial = ++loadSerial
+        io.execute {
+            val list = db.channels(s)
+            main.post {
+                if (serial != loadSerial) return@post
+                guide.clearProgrammes()
+                guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
+                if (list.isEmpty()) {
+                    showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
+                        if (sync.busy) "Updating the playlist…" else "No channels here.")
+                }
+                if (enterGrid && list.isNotEmpty()) guide.requestFocus()
+            }
+        }
+    }
+
+    private fun loadProgrammes(channels: List<Channel>, from: Long, to: Long) {
+        io.execute {
+            val map = db.programmes(channels, from, to)
+            main.post { guide.putProgrammes(channels, map, from, to) }
+        }
+    }
+
+    private fun showEmpty(noPlaylists: Boolean) {
+        empty.visibility = if (noPlaylists) View.VISIBLE else View.GONE
+        guideLayer.visibility = if (noPlaylists) View.INVISIBLE else View.VISIBLE
+        if (noPlaylists) {
+            emptyText.text = "Add a playlist to watch Live TV"
+            host.placeVideo(null, 0f, false)
+        } else if (!fullScreen) {
+            placeMini()
+        }
+    }
+
+    // ---- Guide ----------------------------------------------------------------------------------------------------
+
+    private fun showDetails(channel: Channel, cell: Cell?) {
+        detailChannelObj = channel
+        detailCell = cell
+        prefs.focus = channel.key
+        val p = cell?.programme
+        val tf = DateFormat.getTimeFormat(ctx)
+        val playlistName = playlists.firstOrNull { it.id == channel.playlistId }?.name
+        detailChannel.text = "${channel.number}  ${channel.name}" + (if (playlists.size > 1 && playlistName != null) " · $playlistName" else "")
+        if (p == null) {
+            detailTitle.text = channel.name
+            detailTime.text = "No programme information"
+            detailBar.visibility = View.GONE
+            detailLeft.text = ""
+            detailDesc.text = ""
+            detailNext.text = ""
+            return
+        }
+        val now = System.currentTimeMillis()
+        detailTitle.text = p.title.ifBlank { "Untitled" }
+        detailTime.text = "${tf.format(Date(p.start))} – ${tf.format(Date(p.stop))}"
+        val onAir = p.isOn(now)
+        detailBar.visibility = if (onAir) View.VISIBLE else View.GONE
+        detailBar.fraction = ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f)
+        detailLeft.text = when {
+            onAir -> "${(p.stop - now) / 60_000} min left"
+            p.start > now -> "in ${formatDelay(p.start - now)}"
+            else -> "Ended"
+        }
+        detailDesc.text = p.description ?: ""
+        val next = nextAfter(channel, p.stop)
+        detailNext.text = next?.let { "Next: ${it.title} · ${tf.format(Date(it.start))}" } ?: ""
+    }
+
+    private fun showDetailsEmpty(text: String) {
+        detailChannel.text = ""
+        detailTitle.text = text
+        detailTime.text = ""
+        detailBar.visibility = View.GONE
+        detailLeft.text = ""
+        detailDesc.text = ""
+        detailNext.text = ""
+    }
+
+    private fun formatDelay(ms: Long): String {
+        val min = ms / 60_000
+        return if (min < 60) "$min min" else "${min / 60} h ${min % 60} min"
+    }
+
+    private fun nextAfter(channel: Channel, at: Long): Programme? = guide.programmesOf(channel).firstOrNull { it.start >= at }
+
+    private fun pick(channel: Channel) {
+        if (channel.key.toString() == player.playingKey) {
+            toFull()
+        } else {
+            tune(channel)
+        }
+    }
+
+    private fun tune(channel: Channel): Boolean {
+        val playlist = playlists.firstOrNull { it.id == channel.playlistId } ?: return false
+        val result = player.tune(LiveSession.Source(channel.key.toString(), channel.url, playlist.id, playlist.maxConnections))
+        if (result == LiveSession.Tune.NoConnection) {
+            showNotice("This playlist's connection limit is reached")
+            return false
+        }
+        prefs.lastChannel = channel.key
+        io.execute { db.noteRecent(channel.key, System.currentTimeMillis()) }
+        if (!fullScreen) placeMini()
+        return true
+    }
+
+    private fun resumeLast(key: ChannelKey) {
+        io.execute {
+            val ch = db.channel(key) ?: return@execute
+            main.post { if (started && player.currentKey == null) tune(ch) }
+        }
+    }
+
+    private fun openSidebar(focus: Boolean) {
+        sidebarOpen = true
+        sidebarPanel.visibility = View.VISIBLE
+        if (focus) sidebar.focusCurrent()
+    }
+
+    private fun closeSidebar() {
+        if (!sidebarOpen) return
+        sidebarOpen = false
+        sidebarPanel.visibility = View.GONE
+    }
+
+    private fun placeMini() {
+        if (playlists.isEmpty()) { host.placeVideo(null, 0f, false); return }
+        val r = rectOf(videoSlot) ?: return
+        host.placeVideo(r, t.dpf(12f), false)
+    }
+
+    private fun rectOf(v: View): RectF? {
+        if (v.width == 0 || v.height == 0) return null
+        val loc = IntArray(2)
+        v.getLocationInWindow(loc)
+        val base = IntArray(2)
+        (root.rootView).getLocationInWindow(base)
+        val x = (loc[0] - base[0]).toFloat()
+        val y = (loc[1] - base[1]).toFloat()
+        return RectF(x, y, x + v.width, y + v.height)
+    }
+
+    // ---- Full screen ----------------------------------------------------------------------------------------------
+
+    fun toFull() {
+        if (player.playingKey == null || fullScreen) return
+        fullScreen = true
+        focusBeforeFull = guide.focusedChannel()?.key
+        zappedInFull = false
+        main.removeCallbacks(idleToFull)
+        // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
+        guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        activity.currentFocus?.clearFocus()
+        guideLayer.visibility = View.INVISIBLE
+        host.setChromeVisible(false)
+        host.placeVideo(null, 0f, true)
+        refreshControls()
+        controls.showInfo()
+        main.removeCallbacks(hideControls)
+        main.postDelayed(hideControls, INFO_MS)
+    }
+
+    fun toGuide() {
+        if (!fullScreen) return
+        fullScreen = false
+        controls.hideAll()
+        host.setChromeVisible(true)
+        guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        guideLayer.visibility = View.VISIBLE
+        placeMini()
+        // Back to where the guide was, unless the channel changed in full screen: then to that channel.
+        val playing = ChannelKey.parse(player.currentKey)
+        if (zappedInFull && playing != null) guide.focusChannel(playing)
+        else focusBeforeFull?.let { k -> if (guide.focusedChannel()?.key != k) guide.focusChannel(k) }
+        guide.requestFocus()
+        scheduleIdle()
+    }
+
+    private fun refreshControls() {
+        val key = ChannelKey.parse(player.currentKey) ?: return
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: detailChannelObj?.takeIf { it.key == key } ?: return
+        val progs = guide.programmesOf(ch)
+        val now = System.currentTimeMillis()
+        val cur = progs.firstOrNull { it.isOn(now) }
+        val nxt = progs.firstOrNull { it.start >= (cur?.stop ?: now) }
+        val plName = playlists.firstOrNull { it.id == ch.playlistId }?.name ?: ""
+        controls.setChannel(ch, cur, nxt, plName, ch.logo?.let { logos.get(it) }, now)
+    }
+
+    private fun zap(delta: Int) {
+        val list = guide.channelList()
+        if (list.isEmpty()) return
+        val cur = list.indexOfFirst { it.key.toString() == player.currentKey }
+        val next = list[Math.floorMod((if (cur < 0) 0 else cur) + delta, list.size)]
+        if (tune(next)) {
+            zappedInFull = true
+            guide.focusChannel(next.key)
+            refreshControls()
+            if (!controls.controlsShown) {
+                controls.showInfo()
+                main.removeCallbacks(hideControls)
+                main.postDelayed(hideControls, INFO_MS)
+            }
+        }
+    }
+
+    private val hideControls = Runnable { if (fullScreen) { controls.hideAll(); activity.currentFocus?.clearFocus() } }
+
+    private fun showControls() {
+        refreshControls()
+        controls.showControls()
+        bumpControls()
+    }
+
+    private fun bumpControls() {
+        main.removeCallbacks(hideControls)
+        main.postDelayed(hideControls, CONTROLS_MS)
+    }
+
+    private fun showHistory() {
+        io.execute {
+            val recent = db.recent().filter { it.key.toString() != player.currentKey }
+            main.post {
+                if (recent.isEmpty()) { showNotice("No other channels watched yet"); return@post }
+                FireDialog.choose(activity, "Channel History", recent.map { "${it.number}  ${it.name}" }, -1) { i ->
+                    recent.getOrNull(i)?.let { ch -> if (tune(ch)) { zappedInFull = true; refreshControls() } }
+                }
+            }
+        }
+    }
+
+    private fun chooseCaptions() {
+        val tracks = player.status().captions
+        if (tracks.isEmpty()) { showNotice("This channel has no captions"); return }
+        val options = listOf("Off") + tracks.map { it.label }
+        val selected = tracks.indexOfFirst { it.selected }.let { if (it < 0) 0 else it + 1 }
+        FireDialog.choose(activity, "Captions", options, selected) { i ->
+            player.selectCaption(if (i == 0) null else tracks.getOrNull(i - 1))
+        }
+    }
+
+    private fun toggleFavorite() {
+        val key = ChannelKey.parse(player.currentKey) ?: return
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: return
+        val fav = !ch.favorite
+        io.execute {
+            db.setFavorite(key, fav, System.currentTimeMillis())
+            val list = db.channels(scope)
+            main.post {
+                guide.updateChannels(list)
+                refreshControls()
+                showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
+            }
+        }
+    }
+
+    private fun showMore() {
+        val audio = player.status().audioTracks
+        val answers = ArrayList<Pair<String, () -> Unit>>()
+        if (audio.size > 1) answers += "Audio track" to {
+            FireDialog.choose(activity, "Audio track", audio.map { it.label }, audio.indexOfFirst { it.selected }) { i ->
+                audio.getOrNull(i)?.let { player.selectAudio(it) }
+            }
+        }
+        answers += "Back to the guide" to { toGuide() }
+        FireDialog.ask(activity, "More", answers)
+    }
+
+    private fun showNotice(text: String) {
+        notice.text = text
+        notice.visibility = View.VISIBLE
+        main.removeCallbacks(hideNotice)
+        main.postDelayed(hideNotice, 3_500)
+    }
+
+    private val hideNotice = Runnable { notice.visibility = View.GONE }
+
+    // ---- Idle and clock -------------------------------------------------------------------------------------------
+
+    private val idleToFull = Runnable { if (started && !fullScreen && root.isShown && !FireDialog.isShowing(activity)) toFull() }
+
+    private fun scheduleIdle() {
+        main.removeCallbacks(idleToFull)
+        val s = prefs.fullScreenAfterSec
+        if (s > 0 && !fullScreen) main.postDelayed(idleToFull, s * 1000L)
+    }
+
+    private val clockTick = object : Runnable {
+        override fun run() {
+            if (fullScreen && controls.visibility == View.VISIBLE) controls.tick(System.currentTimeMillis())
+            detailChannelObj?.let { showDetails(it, guide.focusedCell()) }
+            main.postDelayed(this, 15_000)
+        }
+    }
+
+    // ---- Keys -----------------------------------------------------------------------------------------------------
+
+    /** The activity hands every key here first while this tab shows. True when used. */
+    fun dispatchKey(event: KeyEvent): Boolean {
+        if (FireDialog.isShowing(activity)) return false
+        val down = event.action == KeyEvent.ACTION_DOWN
+        if (down) scheduleIdle()
+        val code = event.keyCode
+
+        if (code == KeyEvent.KEYCODE_BACK) return back(event)
+
+        if (!fullScreen) {
+            // Channel +/- in the guide page through channels.
+            return false
+        }
+
+        if (controls.controlsShown) {
+            if (down) bumpControls()
+            return false
+        }
+
+        // Full screen, controls hidden.
+        if (!down) return code in HANDLED_UP
+        val channelButtonsOnly = prefs.channelButtonsOnly
+        when (code) {
+            KeyEvent.KEYCODE_CHANNEL_UP -> zap(-1)
+            KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(+1)
+            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) showControls() else zap(-1)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) showControls() else zap(+1)
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> {
+                if (event.repeatCount == 0) showControls()
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
+            KeyEvent.KEYCODE_GUIDE -> toGuide()
+            else -> return false
+        }
+        return true
+    }
+
+    private fun back(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            // Held Back in the guide: the playing channel goes full screen (design-layout).
+            if (!fullScreen && event.repeatCount >= 1 && !backLongPressed && player.playingKey != null) {
+                backLongPressed = true
+                toFull()
+                return true
+            }
+            return fullScreen || guide.hasFocus() || backLongPressed
+        }
+        // ACTION_UP
+        if (backLongPressed) { backLongPressed = false; return true }
+        if (fullScreen) {
+            if (controls.controlsShown) { controls.hideAll(); main.removeCallbacks(hideControls); activity.currentFocus?.clearFocus() }
+            else toGuide()
+            return true
+        }
+        if (guide.hasFocus()) { openSidebar(focus = true); return true }
+        return false
+    }
+
+    val isFullScreen get() = fullScreen
+
+    companion object {
+        private const val INFO_MS = 4_000L
+        private const val CONTROLS_MS = 6_000L
+        private val HANDLED_UP = setOf(
+            KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU,
+            KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_GUIDE,
+        )
+    }
+}
+
+/** A small rounded progress line (the details panel's programme progress). */
+class ProgressLine(context: Context, private val t: Tokens) : View(context) {
+    var fraction = 0f
+        set(v) { field = v; invalidate() }
+    private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val r = RectF()
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        val h = t.dpf(3f)
+        val cy = height / 2f
+        r.set(0f, cy - h / 2, width.toFloat(), cy + h / 2)
+        p.color = 0x40FFFFFF
+        canvas.drawRoundRect(r, h, h, p)
+        r.right = width * fraction
+        p.color = t.text
+        canvas.drawRoundRect(r, h, h, p)
+    }
+}
+
+/** The Live TV tab's own remembered state and its provisional settings (separate file: nothing existing changes). */
+class LivePrefs(context: Context) {
+    private val sp = context.getSharedPreferences("fireplayer_live", Context.MODE_PRIVATE)
+
+    var scope: GuideScope?
+        get() = GuideScope.decode(sp.getString("scope", null))
+        set(v) = sp.edit().putString("scope", v?.encode()).apply()
+
+    var focus: ChannelKey?
+        get() = ChannelKey.parse(sp.getString("focus", null))
+        set(v) = sp.edit().putString("focus", v?.toString()).apply()
+
+    var lastChannel: ChannelKey?
+        get() = ChannelKey.parse(sp.getString("last_channel", null))
+        set(v) = sp.edit().putString("last_channel", v?.toString()).apply()
+
+    /** "Channel changing buttons": false = D-pad + channel buttons (default), true = Channel buttons only. */
+    var channelButtonsOnly: Boolean
+        get() = sp.getBoolean("channel_buttons_only", false)
+        set(v) = sp.edit().putBoolean("channel_buttons_only", v).apply()
+
+    /** Seconds without a key press before the guide's miniature goes full screen; 0 = never. Provisional: 30 s. */
+    var fullScreenAfterSec: Int
+        get() = sp.getInt("full_after_s", 30)
+        set(v) = sp.edit().putInt("full_after_s", v).apply()
+}

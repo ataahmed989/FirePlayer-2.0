@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
  * reaches the glass at once instead of at the next refresh.
  */
-class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) {
+class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
 
     /** An activity whose glass shows its film. Others (Home) have no film: their glass gets the dark fill. */
     interface Host {
@@ -85,14 +85,14 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private var expiryAt = 0L
 
     /** Screen pixels per pixel of the blurred film, across and down. */
-    var screenScale = 8f
+    override var screenScale = 8f
         private set
-    var screenScaleY = 8f
+    override var screenScaleY = 8f
         private set
     /** Where the film's top-left corner is on screen. */
-    var originX = 0
+    override var originX = 0
         private set
-    var originY = 0
+    override var originY = 0
         private set
 
     private var disabled = false
@@ -179,7 +179,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
      * no fades, so moving round the controls, windows and Episodes has the TV's full attention and doesn't stutter.
      * The pictures don't age meanwhile; a fresh copy comes once the presses stop.
      */
-    var navigating = false
+    override var navigating = false
         private set
     private var navigatingSince = 0L
 
@@ -293,13 +293,13 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     // ---- For GlassDrawable (main thread) -------------------------------
 
     /** The blurred film to show now, or null for the dark fill (none yet, out of date, or copies impossible). */
-    fun frame(kind: Kind): Bitmap? = if (drawableAt(SystemClock.uptimeMillis())) frames[kind.ordinal] else null
+    override fun frame(kind: Kind): Bitmap? = if (drawableAt(SystemClock.uptimeMillis())) frames[kind.ordinal] else null
 
     /** During a fade, what the new film fades in over; null means the dark fill. */
-    fun previous(kind: Kind): Bitmap? = if (fadeFraction() < 1f) fadingFrom[kind.ordinal] else null
+    override fun previous(kind: Kind): Bitmap? = if (fadeFraction() < 1f) fadingFrom[kind.ordinal] else null
 
     /** How far the fade to the newest film is, from 0 to 1 (done). */
-    fun fadeFraction(): Float {
+    override fun fadeFraction(): Float {
         if (fadeStart == 0L) return 1f
         val length = if (fastFade) CUT_FADE_MS.toFloat() else crossfadeMs
         val clock = if (navigating) navigatingSince else SystemClock.uptimeMillis()
@@ -311,12 +311,12 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     /** Glass to repaint when a new copy arrives. Kept weakly: rows are thrown away on every key press. */
-    internal fun register(drawable: GlassDrawable) {
+    override fun register(drawable: GlassDrawable) {
         if (!released) drawables[drawable] = true
     }
 
     /** Called by each glass shape as it draws: glass on screen is what asks for copies. */
-    fun onGlassDrawn() {
+    override fun onGlassDrawn() {
         if (!started || !copiesPossible()) return
         val now = SystemClock.uptimeMillis()
         if (playing) startTicking(now)

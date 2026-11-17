@@ -1,41 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    The app shell. From back to front: the live video surface (behind the window: everything above it must leave a
+    hole where video shows), the stationary wallpaper (added in code; it leaves that hole), the pages, the tab rail
+    (drawn over the page when it widens), and the settings window.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/home_root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="#FF0E1013">
+    android:layout_height="match_parent">
 
-    <LinearLayout
-        android:id="@+id/home_column"
-        android:layout_width="360dp"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_vertical"
-        android:layout_marginStart="64dp"
-        android:orientation="vertical">
+    <SurfaceView
+        android:id="@+id/live_surface"
+        android:layout_width="1dp"
+        android:layout_height="1dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:fontFamily="@font/figtree_700"
-            android:text="@string/app_name"
-            android:textColor="@color/text"
-            android:textSize="30sp" />
+    <FrameLayout
+        android:id="@+id/wallpaper_host"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:layout_marginBottom="18dp"
-            android:lineSpacingExtra="3dp"
-            android:text="Open videos from TiviMate: Settings, Playback, External player, then pick FirePlayer."
-            android:textColor="@color/text_muted"
-            android:textSize="13sp" />
+    <FrameLayout
+        android:id="@+id/page_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginStart="76dp" />
 
-        <LinearLayout
-            android:id="@+id/home_list"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </LinearLayout>
+    <FrameLayout
+        android:id="@+id/rail_host"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:paddingStart="12dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:clipChildren="false"
+        android:clipToPadding="false" />
 
     <include
         android:id="@+id/panel"

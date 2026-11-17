@@ -42,7 +42,7 @@ import kotlin.math.sqrt
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
  * (two of each while fading), so moving focus and scrolling cost no more than the classic look.
  */
-class GlassDrawable(context: Context, val style: Glass.Kind, private val backdrop: GlassBackdrop?) : Drawable() {
+class GlassDrawable(context: Context, val style: Glass.Kind, private val backdrop: GlassSource?) : Drawable() {
 
     private val density = context.resources.displayMetrics.density
     private val focusable = style == Glass.Kind.CIRCLE || style == Glass.Kind.PILL ||
@@ -212,7 +212,7 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
      * Lines the film up with the screen. The view's layout position is used, not where an animation has moved
      * it: the side panel slides in with translationX, and its drawing isn't redone when the slide ends.
      */
-    private fun placeFilm(bd: GlassBackdrop) {
+    private fun placeFilm(bd: GlassSource) {
         val host = hostView() ?: return
         var x = 0
         var y = 0
