@@ -49,12 +49,16 @@ minute to arrive). Nothing here has been run on a Fire TV yet.
       white/blue; playing channel blue with ▶; expandable playlist/group column that collapses in the grid;
       miniature top left with details beside it — emulator (classic).
 - [x] Miniature playback: OK tunes; second OK on the playing channel opens full screen — emulator.
-- [~] Full-screen controls (top info, pods, tracker, TV Guide / History / Captions / Favorite, chevron) — emulator
-      classic; glass pending. Channel History, Captions and More open FireDialog lists (not yet screenshotted).
-- [~] Back from full screen → guide with focus/scope/time retained; hold Back → full screen; idle → full screen
-      (seen: 30 s idle switched to full screen) — partly verified on the emulator.
+- [x] Full-screen controls (top info, pods, tracker, TV Guide / History / Captions / Favorite, chevron) — emulator,
+      classic and glass, full width. In glass, the controls now blur the live picture (film glass, copied only while
+      the controls show) — built and committed after the glass screenshot, not yet re-shot.
+- [~] Channel History, Captions and More open FireDialog lists — implemented, not yet seen on the emulator.
+- [x] Hold Back → full screen; Back from full screen → guide with the same channel/programme focus, scope and time,
+      and the stream not retuned (its clock kept running) — emulator. Idle 30 s → full screen — emulator.
 - [~] Channel Up/Down and CH+/− zapping when controls are hidden — implemented, not yet exercised on the emulator.
-- [~] Glass and classic: same layout code; classic screenshots taken; glass screenshots pending.
+- [x] Glass and classic: same layout; screenshots of both (guide with miniature, full-screen controls). Remaining
+      geometry difference: glass panel corners are rounder than classic (existing glass renderer radius table).
+- [x] Test APK (debug-signed, ARM) delivered from 26ddfdf. It can't install over a release-signed FirePlayer.
 - [x] Independent review (4 dimensions, each finding verified): 35 confirmed findings fixed; 355 unit tests pass.
 
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
