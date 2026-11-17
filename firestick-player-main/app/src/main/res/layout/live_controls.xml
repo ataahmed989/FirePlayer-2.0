@@ -4,6 +4,7 @@
     the 21sp title and 15sp clock, Chip pods, the 4dp time line, 51dp play and 39dp round buttons 9dp apart, 39dp pills,
     and names that show under a button only while it's selected (ButtonLabel). Play/Pause and Go live appear at the
     start of the row only while the channel is paused or behind live; TV Guide and Channel History move along.
+    Down swaps the buttons for the extra row under the chevron (the VOD player's icon row); Up brings them back.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
@@ -407,6 +408,20 @@
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- The extra row (Down from the buttons), as the VOD player's icon row: item_more items spread across the
+                 width, filled in by LiveControls. Multiview and External PiP are dimmed until they're built. -->
+            <LinearLayout
+                android:id="@+id/live_more_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:visibility="gone" />
+
             <ImageView
                 android:id="@+id/live_arrow_down"
                 android:layout_width="20dp"
@@ -416,6 +431,18 @@
                 android:scaleType="fitXY"
                 android:src="@drawable/ic_chevron_down"
                 android:tint="@color/text_muted" />
+
+            <ImageView
+                android:id="@+id/live_arrow_up"
+                android:layout_width="20dp"
+                android:layout_height="14dp"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="-4dp"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY"
+                android:src="@drawable/ic_chevron_up"
+                android:tint="@color/text_muted"
+                android:visibility="gone" />
         </FrameLayout>
     </LinearLayout>
 </FrameLayout>

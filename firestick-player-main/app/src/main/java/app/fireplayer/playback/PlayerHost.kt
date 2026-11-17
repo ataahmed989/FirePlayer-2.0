@@ -21,6 +21,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import app.fireplayer.data.Prefs
+import app.fireplayer.player.Delays
 import app.fireplayer.player.PlayerFactory
 
 /**
@@ -75,6 +76,18 @@ class PlayerHost private constructor(context: Context) {
     private var cues: List<Cue> = emptyList()
     /** The captions on screen now (for a screen that starts showing them mid-line). */
     val currentCues: List<Cue> get() = cues
+    /** Read by the live player's video renderer on the playback thread (see [PlayerFactory.buildLive]). */
+    private val delays = Delays()
+    /** The channel the audio delay was set on: another channel starts at 0 ms, as each film does. */
+    private var delayKey: String? = null
+
+    /**
+     * Audio delay (full screen's Audio delay, microseconds; above zero the sound comes later), as the film player's.
+     * Changes apply while playing; kept while the same channel plays, back to 0 ms on another channel.
+     */
+    var audioDelayUs: Long
+        get() = delays.audioUs
+        set(v) { delays.audioUs = v }
 
     private val engine = object : LiveSession.Engine {
         override fun open(source: LiveSession.Source) = openStream(source)
@@ -248,6 +261,10 @@ class PlayerHost private constructor(context: Context) {
         // A fresh stream starts at live.
         paused = false
         behind = false
+        if (source.key != delayKey) {
+            delayKey = source.key
+            delays.audioUs = 0L
+        }
         val p = playerFor(source.headers)
         setCues(emptyList())
         p.setMediaItem(mediaItem(source))
@@ -275,7 +292,7 @@ class PlayerHost private constructor(context: Context) {
         val existing = player
         if (existing != null && builtHeaders == headers) return existing
         existing?.let { it.removeListener(playerListener); it.release() }
-        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough)
+        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough, delays)
         // Captions start off; the viewer turns them on from the Captions button (and they then stay on).
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)

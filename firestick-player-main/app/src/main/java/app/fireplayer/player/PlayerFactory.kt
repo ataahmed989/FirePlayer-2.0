@@ -163,8 +163,11 @@ object PlayerFactory {
      * live buffer so a channel starts in a second or two, and plain HTTP: live links are often tokenised, so a
      * remembered redirect ([RedirectMemoryDataSource]) could replay an expired token. No libass, no frame-rate or
      * vsync machinery here: those belong to the full-screen film player.
+     *
+     * [delays]: the audio delay (Audio delay in full screen) works as the film player's does, by giving the video
+     * renderer a shifted clock ([OffsetRenderer]); subtitle delays don't apply to live captions.
      */
-    fun buildLive(context: Context, headers: Map<String, String>, passthrough: Boolean): ExoPlayer {
+    fun buildLive(context: Context, headers: Map<String, String>, passthrough: Boolean, delays: Delays? = null): ExoPlayer {
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent ?: "FirePlayer/2.0 (Linux; Android) ExoPlayer")
@@ -188,7 +191,7 @@ object PlayerFactory {
             .setEnableDecoderFallback(true)
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSources)
-            .setRenderersFactory(renderers)
+            .setRenderersFactory(if (delays == null) renderers else LiveDelayRenderersFactory(renderers, delays))
             .setLoadControl(loadControl)
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
@@ -767,6 +770,30 @@ private class DelayRenderersFactory(
             OffsetRenderer(renderer) { delays.audioUs }
         else -> renderer
     }
+}
+
+/**
+ * The live player's renderers with the audio delay, done as [DelayRenderersFactory] does it for films: the video
+ * renderer sees a clock shifted by [Delays.audioUs], which moves the sound against the picture while playing.
+ */
+@OptIn(UnstableApi::class)
+private class LiveDelayRenderersFactory(
+    private val inner: RenderersFactory,
+    private val delays: Delays,
+) : RenderersFactory {
+    override fun createRenderers(
+        eventHandler: Handler,
+        videoRendererEventListener: VideoRendererEventListener,
+        audioRendererEventListener: AudioRendererEventListener,
+        textRendererOutput: TextOutput,
+        metadataRendererOutput: MetadataOutput,
+    ): Array<Renderer> = inner.createRenderers(
+        eventHandler,
+        videoRendererEventListener,
+        audioRendererEventListener,
+        textRendererOutput,
+        metadataRendererOutput,
+    ).map { if (it.trackType == C.TRACK_TYPE_VIDEO) OffsetRenderer(it) { delays.audioUs } else it }.toTypedArray()
 }
 
 @OptIn(UnstableApi::class)

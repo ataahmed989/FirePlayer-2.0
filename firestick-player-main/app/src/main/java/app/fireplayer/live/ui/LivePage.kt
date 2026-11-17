@@ -28,6 +28,7 @@ import app.fireplayer.playback.PlayerHost
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.SidePanel
 import java.util.Date
 import java.util.concurrent.Executors
 
@@ -43,7 +44,8 @@ import java.util.concurrent.Executors
  * Full screen: with the controls hidden, Up/Down and Channel +/- change channel (or only Channel +/- when
  * "Channel buttons only" is set, and then Up/Down show the controls); Center shows the controls; Back returns to
  * the guide with its group, channel and time as they were. With the controls shown, the D-pad moves round them and
- * Back hides them first.
+ * Back hides them first; Down swaps the buttons for the extra row ([LiveMore]: audio, display size, dimmer, sleep
+ * timer, settings) and Up brings them back, as in the VOD player.
  */
 class LivePage(private val activity: Activity, private val host: Host) {
 
@@ -66,6 +68,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fun openPlaylists()
         /** The Live FirePlayer Settings window over this page (Menu, or the Settings button in full screen). */
         fun openPlayerSettings()
+        /** The settings window on the right, where the full-screen extra row's windows open. */
+        val sidePanel: SidePanel
+        /** Display size or the screen dimmer changed: the full-screen picture is laid out and dimmed again. */
+        fun pictureChanged()
     }
 
     private val t = host.tokens
@@ -99,6 +105,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val gridPanel = FrameLayout(ctx)
     val guide = GuideView(ctx, t)
     private val controls = LiveControls(ctx, t)
+    /** The extra row's windows and the sleep timer. */
+    private val more = LiveMore(activity, host.sidePanel, player, controls, object : LiveMore.Callbacks {
+        override fun windowClosed(from: View) { backFromWindow(from) }
+        override fun pictureChanged() { host.pictureChanged() }
+        override fun programmeEnd(): Long? = programmeNow()?.stop
+        override fun sleepNow() { stopForSleep() }
+    })
     private val empty = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
     private val emptyText = t.label(ctx, 18f, t.semibold).apply { maxLines = 3; gravity = Gravity.CENTER }
     private val emptyButton = t.label(ctx, 16f, t.semibold)
@@ -239,6 +252,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onFavorite() = toggleFavorite()
             override fun onPlayPause() = togglePause()
             override fun onGoLive() = goLive()
+            override fun onMore(key: String, from: View) {
+                if (key == LiveControls.SETTINGS) host.openPlayerSettings() else more.open(key, from)
+            }
         }
     }
 
@@ -269,6 +285,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         reload(keepFocus = true)
         scheduleIdle()
         main.post(clockTick)
+        // A sleep timer that waited while the page was away carries on.
+        more.resume()
     }
 
     /** The tab is hidden or the activity stopped: the stream is released, the channel remembered. */
@@ -283,6 +301,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         main.removeCallbacks(clockTick)
         main.removeCallbacks(hideControls)
         main.removeCallbacks(hideNotice)
+        more.pause()
         // The controls' timer is gone: don't leave them up for the return.
         if (fullScreen) controls.hideAll()
         filmGlass(false)
@@ -292,6 +311,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     fun release() {
         stop()
+        more.release()
         released = true
         ++reloadSerial
         ++loadSerial
@@ -640,11 +660,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
+    /** The hide timer found a dialog or window open over the controls and waited for it. */
+    private var waitedForOverlay = false
+
     private val hideControls: Runnable = Runnable {
         if (!fullScreen) return@Runnable
         // A dialog or the settings window is open over the controls: wait for it rather than pulling focus out.
         if (FireDialog.isShowing(activity) || host.overlayOpen()) {
+            waitedForOverlay = true
             main.postDelayed(hideControls, 2_000)
+            return@Runnable
+        }
+        // It has closed since (focus is back on the button it came from): the controls get their full time again.
+        if (waitedForOverlay) {
+            bumpControls()
             return@Runnable
         }
         hideControlsNow()
@@ -668,10 +697,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The key that showed the controls, while it's held: its repeats and release don't also move round them. */
     private var revealKey = 0
 
-    private fun showControls() {
+    private fun showControls(focus: View? = null) {
         refreshControls()
+        more.refreshValues()
         filmGlass(true)
-        controls.showControls()
+        controls.showControls(focus)
         bumpControls()
     }
 
@@ -687,6 +717,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun bumpControls() {
         main.removeCallbacks(hideControls)
+        waitedForOverlay = false
         // Paused, the controls stay up (the picture is still and Play is what's wanted next).
         if (player.paused) return
         val s = prefs.controlsHideSec
@@ -764,16 +795,41 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private fun showMore() {
-        val audio = player.status().audioTracks
-        val answers = ArrayList<Pair<String, () -> Unit>>()
-        if (audio.size > 1) answers += "Audio track" to {
-            FireDialog.choose(activity, "Audio track", audio.map { it.label }, audio.indexOfFirst { it.selected }) { i ->
-                audio.getOrNull(i)?.let { player.selectAudio(it) }
-            }
+    /**
+     * A window opened from the extra row closed: focus goes back to its button (the controls stayed up while it was
+     * open), and the controls' timer starts again, as in the VOD player.
+     */
+    private fun backFromWindow(from: View) {
+        if (released || !fullScreen) return
+        if (controls.controlsShown) {
+            from.requestFocus()
+            more.refreshValues()
+            bumpControls()
+        } else {
+            showControls(from)
         }
-        answers += "Back to the guide" to { toGuide() }
-        FireDialog.ask(activity, "More", answers)
+    }
+
+    /** The programme on the playing channel now, from the guide (as the controls show it), or null. */
+    private fun programmeNow(): Programme? {
+        val key = ChannelKey.parse(player.currentKey) ?: return null
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return null
+        val now = System.currentTimeMillis()
+        val progs = guide.programmesOf(ch).ifEmpty { controlsProgrammes.takeIf { controlsProgrammesFor == ch.key }.orEmpty() }
+        return progs.firstOrNull { it.isOn(now) }
+    }
+
+    /**
+     * The sleep timer ran out: live playback stops (so nothing keeps streaming or holds the provider's connection),
+     * full screen goes back to the guide, and a note says why.
+     */
+    private fun stopForSleep() {
+        // Nothing playing any more (a film started meanwhile, say): nothing to stop or say.
+        if (released || player.currentKey == null) return
+        if (host.sidePanel.isOpen) host.sidePanel.close()
+        player.stop()
+        if (fullScreen) toGuide() else placeMini()
+        showNotice("Sleep timer: Live TV stopped")
     }
 
     private fun showNotice(text: String) {
@@ -842,12 +898,22 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 if (!down) revealKey = 0
                 return true
             }
-            // Down from the buttons: more options, as in the VOD player.
-            if (code == KeyEvent.KEYCODE_DPAD_DOWN) {
-                if (down && event.repeatCount == 0) showMore()
-                return true
-            }
             if (down) bumpControls()
+            when (code) {
+                // Down from the buttons: the extra row under the chevron, as in the VOD player; Up brings them back.
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (down && !controls.moreShown) controls.showMoreRow()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP -> if (controls.moreShown) {
+                    if (down) controls.showMainRow()
+                    return true
+                }
+                // Along the extra row, left from its first button goes round to the last and right from the last to
+                // the first.
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT ->
+                    if (down && controls.wrapMore(code == KeyEvent.KEYCODE_DPAD_LEFT, event.repeatCount == 0)) return true
+            }
             return false
         }
 
