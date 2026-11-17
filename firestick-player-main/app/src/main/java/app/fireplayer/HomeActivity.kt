@@ -375,6 +375,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun setChromeVisible(visible: Boolean) {
         findViewById<View>(R.id.rail_host).visibility = if (visible) View.VISIBLE else View.GONE
+        // Full screen: the page (and the live controls in it) spans the whole screen, not just right of the rail.
+        (pages.layoutParams as ViewGroup.MarginLayoutParams).let { lp ->
+            lp.marginStart = if (visible) tokens.dp(76) else 0
+            pages.layoutParams = lp
+        }
     }
 
     override fun focusRail() = rail.focusSelected()
