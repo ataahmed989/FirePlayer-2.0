@@ -58,7 +58,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         isFocusable = false
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
         clipToPadding = false
-        setPadding(t.dp(8), t.dp(10), t.dp(8), t.dp(10))
+        setPadding(t.dp(4), t.dp(6), t.dp(10), t.dp(10))
         overScrollMode = OVER_SCROLL_NEVER
     }
 
@@ -191,34 +191,40 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 isDuplicateParentStateEnabled = true
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
+            // A playlist's arrow sits before its name (the concepts): pointing right while folded, down while open.
             val chevron = ImageView(ctx).apply {
                 setImageResource(R.drawable.ic_chevron_down)
                 imageTintList = colors
                 isDuplicateParentStateEnabled = true
-                layoutParams = LinearLayout.LayoutParams(t.dp(18), t.dp(18))
+                layoutParams = LinearLayout.LayoutParams(t.dp(18), t.dp(18)).apply { rightMargin = t.dp(8) }
             }
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = t.dp(36)
+                minimumHeight = t.dp(34)
                 isFocusable = true
                 background = StateListDrawable().apply {
-                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { setColor(t.focusFill); cornerRadius = t.dpf(9f) })
+                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { setColor(t.focusFill); cornerRadius = t.dpf(10f) })
                     setEnterFadeDuration(Tokens.FADE_MS.toInt())
                     setExitFadeDuration(Tokens.FADE_MS.toInt())
                 }
-                layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = t.dp(2) }
-                addView(label)
+                layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = t.dp(1) }
                 addView(chevron)
+                addView(label)
             }
             return Holder(row, label, chevron)
         }
 
         override fun onBindViewHolder(h: Holder, position: Int) {
             val item = items[position]
-            val indent = if (item is Item.Entry) t.dp(26) else t.dp(14)
-            h.row.setPadding(indent, 0, t.dp(12), 0)
-            h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (item is Item.Entry) 14.5f else 15.5f)
+            // Playlist names a little larger than their groups (user); groups line up under the playlist's name.
+            val indent = when (item) {
+                Item.All -> t.dp(12)
+                is Item.Head -> t.dp(6)
+                is Item.Entry -> t.dp(32)
+            }
+            h.row.setPadding(indent, 0, t.dp(10), 0)
+            h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (item is Item.Entry) 14.5f else 16.5f)
             h.label.typeface = if (item is Item.Entry) t.regular else t.semibold
             h.label.text = when (item) {
                 Item.All -> "All playlists"
@@ -226,7 +232,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 is Item.Entry -> item.label
             }
             h.chevron.visibility = if (item is Item.Head) View.VISIBLE else View.GONE
-            if (item is Item.Head) h.chevron.rotation = if (item.expanded) 180f else 0f
+            if (item is Item.Head) h.chevron.rotation = if (item.expanded) 0f else -90f
             h.row.isSelected = scopeOf(item) == current
             h.row.contentDescription = when (item) {
                 is Item.Head -> "${item.playlist.name}, playlist, ${if (item.expanded) "expanded" else "collapsed"}"

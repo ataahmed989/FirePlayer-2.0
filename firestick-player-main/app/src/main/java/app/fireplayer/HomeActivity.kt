@@ -217,6 +217,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     private fun showTab(tab: NavRail.Tab) {
         rail.setSelected(tab)
+        pageInset(tab)
+        if (tab != NavRail.Tab.LIVE) setRailShown(true, 0L)
         val isLive = tab == NavRail.Tab.LIVE
         live.root.visibility = if (isLive) View.VISIBLE else View.GONE
         settingsPage.visibility = if (isLive) View.GONE else View.VISIBLE
@@ -497,10 +499,17 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     }
 
     override fun setChromeVisible(visible: Boolean) {
+        // Full screen hides the rail; back in the guide, Live TV shows or slides it itself (setRailShown).
         findViewById<View>(R.id.rail_host).visibility = if (visible) View.VISIBLE else View.GONE
-        // Full screen: the page (and the live controls in it) spans the whole screen, not just right of the rail.
+    }
+
+    /**
+     * Live TV lays out its own left side (the rail slides over it, the column and content move), so its page starts at
+     * the screen's edge; other tabs start right of the rail.
+     */
+    private fun pageInset(tab: NavRail.Tab) {
         (pages.layoutParams as ViewGroup.MarginLayoutParams).let { lp ->
-            lp.marginStart = if (visible) tokens.dp(76) else 0
+            lp.marginStart = if (tab == NavRail.Tab.LIVE) 0 else tokens.dp(76)
             pages.layoutParams = lp
         }
     }

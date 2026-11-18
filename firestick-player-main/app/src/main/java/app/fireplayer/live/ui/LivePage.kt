@@ -93,9 +93,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val main = Handler(Looper.getMainLooper())
 
     val root = FrameLayout(ctx)
-    private val guideLayer = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+    /** Everything but the full-screen controls: the groups column, and the content (miniature, details, guide). */
+    private val guideLayer = FrameLayout(ctx)
     private val sidebarPanel = FrameLayout(ctx)
+    /** A hairline at the column's right edge (glass), so the column reads as its own area without a panel. */
+    private val columnRule = View(ctx)
     val sidebar = GuideSidebar(ctx, t)
+    /** Miniature, details and guide: its left edge slides as the column opens and closes. */
+    private val content = FrameLayout(ctx)
     /** Where the miniature goes. With nothing playing it's a panel with a hint; while playing it's see-through. */
     private val videoSlot = t.label(ctx, 14f, color = t.textMuted).apply {
         text = "Press OK on a channel to watch it here"
@@ -104,15 +109,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
         setPadding(t.dp(24), 0, t.dp(24), 0)
     }
     private var placedAt: RectF? = null
+    /** Back from full screen while the content moves: the shrink waits for the layout that puts the slot in place. */
+    private var shrinkPending = false
     private val details = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-    private val detailChannel = t.label(ctx, 13f, t.semibold, t.textMuted)
-    private val detailTitle = t.label(ctx, 19f, t.bold)
-    private val detailTime = t.label(ctx, 14f)
+    private val detailChannel = t.label(ctx, 15f, t.regular, t.text)
+    private val detailStar = android.widget.ImageView(ctx)
+    private val detailTitle = t.label(ctx, 25f, t.bold)
+    private val detailMeta = t.label(ctx, 14.5f, t.regular, t.text)
+    private val detailTime = t.label(ctx, 15f)
     private val detailBar = ProgressLine(ctx, t)
-    private val detailLeft = t.label(ctx, 14f, color = t.textMuted)
-    private val detailDesc = t.label(ctx, 14f, color = t.textMuted).apply { maxLines = 3 }
+    private val detailLeft = t.label(ctx, 15f)
+    private val detailDesc = t.label(ctx, 14.5f, color = t.textMuted).apply { maxLines = 3 }
     private val detailNext = t.label(ctx, 14f, color = t.textMuted)
-    private val gridPanel = FrameLayout(ctx)
     val guide = GuideView(ctx, t)
     private val controls = LiveControls(ctx, t)
     /** The extra row's windows and the sleep timer. */
@@ -133,6 +141,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val writes = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuideWrites") }
 
     private var playlists: List<Playlist> = emptyList()
+    /** Group names by (playlist, group), for the details' "Playlist • Group" line. */
+    private var groupNames: Map<Pair<String, String>, String> = emptyMap()
     private var scope: GuideScope = prefs.scope ?: GuideScope.AllPlaylists
     private var fullScreen = false
     private var sidebarOpen = true
@@ -144,6 +154,21 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var detailChannelObj: Channel? = null
     private var loadSerial = 0
 
+    // Geometry (dp on the 960 x 540 dp screen), after the user's concepts: no panels; a large miniature with the details
+    // beside it; the guide below, full width in the grid. With the groups column open the tab rail shows at the left,
+    // then the column, then the content; in the grid both slide away and the content slides left (one motion).
+    private val railSpace = t.dp(76)
+    private val columnW = t.dp(208)
+    private val miniW = t.dp(368)
+    private val miniH = t.dp(207)
+    private val gap = t.dp(12)
+    private val openInset = railSpace + columnW + gap
+    private val closedInset = gap
+
+    /** The content's left edge (px), animated between [openInset] and [closedInset]. */
+    private var inset = 0f
+    private var insetAnim: android.animation.ValueAnimator? = null
+
     init {
         build()
         wire()
@@ -152,35 +177,46 @@ class LivePage(private val activity: Activity, private val host: Host) {
     // ---- Layout ---------------------------------------------------------------------------------------------------
 
     private fun build() {
-        val m = t.dp(12)
-        // Column: playlists and groups.
+        // Column: playlists and groups, from the top of the screen.
         sidebarPanel.addView(sidebar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        guideLayer.addView(sidebarPanel, LinearLayout.LayoutParams(t.dp(212), ViewGroup.LayoutParams.MATCH_PARENT).apply { rightMargin = t.dp(10) })
+        sidebarPanel.addView(columnRule, FrameLayout.LayoutParams(t.dp(1), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
+        guideLayer.addView(sidebarPanel, FrameLayout.LayoutParams(columnW, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            leftMargin = railSpace; topMargin = t.dp(8); bottomMargin = t.dp(8)
+        })
 
-        val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        // Content: the miniature and its details on top, the guide under them.
         val topRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        val previewH = t.dp(140)
-        topRow.addView(videoSlot, LinearLayout.LayoutParams(previewH * 16 / 9, previewH))
-        details.setPadding(t.dp(16), t.dp(10), t.dp(16), t.dp(10))
-        details.addView(detailChannel)
-        details.addView(detailTitle, lp(top = 6))
+        topRow.addView(videoSlot, LinearLayout.LayoutParams(miniW, miniH))
+        val head = FrameLayout(ctx)
+        head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = t.dp(34) })
+        detailStar.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
+        head.addView(detailStar, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
+        details.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        detailTitle.maxLines = 1
+        detailTitle.ellipsize = android.text.TextUtils.TruncateAt.END
+        details.addView(detailTitle, lp(top = 2))
+        detailMeta.maxLines = 1
+        detailMeta.ellipsize = android.text.TextUtils.TruncateAt.END
+        detailMeta.alpha = 0.85f
+        details.addView(detailMeta, lp(top = 2))
         val timeRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(detailTime)
-            addView(detailBar, LinearLayout.LayoutParams(t.dp(56), t.dp(8)).apply { leftMargin = t.dp(12); rightMargin = t.dp(10) })
+            addView(detailBar, LinearLayout.LayoutParams(t.dp(96), t.dp(10)).apply { leftMargin = t.dp(12); rightMargin = t.dp(12) })
             addView(detailLeft)
         }
-        details.addView(timeRow, lp(top = 6))
+        details.addView(timeRow, lp(top = 8))
         details.addView(detailDesc, lp(top = 8))
         details.addView(detailNext, lp(top = 6))
-        topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(12) })
-        right.addView(topRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, previewH))
-        gridPanel.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6))
-        gridPanel.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        right.addView(gridPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = t.dp(10) })
-        guideLayer.addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(m, m, m, m) })
+        topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(18) })
+        content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
+        content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
+        guideLayer.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            leftMargin = openInset; topMargin = t.dp(14); rightMargin = gap; bottomMargin = t.dp(4)
+        })
+        inset = openInset.toFloat()
+        root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Nothing to show yet: a way to add a playlist.
         emptyButton.apply {
@@ -193,7 +229,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         empty.addView(emptyText)
         empty.addView(emptyButton, lp(top = 18).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        root.addView(empty, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(empty, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { leftMargin = railSpace })
         empty.visibility = View.GONE
 
         notice.setPadding(t.dp(16), t.dp(10), t.dp(16), t.dp(10))
@@ -201,6 +237,46 @@ class LivePage(private val activity: Activity, private val host: Host) {
         root.addView(notice, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = t.dp(30) })
         notice.visibility = View.GONE
         applyLook()
+    }
+
+    // ---- The column and the rail: open (column focused) or in the grid -------------------------------------------
+
+    private fun applyInset(px: Float) {
+        inset = px
+        val lp = content.layoutParams as ViewGroup.MarginLayoutParams
+        if (lp.leftMargin == px.toInt()) return
+        lp.leftMargin = px.toInt()
+        content.layoutParams = lp
+    }
+
+    /**
+     * Column open (with the tab rail) or the grid (both slid away, content full width). One motion: the column and rail
+     * slide out to the left as the content slides left; the miniature moves with it (placed again on every layout).
+     */
+    private fun layoutFor(columnOpen: Boolean, animate: Boolean) {
+        val target = (if (columnOpen) openInset else closedInset).toFloat()
+        host.setRailShown(columnOpen, if (animate) SLIDE_MS else 0L)
+        insetAnim?.cancel()
+        sidebarPanel.animate().cancel()
+        val hidden = -(railSpace + columnW).toFloat()
+        if (columnOpen) sidebarPanel.visibility = View.VISIBLE
+        if (!animate || !root.isShown) {
+            applyInset(target)
+            sidebarPanel.translationX = if (columnOpen) 0f else hidden
+            sidebarPanel.alpha = if (columnOpen) 1f else 0f
+            if (!columnOpen) sidebarPanel.visibility = View.INVISIBLE
+            return
+        }
+        insetAnim = android.animation.ValueAnimator.ofFloat(inset, target).apply {
+            duration = SLIDE_MS
+            interpolator = EASE
+            addUpdateListener { applyInset(it.animatedValue as Float) }
+            start()
+        }
+        sidebarPanel.animate().translationX(if (columnOpen) 0f else hidden).alpha(if (columnOpen) 1f else 0f)
+            .setDuration(SLIDE_MS).setInterpolator(EASE)
+            .withEndAction { if (!sidebarOpen) sidebarPanel.visibility = View.INVISIBLE }
+            .start()
     }
 
     private fun lp(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(top) }
@@ -211,9 +287,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // changes while the full-screen controls are up; the controls are then made again over the film.
         val film = filmGlassOn
         if (film) host.setFilmGlass(false)
-        Glass.background(sidebarPanel, Glass.Kind.PANEL)
-        Glass.background(details, Glass.Kind.PANEL)
-        Glass.background(gridPanel, Glass.Kind.PANEL)
+        // No panels (user's concepts): the column, details and guide sit on the wallpaper.
+        sidebarPanel.background = null
+        details.background = null
+        columnRule.setBackgroundColor(if (Glass.on) 0x1FFFFFFF else 0x14FFFFFF)
         Glass.background(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         guide.glass = Glass.on
@@ -232,7 +309,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 return@addOnGlobalLayoutListener
             }
             val r = rectOf(videoSlot) ?: return@addOnGlobalLayoutListener
-            if (r != placedAt) placeMini()
+            if (shrinkPending) {
+                // Back from full screen with the content just moved: shrink into where the miniature is now.
+                shrinkPending = false
+                placeMini(SHRINK_MS)
+            } else if (r != placedAt) placeMini()
         }
         guide.callbacks = object : GuideView.Callbacks {
             override fun onFocusMoved(channel: Channel, cell: Cell?) = showDetails(channel, cell)
@@ -297,6 +378,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (!player.onScreenStarted() && player.currentKey == null) {
             prefs.lastChannel?.let { key -> resumeLast(key) }
         }
+        // The rail and column as they were (the rail shows with the column, or while there's nothing else).
+        layoutFor(columnOpen = sidebarOpen || playlists.isEmpty(), animate = false)
         reload(keepFocus = true)
         scheduleIdle()
         main.post(clockTick)
@@ -379,6 +462,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 if (pls.isNotEmpty()) {
                     if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
                     sidebar.setData(pls, groups, scope)
+                    groupNames = groups.values.flatten().associate { (it.playlistId to it.id) to it.name }
                     loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
                 }
                 // The first load: focus wasn't placed yet (the page had nothing to focus).
@@ -445,8 +529,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
             filmGlass(false)
             host.setChromeVisible(true)
             guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            guideLayer.animate().cancel()
+            guideLayer.alpha = 1f
             guide.setChannels(emptyList(), null)
         }
+        // The tab rail stays reachable while there's nothing else to go to.
+        if (noPlaylists) { sidebarOpen = true; layoutFor(columnOpen = true, animate = false) }
         empty.visibility = if (noPlaylists) View.VISIBLE else View.GONE
         guideLayer.visibility = if (noPlaylists || fullScreen) View.INVISIBLE else View.VISIBLE
         if (noPlaylists) {
@@ -465,8 +553,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
         prefs.focus = channel.key
         val p = cell?.programme
         val tf = DateFormat.getTimeFormat(ctx)
+        // Channel, then its title; under it where the channel is: "Playlist • Group" (the concepts).
+        detailChannel.text = channel.name
+        detailStar.setImageResource(if (channel.favorite) app.fireplayer.R.drawable.ic_star_filled else app.fireplayer.R.drawable.ic_star)
+        detailStar.alpha = if (channel.favorite) 1f else 0.7f
+        detailStar.contentDescription = if (channel.favorite) "In your favorites" else "Not in your favorites"
+        detailStar.visibility = View.VISIBLE
         val playlistName = playlists.firstOrNull { it.id == channel.playlistId }?.name
-        detailChannel.text = "${channel.number}  ${channel.name}" + (if (playlists.size > 1 && playlistName != null) " · $playlistName" else "")
+        val groupName = channel.groupId?.let { groupNames[channel.playlistId to it] }
+        detailMeta.text = listOfNotNull(playlistName, groupName).joinToString("  •  ")
         if (p == null) {
             detailTitle.text = channel.name
             detailTime.text = "No programme information"
@@ -488,7 +583,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             else -> "Ended"
         }
         detailDesc.text = p.description ?: ""
-        val next = nextAfter(channel, p.stop)
+        // What's next only when there's no story to tell (the guide shows it beside this one anyway).
+        val next = if (p.description.isNullOrBlank()) nextAfter(channel, p.stop) else null
         detailNext.text = next?.let { "Next: ${it.title} · ${tf.format(Date(it.start))}" } ?: ""
     }
 
@@ -497,6 +593,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         detailChannelObj = null
         detailCell = null
         detailChannel.text = ""
+        detailStar.visibility = View.INVISIBLE
+        detailMeta.text = ""
         detailTitle.text = text
         detailTime.text = ""
         detailBar.visibility = View.GONE
@@ -552,18 +650,19 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun openSidebar(focus: Boolean) {
+        val was = sidebarOpen
         sidebarOpen = true
-        sidebarPanel.visibility = View.VISIBLE
+        if (!was || sidebarPanel.visibility != View.VISIBLE) layoutFor(columnOpen = true, animate = true)
         if (focus) sidebar.focusCurrent()
     }
 
     private fun closeSidebar() {
         if (!sidebarOpen) return
         sidebarOpen = false
-        sidebarPanel.visibility = View.GONE
+        layoutFor(columnOpen = false, animate = true)
     }
 
-    private fun placeMini() {
+    private fun placeMini(animateMs: Long = 0L) {
         val playing = player.currentKey != null
         if (playlists.isEmpty() || !playing) {
             placedAt = null
@@ -574,7 +673,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val r = rectOf(videoSlot) ?: return
         placedAt = r
         showSlotPlaceholder(false)
-        host.placeVideo(r, t.dpf(12f), false)
+        host.placeVideo(r, t.dpf(12f), false, animateMs)
     }
 
     /** Whether the miniature's slot shows its placeholder panel (null: not decided yet, or the look changed). */
@@ -610,10 +709,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
         guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         activity.currentFocus?.clearFocus()
-        guideLayer.visibility = View.INVISIBLE
+        // The picture grows from the miniature to the whole screen while the guide fades away under it.
+        guideLayer.animate().cancel()
+        guideLayer.animate().alpha(0f).setDuration(GROW_MS * 3 / 4).setInterpolator(EASE)
+            .withEndAction { if (fullScreen) guideLayer.visibility = View.INVISIBLE }.start()
         host.setChromeVisible(false)
         placedAt = null
-        host.placeVideo(null, 0f, true)
+        host.placeVideo(null, 0f, true, GROW_MS)
         refreshControls()
         controls.showInfo()
         main.removeCallbacks(hideControls)
@@ -627,9 +729,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         controls.hideAll()
         filmGlass(false)
         host.setChromeVisible(true)
+        // Back to the grid: the column and rail stay away; the picture shrinks into the miniature as the guide fades in.
+        sidebarOpen = false
+        val moved = inset != closedInset.toFloat()
+        layoutFor(columnOpen = false, animate = false)
         guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        guideLayer.animate().cancel()
         guideLayer.visibility = View.VISIBLE
-        placeMini()
+        guideLayer.animate().alpha(1f).setDuration(SHRINK_MS).setInterpolator(EASE).start()
+        // The miniature's place is known now, or after the layout the move above causes.
+        if (moved) shrinkPending = true else placeMini(SHRINK_MS)
         // Back to where the guide was, unless the channel changed in full screen: then to that channel.
         val playing = ChannelKey.parse(player.currentKey)
         if (zappedInFull && playing != null) guide.focusChannel(playing)
@@ -1003,6 +1112,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
     companion object {
         private const val TAG = "FirePlayerLive"
         private const val INFO_MS = 4_000L
+        /** Column and rail sliding in and out. */
+        private const val SLIDE_MS = 220L
+        /** The miniature growing to full screen, and shrinking back. */
+        private const val GROW_MS = 280L
+        private const val SHRINK_MS = 240L
+        private val EASE = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
         private val PLAY_PAUSE_KEYS = setOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE)
         private val HANDLED_UP = setOf(
             KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
@@ -1020,14 +1135,15 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
     private val r = RectF()
 
     override fun onDraw(canvas: android.graphics.Canvas) {
-        val h = t.dpf(3f)
+        // A blue bar on a light track (the concepts).
+        val h = t.dpf(5f)
         val cy = height / 2f
         r.set(0f, cy - h / 2, width.toFloat(), cy + h / 2)
-        p.color = 0x40FFFFFF
-        canvas.drawRoundRect(r, h, h, p)
-        r.right = width * fraction
-        p.color = t.text
-        canvas.drawRoundRect(r, h, h, p)
+        p.color = 0x66FFFFFF
+        canvas.drawRoundRect(r, h / 2, h / 2, p)
+        r.right = (width * fraction).coerceAtLeast(h)
+        p.color = t.accent
+        canvas.drawRoundRect(r, h / 2, h / 2, p)
     }
 }
 
