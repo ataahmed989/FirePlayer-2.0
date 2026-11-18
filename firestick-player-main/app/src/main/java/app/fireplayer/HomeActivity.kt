@@ -392,7 +392,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     // ---- Live video placement (LivePage.Host) ---------------------------------------------------------------------
 
-    override fun placeVideo(rect: RectF?, radius: Float, full: Boolean) {
+    override fun placeVideo(rect: RectF?, radius: Float, full: Boolean, animateMs: Long) {
         videoTarget = rect?.let { RectF(it) }
         // Captions follow the Subtitle style setting, read again each time full screen opens.
         if (full && !videoFull) captionStyler.apply(captions, SubtitlePresets(Prefs(this)).active())
@@ -503,6 +503,20 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             lp.marginStart = if (visible) tokens.dp(76) else 0
             pages.layoutParams = lp
         }
+    }
+
+    override fun setRailShown(shown: Boolean, animateMs: Long) {
+        val host = findViewById<View>(R.id.rail_host)
+        host.animate().cancel()
+        if (shown) host.visibility = View.VISIBLE
+        val to = if (shown) 0f else -host.width.toFloat()
+        if (animateMs <= 0) {
+            host.translationX = to
+            if (!shown) host.visibility = View.INVISIBLE
+            return
+        }
+        host.animate().translationX(to).setDuration(animateMs).setInterpolator(android.view.animation.DecelerateInterpolator(1.6f))
+            .withEndAction { if (!shown) host.visibility = View.INVISIBLE }.start()
     }
 
     override fun focusRail() = rail.focusSelected()

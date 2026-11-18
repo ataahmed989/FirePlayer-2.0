@@ -52,8 +52,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
     interface Host {
         val tokens: Tokens
         /** Live video at [rect] (root coordinates) with rounded corners, or the whole screen, or nowhere (null). */
-        fun placeVideo(rect: RectF?, radius: Float, full: Boolean)
+        /**
+         * Live video at [rect] (root coordinates) with rounded corners, or the whole screen ([full]), or nowhere (null).
+         * With [animateMs] > 0 the picture moves and grows (or shrinks) there smoothly over that time (miniature ↔
+         * full screen); otherwise it's placed at once.
+         */
+        fun placeVideo(rect: RectF?, radius: Float, full: Boolean, animateMs: Long = 0L)
         fun setChromeVisible(visible: Boolean)
+        /** The tab rail beside the guide: shown (the groups column is open) or slid away (in the grid). */
+        fun setRailShown(shown: Boolean, animateMs: Long = 0L)
         fun focusRail()
         fun railHasFocus(): Boolean
         /** The settings window or a dialog is open over the page: its timers wait. */
