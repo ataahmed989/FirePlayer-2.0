@@ -103,7 +103,10 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - [x] Live extra row: Multiview/PiP dimmed, Audio, Audio delay, Display size, Screen dimmer, Sleep timer,
       Settings — row seen on the Max; individual windows built and unit-tested (display geometry, sleep timer),
       not each exercised on the Max yet.
-- [x] Code review of the first Fire TV fixes: 15 confirmed findings fixed. A second review (settings work) runs.
+- [x] Code review of the first Fire TV fixes: 15 confirmed findings fixed. Second review (settings work): 26 confirmed
+      findings fixed (window close callbacks from sub-windows, live language defaults, key-check errors, group
+      choices in their own table — live.db v6 — and others); upgrade checked on the Max (groups and order kept).
+- [x] Classic look background: the user's dark fog (glass keeps the blue fog) — on the Max.
 - [ ] Opening Manage groups takes ~1 s with 353 groups (side window isn't recycled); switches/moves are instant.
 
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started

@@ -264,6 +264,10 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Measured on the Max: redrawing a window of 350+ rows takes 0.7–1.7 s, so group switches and moves change their
     rows in place; opening Manage groups still takes about a second (the side window isn't a recycled list).
 
+- 2026-11-18 · User: the classic (non-glass) look has its own background — the user's dark blue-grey fog
+  (`wallpaper_classic`). Supersedes "Classic shows the same blue wallpaper behind its dark panels". The glass look
+  keeps the blue fog, and only glass builds the blurred wallpaper. The user will say which wallpapers to use elsewhere.
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png
