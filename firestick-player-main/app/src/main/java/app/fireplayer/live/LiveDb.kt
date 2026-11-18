@@ -589,6 +589,16 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
 
         @Volatile private var instance: LiveDb? = null
 
+        /**
+         * The viewer's own changes (a star, a group hidden or moved), stored one after another whichever screen made
+         * them (the guide, the settings windows): a read queued here after them (Assign favorites opening) sees every
+         * one, including those another screen set a moment before. Never shut down: a screen going away mustn't drop
+         * what another queued.
+         */
+        val writes: java.util.concurrent.ExecutorService by lazy {
+            java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerLiveWrites") }
+        }
+
         fun get(context: Context): LiveDb =
             instance ?: synchronized(this) { instance ?: LiveDb(context.applicationContext).also { instance = it } }
     }

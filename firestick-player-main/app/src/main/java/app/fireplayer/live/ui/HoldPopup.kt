@@ -21,7 +21,7 @@ import app.fireplayer.ui.Rows
 
 /**
  * The small window a held OK opens in Live TV: a channel's in the guide (Favorite, Assign favorites) and a group's in
- * the groups column (Move to top, Hide category). One look and one behaviour for both: the full name (up to two lines)
+ * the groups column (Move to top, Hide group). One look and one behaviour for both: the full name (up to two lines)
  * over a row of buttons, beside what was held, with the first button selected. Left from the first button, Right from
  * the last, Up, Down and Back close it (LivePage passes Back on), and the selection goes back where it was.
  *
@@ -316,7 +316,7 @@ class PressHold(private val holdMs: Long) {
     }
 }
 
-/** The groups column's edits from a group's small window (Move to top, Hide category), kept apart to be tested. */
+/** The groups column's edits from a group's small window (Move to top, Hide group), kept apart to be tested. */
 object GroupEdits {
     /** [list] with [id]'s entry first and the others in their order; the same list when it's first already, or absent. */
     fun <T> toTop(list: List<T>, id: String, idOf: (T) -> String): List<T> {

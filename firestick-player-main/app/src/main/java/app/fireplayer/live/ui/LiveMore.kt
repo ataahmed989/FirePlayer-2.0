@@ -18,7 +18,8 @@ import java.util.Date
  * The windows the full-screen extra row opens, in the settings window on the right, made like the VOD player's own
  * and keeping the same saved values: Audio (the channel's audio tracks, and the delay), Audio delay, Display size
  * ([Prefs.displayMode], the VOD player's choices), Screen dimmer ([DimmerWindow], the VOD player's customs) and Sleep
- * timer. Also the values shown under those buttons, and the sleep timer itself, which keeps running in the guide.
+ * timer; and Captions, from its button beside Favorite. Also the values shown under those buttons, and the sleep timer
+ * itself, which keeps running in the guide.
  *
  * Settings (Live FirePlayer Settings) is opened by the page itself; Multiview and External PiP aren't built yet.
  */
@@ -47,6 +48,8 @@ class LiveMore(
 
     /** When the sleep timer runs out (elapsedRealtime), 0 for off. */
     private var sleepEndsAt = 0L
+    /** The minutes picked in Sleep timer while it runs (ticked there), 0 for none. */
+    private var sleepChosenMin = 0
     private var sleepAtProgrammeEnd = false
     /** What was left of the timer when the page stopped; it carries on from there when the page is back. */
     private var sleepRemainingMs = 0L
@@ -82,6 +85,7 @@ class LiveMore(
     /** The channel's audio tracks, the one playing ticked, and the delay, as the VOD player's Audio window. */
     private fun openAudio(from: View) = window("Audio", from) {
         val tracks = player.status().audioTracks
+        header("On this channel")
         tracks.forEach { track ->
             row(track.label, checked = track.selected) {
                 player.selectAudio(track)
@@ -92,6 +96,26 @@ class LiveMore(
         if (tracks.size <= 1) message("No other audio tracks.")
         spacer(6)
         delayStepper(this)
+    }
+
+    /**
+     * Captions: the channel's caption tracks, the one on ticked, then Off, as the VOD player's Subtitles window lists
+     * its own. Only opened for a channel that has some.
+     */
+    fun openCaptions(from: View) = window("Captions", from) {
+        val tracks = player.status().captions
+        header("On this channel")
+        tracks.forEach { track ->
+            row(track.label, checked = track.selected) {
+                player.selectCaption(track)
+                // The player takes a moment to switch; then the tick moves.
+                main.postDelayed({ refresh() }, 150)
+            }
+        }
+        row("Off", checked = tracks.none { it.selected }) {
+            player.selectCaption(null)
+            main.postDelayed({ refresh() }, 150)
+        }
     }
 
     private fun openAudioDelay(from: View) = window("Audio delay", from) {
@@ -131,7 +155,8 @@ class LiveMore(
     private fun openSleep(from: View) = window("Sleep timer", from) {
         row("Off", checked = sleepEndsAt == 0L) { setSleep(LiveSleep.OFF); refresh() }
         LiveSleep.MINUTES.forEach { min ->
-            row("$min min") { setSleep(min); refresh() }
+            // The time picked is ticked while it runs, as the choice is in every other window of choices.
+            row("$min min", checked = sleepEndsAt > 0 && !sleepAtProgrammeEnd && sleepChosenMin == min) { setSleep(min); refresh() }
         }
         val stop = callbacks.programmeEnd()?.takeIf { it > System.currentTimeMillis() }
         row(
@@ -147,6 +172,7 @@ class LiveMore(
         val now = SystemClock.elapsedRealtime()
         sleepEndsAt = LiveSleep.endsAt(choice, now, System.currentTimeMillis(), callbacks.programmeEnd())
         sleepAtProgrammeEnd = choice == LiveSleep.END_OF_PROGRAMME && sleepEndsAt > 0
+        sleepChosenMin = if (choice > 0 && sleepEndsAt > 0) choice else 0
         // The programme ends at a time of day, whatever happens meanwhile (the page away, a pause).
         sleepStopWall = if (sleepAtProgrammeEnd) System.currentTimeMillis() + (sleepEndsAt - now) else 0L
         sleepRemainingMs = 0
@@ -163,6 +189,7 @@ class LiveMore(
             if (now >= sleepEndsAt) {
                 sleepEndsAt = 0L
                 sleepAtProgrammeEnd = false
+                sleepChosenMin = 0
                 refreshValues()
                 callbacks.sleepNow()
                 return
@@ -189,7 +216,7 @@ class LiveMore(
         if (sleepRemainingMs > 0L && sleepAtProgrammeEnd) {
             val left = sleepStopWall - System.currentTimeMillis()
             sleepRemainingMs = if (left > 0) left else 0L
-            if (left <= 0) { sleepAtProgrammeEnd = false; sleepStopWall = 0L }
+            if (left <= 0) { sleepAtProgrammeEnd = false; sleepStopWall = 0L; sleepChosenMin = 0 }
         }
         if (sleepRemainingMs > 0L) {
             val now = SystemClock.elapsedRealtime()
@@ -205,5 +232,6 @@ class LiveMore(
         main.removeCallbacksAndMessages(null)
         sleepEndsAt = 0L
         sleepRemainingMs = 0L
+        sleepChosenMin = 0
     }
 }

@@ -37,7 +37,7 @@ object DimmerWindow {
             applyDim()
             refreshLabels()
         }
-        row("Auto", if (active.auto) "On" else "Off") {
+        row("Auto", SettingsPanels.onOff(active.auto)) {
             dimmer.toggleAuto()
             applyDim()
             refresh()

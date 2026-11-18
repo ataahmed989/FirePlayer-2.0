@@ -204,16 +204,62 @@ class PlayerHost private constructor(context: Context) {
 
     /**
      * Live TV buffer was changed (Settings): the channel playing opens again with the new size, one short reload that
-     * keeps its captions, audio delay and connection. A paused channel keeps its place; like a stopped one, it takes
-     * the new size the next time it's opened.
+     * keeps its sound and captions as picked, its audio delay and its connection. A channel paused, or playing behind
+     * live since a pause, keeps its place; like a stopped one, it takes the new size the next time it's opened.
      */
     fun bufferChanged() {
         val source = session.source ?: return
-        if (session.playingKey == null || paused || player == null) return
+        val p = player ?: return
+        if (session.playingKey == null || paused || stillBehind(p)) return
         if (builtBuffer == LivePrefs(app).liveBuffer) return
+        // The new player's tracks are new objects: the ones picked now are found again among them (onTracksChanged).
+        pickAgainKey = source.key
+        pickAgainAudio = selectedFormat(p, C.TRACK_TYPE_AUDIO)
+        pickAgainCaption = if (captionsOn) selectedFormat(p, C.TRACK_TYPE_TEXT) else null
         // Straight to the stream, not through the session: the channel's connection is already counted.
         openStream(source)
         publish()
+    }
+
+    /** The sound and captions playing before Live TV buffer reopened the channel, to pick again in its new tracks. */
+    private var pickAgainKey: String? = null
+    private var pickAgainAudio: Format? = null
+    private var pickAgainCaption: Format? = null
+
+    private fun selectedFormat(p: ExoPlayer, type: Int): Format? {
+        for (g in p.currentTracks.groups) {
+            if (g.type != type) continue
+            for (i in 0 until g.length) if (g.isTrackSelected(i)) return g.getTrackFormat(i)
+        }
+        return null
+    }
+
+    /**
+     * The reopened channel's tracks: the sound and captions picked before are picked again (the same track, not just
+     * the first of its kind). True when captions were picked here. Each is let go once the tracks of its kind are in.
+     */
+    private fun pickAgain(p: ExoPlayer, tracks: Tracks): Boolean {
+        var captions = false
+        val b = p.trackSelectionParameters.buildUpon()
+        var changed = false
+        for (type in intArrayOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_TEXT)) {
+            val wanted = (if (type == C.TRACK_TYPE_AUDIO) pickAgainAudio else pickAgainCaption) ?: continue
+            val groups = tracks.groups.filter { it.type == type }
+            if (groups.isEmpty()) continue
+            if (type == C.TRACK_TYPE_AUDIO) pickAgainAudio = null else pickAgainCaption = null
+            val all = groups.flatMap { g -> (0 until g.length).filter { g.isTrackSupported(it) }.map { g to it } }
+            val at = TrackMatch.best(wanted, all.map { (g, i) -> g.getTrackFormat(i) })
+            val (group, index) = all.getOrNull(at) ?: continue
+            if (group.isTrackSelected(index)) { if (type == C.TRACK_TYPE_TEXT) captions = true; continue }
+            if (type == C.TRACK_TYPE_TEXT) {
+                b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                captions = true
+            }
+            b.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
+            changed = true
+        }
+        if (changed) p.trackSelectionParameters = b.build()
+        return captions
     }
 
     /** Whether playback is still behind live: a seekable live window says by its offset; a plain stream until reopened. */
@@ -279,6 +325,8 @@ class PlayerHost private constructor(context: Context) {
 
     private fun openStream(source: LiveSession.Source) {
         main.removeCallbacks(retry)
+        // Tracks to pick again are only for the same channel reopened by Live TV buffer.
+        if (source.key != pickAgainKey) { pickAgainAudio = null; pickAgainCaption = null }
         retries = 0
         error = null
         // A fresh stream starts at live.
@@ -367,7 +415,9 @@ class PlayerHost private constructor(context: Context) {
         override fun onEvents(player: Player, events: Player.Events) = publish()
 
         override fun onTracksChanged(tracks: Tracks) {
-            player?.let { keepCaptions(it, tracks) }
+            val p = player ?: return
+            // Reopened by Live TV buffer: the captions picked before, rather than the first of their kind.
+            if (!pickAgain(p, tracks)) keepCaptions(p, tracks)
         }
 
         override fun onCues(cueGroup: CueGroup) = setCues(if (captionsOn) cueGroup.cues else emptyList())
@@ -375,7 +425,7 @@ class PlayerHost private constructor(context: Context) {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             // Another app took the sound for good (its film or music started): the channel paused itself, and shows as
             // paused, as if the viewer had paused it. (A moment's loss, Alexa answering, doesn't come here: the player
-            // waits and carries on by itself.)
+            // waits and carries on by itself; see onPlaybackSuppressionReasonChanged.)
             if (reason != Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) return
             paused = !playWhenReady
             if (paused) behind = true
@@ -407,6 +457,16 @@ class PlayerHost private constructor(context: Context) {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) retries = 0
+        }
+
+        override fun onPlaybackSuppressionReasonChanged(reason: Int) {
+            // A moment's loss of the sound (Alexa answering): the player holds the picture and carries on from its
+            // buffer afterwards, as far behind the broadcast as the answer took. Go live is offered then, as after a
+            // pause (a live window that catches up counts as live again by itself, see stillBehind).
+            if (reason == Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS && session.playingKey != null) {
+                behind = true
+                publish()
+            }
         }
 
         override fun onPlaybackStateChanged(state: Int) {

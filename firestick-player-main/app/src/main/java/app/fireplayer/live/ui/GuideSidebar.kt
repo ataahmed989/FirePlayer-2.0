@@ -29,7 +29,7 @@ import app.fireplayer.ui.ListMath
  * All channels and its own groups. Playlist scope stays visible: a group is always shown under its playlist.
  * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid. Down from the last
  * row goes round to the first, Up from the first to the last ([wrapTo]). Center held on a group opens its small window
- * ([Callbacks.onHold]: Move to top, Hide category), whose edits show here at once ([moveGroupToTop], [hideGroup]).
+ * ([Callbacks.onHold]: Move to top, Hide group), whose edits show here at once ([moveGroupToTop], [hideGroup]).
  */
 class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(context) {
 
@@ -166,7 +166,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     }
 
     /**
-     * Hide category: [groupId]'s row leaves the column at once. Returns the scope of the row that takes its place (the
+     * Hide group: [groupId]'s row leaves the column at once. Returns the scope of the row that takes its place (the
      * next group, or the one above when it was the last: another group, or the playlist's All channels), for focus to
      * go to; when the guide was showing the hidden group, it shows that one now. Null when it isn't listed.
      */
@@ -431,8 +431,13 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                     main.removeCallbacks(showPending)
                     when (event.action) {
                         KeyEvent.ACTION_DOWN -> {
-                            val held = press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)
-                            if (held && entry != null && group != null) callbacks?.onHold(group, entry.label, row)
+                            if (group == null) {
+                                // Only a group has a small window: on any other row (All channels, a playlist) a long
+                                // press is still a press, picked or folded on its release.
+                                if (event.repeatCount == 0) press.down(0, false, 0L)
+                            } else if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) {
+                                callbacks?.onHold(group, entry!!.label, row)
+                            }
                         }
                         // A short press: the row's own action (pick the scope, or fold/unfold a playlist).
                         KeyEvent.ACTION_UP -> if (press.up(event.isCanceled)) row.performClick()

@@ -143,6 +143,12 @@ class Rows(private val context: Context) {
 
     fun dp(value: Int) = (value * density).toInt()
 
+    /**
+     * How wide a row's value may grow before it's shortened, in dp: wider in a wide window ([SidePanel]), which is
+     * wide so long names and values can be read.
+     */
+    var valueMaxDp = VALUE_MAX_DP
+
     fun base(): LinearLayout = RowLayout(context, textColors).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -241,10 +247,10 @@ class Rows(private val context: Context) {
                 // Before it's added, so the row passes its state changes on.
                 isDuplicateParentStateEnabled = true
                 setTextColor(valueColors)
-                maxWidth = dp(118)
+                maxWidth = dp(valueMaxDp)
             })
         } else if (value != null) {
-            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(valueMaxDp) })
         }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return labelView
@@ -312,6 +318,29 @@ class Rows(private val context: Context) {
     }
 
     companion object {
+        /** A value's widest in a usual window, and in a wide one ([valueMaxDp]). */
+        const val VALUE_MAX_DP = 118
+        const val WIDE_VALUE_MAX_DP = 200
+
+        /** How faint a row is drawn while it can't be used (not available, or busy). */
+        const val DIM = 0.4f
+
+        /** Draws [row]'s words, icons and switch faint: its slice of the card stays as it is, so the card stays whole. */
+        fun dim(row: ViewGroup) {
+            for (i in 0 until row.childCount) row.getChildAt(i).alpha = DIM
+        }
+
+        /**
+         * The colour of an "[n] of [total]" badge, the same everywhere: blue when all are, gray when none are, the
+         * lighter blue in between, soft red for a [problem].
+         */
+        fun countBadge(n: Int, total: Int, problem: Boolean = false): Badge = when {
+            problem -> Badge.PROBLEM
+            total > 0 && n >= total -> Badge.ACTIVE
+            n <= 0 -> Badge.INACTIVE
+            else -> Badge.LIGHT
+        }
+
         /**
          * Up / down move between the focusable rows of [list] and wrap around at either end.
          * Returns true when the key was handled.

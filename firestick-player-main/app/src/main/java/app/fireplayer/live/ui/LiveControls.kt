@@ -48,7 +48,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     interface Actions {
         fun onGuide()
         fun onHistory()
-        fun onCaptions()
+        /** Captions: its window, with focus back on [from] (the button) when it closes. */
+        fun onCaptions(from: View)
         fun onFavorite()
         fun onPlayPause()
         fun onGoLive()
@@ -134,7 +135,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         btnGoLive.setOnClickListener { actions?.onGoLive() }
         guideButton.setOnClickListener { actions?.onGuide() }
         btnHistory.setOnClickListener { actions?.onHistory() }
-        btnCaptions.setOnClickListener { actions?.onCaptions() }
+        btnCaptions.setOnClickListener { actions?.onCaptions(it) }
         btnFavorite.setOnClickListener { actions?.onFavorite() }
         // Left stops at the first button rather than wandering off the controls; right at the last.
         listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnCaptions, btnFavorite).forEach { if (it.id == View.NO_ID) it.id = generateViewId() }

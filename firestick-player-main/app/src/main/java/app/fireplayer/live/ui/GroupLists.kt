@@ -60,6 +60,26 @@ object FavoriteGroups {
         else -> "$n favorites"
     }
 
+    /**
+     * Where Assign favorites puts its headings among the groups ([order]): Groups over the [shown] ones, Hidden groups
+     * over the rest of the [total], each only when it has groups under it.
+     */
+    class Headings(shown: Int, total: Int) {
+        /** The Groups heading's place, or -1. */
+        val shownHeading = if (shown > 0) 0 else -1
+        /** The Hidden groups heading's place, or -1. */
+        val hiddenHeading = if (shown < total) shown + (if (shown > 0) 1 else 0) else -1
+        /** Entries: the groups and their headings. */
+        val size = total + (if (shownHeading >= 0) 1 else 0) + (if (hiddenHeading >= 0) 1 else 0)
+
+        /** The group at entry [index], as its place in [order], or null for a heading (or nothing there). */
+        fun groupAt(index: Int): Int? {
+            if (index !in 0 until size || index == shownHeading || index == hiddenHeading) return null
+            val before = (if (shownHeading in 0 until index) 1 else 0) + (if (hiddenHeading in 0 until index) 1 else 0)
+            return index - before
+        }
+    }
+
     /** [counts] after one of [groupId]'s channels was starred ([favorite]) or not. */
     fun adjust(counts: MutableMap<String, Int>, groupId: String?, favorite: Boolean) {
         if (groupId == null) return

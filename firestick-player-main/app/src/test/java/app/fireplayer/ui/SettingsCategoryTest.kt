@@ -44,7 +44,11 @@ class SettingsCategoryTest {
             "Full screen after no key presses", "Subtitle style",
         )
         // Renamed since by the user's outline for Playlists and EPG, and rows added since.
-        val renamed = mapOf("Update all playlists" to "Update playlists", "Past days to keep EPG" to "Days to keep EPG")
+        val renamed = mapOf(
+            "Update all playlists" to "Update playlists", "Past days to keep EPG" to "Days to keep EPG",
+            // Told apart from a playlist's own update interval.
+            "Update interval" to "EPG update interval",
+        )
         val added = listOf("Manage playlists", "Manage EPG sources", "Live TV buffer")
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

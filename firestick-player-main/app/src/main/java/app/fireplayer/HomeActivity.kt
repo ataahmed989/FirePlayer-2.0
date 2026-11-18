@@ -272,7 +272,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = tokens.dp(TITLE_GAP_DP) })
         val rows = SettingsCategory.entries.map { category ->
-            SettingsRow(category.title, categoryIcon(category)) { from -> openCategory(category, from) }
+            SettingsRow(category.title, category.icon) { from -> openCategory(category, from) }
         } + SettingsRow(SettingsCategory.OPEN_A_LINK, R.drawable.ic_link) { openLink() }
         val columns = SettingsCategory.inColumns(rows, settingsColumns(rows.size))
         val side = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -304,18 +304,6 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             rows, screenDp = (metrics.heightPixels / metrics.density).toInt(), rowDp = ROW_DP, gapDp = ROW_GAP_DP,
             titleDp = TITLE_DP + TITLE_GAP_DP, edgeDp = SAFE_EDGE_DP,
         )
-    }
-
-    private fun categoryIcon(category: SettingsCategory): Int = when (category) {
-        SettingsCategory.PLAYLISTS_EPG -> R.drawable.ic_playlist_add
-        SettingsCategory.LIVE_TV -> R.drawable.ic_live
-        SettingsCategory.PLAYBACK -> R.drawable.ic_head_play
-        SettingsCategory.REMOTE -> R.drawable.ic_head_remote
-        SettingsCategory.SUBTITLES_AUDIO -> R.drawable.ic_subtitles
-        SettingsCategory.LOOK -> R.drawable.ic_head_look
-        SettingsCategory.ACCOUNTS -> R.drawable.ic_key
-        SettingsCategory.TITLES -> R.drawable.ic_head_tv
-        SettingsCategory.APP -> R.drawable.ic_head_app
     }
 
     /** A category's own window; the page dims while it's open and focus comes back to [from] when it closes. */
@@ -679,8 +667,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private var lastSize: VideoSize = VideoSize.UNKNOWN
     private val videoSizeListener = object : PlayerHost.Listener {
         override fun onLiveStatus(status: PlayerHost.Status) {
-            // The screen stays on while a channel plays (the Fire TV screensaver would cover it), as films do.
-            root.keepScreenOn = status.key != null && status.error == null
+            // The screen stays on while a channel plays (the Fire TV screensaver would cover it), as films do; paused, it
+            // may sleep, as a paused film's does.
+            root.keepScreenOn = status.key != null && status.error == null && !status.paused
             film?.playing = status.playing
             if (status.videoSize != lastSize) {
                 lastSize = status.videoSize
@@ -752,6 +741,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
+        // Play/Pause still pauses the channel with a window, a small window or the rail in front, as the VOD player does.
+        if (rail.selected == NavRail.Tab.LIVE && live.mediaKey(event)) return true
         // Media buttons this screen didn't use stay here. Left to Android, they go to the last app that played
         // something: on the Fire TV, Play/Pause over this screen started a paused Stremio film playing behind it.
         if (event.keyCode in MEDIA_KEYS) return true

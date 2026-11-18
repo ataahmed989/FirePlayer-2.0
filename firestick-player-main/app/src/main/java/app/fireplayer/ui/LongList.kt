@@ -35,6 +35,11 @@ class ListEntry(
     val chosen: Boolean = false,
     /** Its words fainter: still there to press, but set apart (a hidden group). */
     val faded: Boolean = false,
+    /**
+     * Drawn as a row that can't be used just now ([SidePanel.dim]): still focusable, so focus doesn't jump past it, but
+     * its press does nothing (Reorder groups with fewer than two shown).
+     */
+    val dimmed: Boolean = false,
     /** Nested under the row above it: indented, with a dot ([asSubRow]). */
     val sub: Boolean = false,
     /** A small button beside the row, as [SidePanel.rowWithButton]'s, read out as [buttonLabel]. */
@@ -499,6 +504,7 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
         row.removeAllViews()
         val label = rows.fill(row, e.label, e.value, e.icon)
         if (e.faded) label.alpha = FADED
+        if (e.dimmed) Rows.dim(row)
         row.isSelected = e.chosen
         val inset = if (e.sub) rows.dp(RowGroups.SUB_INSET_DP) else 0
         row.setPadding(rows.dp(12) + inset, rows.dp(6), rows.dp(12), rows.dp(6))

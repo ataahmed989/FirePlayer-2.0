@@ -39,7 +39,7 @@ import java.util.concurrent.Executors
  * miniature; Center on the playing channel opens full screen; holding Back opens full screen; so does a period
  * without key presses ([LivePrefs.fullScreenAfterSec]). The miniature and full screen are the same player and
  * surface, so going between them never retunes. Center held on a channel or on a group opens a small window
- * ([HoldPopup]): a channel's star and Assign favorites, a group's Move to top and Hide category.
+ * ([HoldPopup]): a channel's star and Assign favorites, a group's Move to top and Hide group.
  *
  * Full screen: with the controls hidden, Up/Down and Channel +/- change channel (or only Channel +/- when
  * "Channel buttons only" is set, and then Up/Down show the controls): Up and Channel + to the next channel down the
@@ -159,8 +159,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
     }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
-    /** The viewer's own changes (favorites) are stored here, not queued behind the guide's reads. */
-    private val writes = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuideWrites") }
+    /**
+     * The viewer's own changes (favorites, groups) are stored here, not queued behind the guide's reads: the queue the
+     * settings windows' stars go through too, so Assign favorites opened from here sees a star set a moment before.
+     */
+    private val writes get() = LiveDb.writes
 
     private var playlists: List<Playlist> = emptyList()
     /** Group names by (playlist, group), for the details' "Playlist • Group" line. */
@@ -455,7 +458,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         controls.actions = object : LiveControls.Actions {
             override fun onGuide() = toGuide(toPlaying = true)
             override fun onHistory() = showHistory()
-            override fun onCaptions() = chooseCaptions()
+            override fun onCaptions(from: View) = chooseCaptions(from)
             override fun onFavorite() { toggleFavorite() }
             override fun onPlayPause() = togglePause()
             override fun onGoLive() = goLive()
@@ -472,6 +475,31 @@ class LivePage(private val activity: Activity, private val host: Host) {
             guide.playingKey = ChannelKey.parse(status.key)
             controls.setStatus(status)
             status.error?.let { showNotice(it) }
+            val pausedNow = status.paused
+            if (pausedNow != wasPaused) {
+                wasPaused = pausedNow
+                pauseChanged(pausedNow)
+            }
+        }
+    }
+
+    /** Whether the channel was paused at the last status, to see a pause or resume come. */
+    private var wasPaused = false
+
+    /**
+     * In full screen, a pause the viewer didn't make (another app took the sound) shows the controls with Play
+     * selected, as the viewer's own pause does, rather than leaving a still picture with nothing to say so; carrying
+     * on gives the controls their usual time again.
+     */
+    private fun pauseChanged(paused: Boolean) {
+        if (!fullScreen || released) return
+        if (paused) {
+            if (!controls.controlsShown && !FireDialog.isShowing(activity) && !host.overlayOpen()) {
+                showControls()
+                controls.focusPlay()
+            }
+        } else if (controls.controlsShown) {
+            bumpControls()
         }
     }
 
@@ -512,7 +540,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun stop() {
         if (!started) return
         started = false
-        popup.close(fade = false, focusBack = false)
+        // The selection goes back to the held row (or cell) first, quietly: a window gone while it still held focus
+        // would hand it to the column's top row, whose preview would then switch the guide.
+        popup.close(fade = false)
         backClosedPopup = false
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
@@ -537,8 +567,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         ++reloadSerial
         ++loadSerial
         io.shutdown()
-        // Queued favorites are still stored.
-        writes.shutdown()
+        // Queued favorites are still stored (the queue is the app's, not this page's).
     }
 
     /** Background work, unless the page is gone (its executor is shut down then). Main thread only. */
@@ -854,6 +883,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
         focusBeforeFull = guide.focusedChannel()?.key
         zappedInFull = false
         main.removeCallbacks(idleToFull)
+        // Paused in the guide: full screen opens with the controls up and Play selected (they stay while paused), so a
+        // still picture always says it's paused.
+        val paused = player.paused
         // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
         guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         activity.currentFocus?.clearFocus()
@@ -862,7 +894,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         placedAt = null
         refreshControls()
         // The channel and programme fade in as the picture nears full screen (not over the guide fading away).
-        controls.showInfo(fadeInAfter = GROW_MS / 2)
+        if (!paused) controls.showInfo(fadeInAfter = GROW_MS / 2)
         // The picture grows from the miniature to the whole screen while the guide fades away under it, from the next
         // frame (see onNextFrame). The guide fades as one picture (a layer drawn once), not drawn again into a new
         // screen-sized layer every frame.
@@ -874,7 +906,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
             host.placeVideo(null, 0f, true, GROW_MS)
         }
         main.removeCallbacks(hideControls)
-        main.postDelayed(hideControls, INFO_MS)
+        if (paused) {
+            showControls()
+            controls.focusPlay()
+        } else {
+            main.postDelayed(hideControls, INFO_MS)
+        }
     }
 
     /**
@@ -1092,14 +1129,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private fun chooseCaptions() {
-        val tracks = player.status().captions
-        if (tracks.isEmpty()) { showNotice("This channel has no captions"); return }
-        val options = listOf("Off") + tracks.map { it.label }
-        val selected = tracks.indexOfFirst { it.selected }.let { if (it < 0) 0 else it + 1 }
-        FireDialog.choose(activity, "Captions", options, selected) { i ->
-            player.selectCaption(if (i == 0) null else tracks.getOrNull(i - 1))
-        }
+    /** Captions: a side window like Audio's ([LiveMore.openCaptions]); a channel without any says so. */
+    private fun chooseCaptions(from: View) {
+        if (player.status().captions.isEmpty()) { showNotice("This channel has no captions"); return }
+        more.openCaptions(from)
     }
 
     /**
@@ -1182,7 +1215,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         host.openAssignFavorites(ch.playlistId, ch.groupId, ch.key)
     }
 
-    /** Center held on a group in the column: its full name, Move to top (selected) and Hide category, beside its row. */
+    /** Center held on a group in the column: its full name, Move to top (selected) and Hide group, beside its row. */
     private fun openGroupPopup(scope: GuideScope.Group, name: String, row: View) {
         if (fullScreen || popup.isOpen || row.width == 0) return
         popupFocusBack = { sidebar.focusScope(scope) }
@@ -1190,7 +1223,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val area = RectF(m, m, root.width - m, root.height - m)
         popup.open(name, listOf(
             HoldPopup.Button("Move to top") { moveGroupToTop(scope) },
-            HoldPopup.Button("Hide category") { hideGroup(scope) },
+            HoldPopup.Button("Hide group") { hideGroup(scope) },
         ), inRoot(row, RectF(0f, 0f, row.width.toFloat(), row.height.toFloat())), area)
     }
 
@@ -1212,12 +1245,17 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     /**
-     * Hide category: the group leaves the column at once and focus goes to the row in its place; the guide showing it
+     * Hide group: the group leaves the column at once and focus goes to the row in its place; the guide showing it
      * shows that row's channels instead. Stored behind; Manage groups shows it again.
      */
     private fun hideGroup(scope: GuideScope.Group) {
         val landing = sidebar.hideGroup(scope.playlistId, scope.groupId)
-        if (landing != null) popupFocusBack = { sidebar.focusScope(landing) }
+        if (landing != null) {
+            popupFocusBack = { sidebar.focusScope(landing) }
+            // No longer one of the column's groups: TV Guide mustn't bring it back as the guide's list (focusPlaying).
+            // This page skips its own reload for this change; if the change isn't stored, the reload puts it back.
+            groupNames = groupNames - (scope.playlistId to scope.groupId)
+        }
         popup.close()
         if (landing == null) return
         showNotice("Hidden. Show it again in Manage groups.")
@@ -1308,6 +1346,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (FireDialog.isShowing(activity) || host.overlayOpen() || popup.isOpen || host.railHasFocus()) { scheduleIdle(); return@Runnable }
         // Not onto a channel that couldn't be played.
         if (player.status().error != null) return@Runnable
+        // Not onto a paused channel's still picture: tried again later (it may carry on by itself).
+        if (player.paused) { scheduleIdle(); return@Runnable }
         toFull()
     }
 
@@ -1340,13 +1380,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Never left unused: Android would hand it to the last app that played something (a paused Stremio film,
         // seen on the Fire TV), which would start playing behind this page.
         if (!fullScreen && code in PLAY_PAUSE_KEYS) {
-            if (down && event.repeatCount == 0 && player.playingKey != null && player.status().error == null) {
-                val wantsPause = code == KeyEvent.KEYCODE_MEDIA_PAUSE
-                val wantsPlay = code == KeyEvent.KEYCODE_MEDIA_PLAY
-                if ((wantsPause && !player.paused) || (wantsPlay && player.paused) || (!wantsPause && !wantsPlay)) {
-                    player.togglePause()
-                    showNotice(if (player.paused) "Paused" else "Playing")
-                }
+            if (down && event.repeatCount == 0 && player.playingKey != null && player.status().error == null && pauseWanted(code)) {
+                pauseQuietly()
             }
             return true
         }
@@ -1361,9 +1396,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
         if (code in PLAY_PAUSE_KEYS) {
             if (down && event.repeatCount == 0) {
-                val wantsPause = code == KeyEvent.KEYCODE_MEDIA_PAUSE
-                val wantsPlay = code == KeyEvent.KEYCODE_MEDIA_PLAY
-                if ((wantsPause && !player.paused) || (wantsPlay && player.paused) || (!wantsPause && !wantsPlay)) togglePause()
+                if (pauseWanted(code)) togglePause()
                 else if (!controls.controlsShown) showControls()
             }
             return true
@@ -1415,6 +1448,34 @@ class LivePage(private val activity: Activity, private val host: Host) {
             else -> return false
         }
         return true
+    }
+
+    /**
+     * Play/Pause while a settings window, a small window or the rail has the keys ([dispatchKey] isn't asked then):
+     * the channel still pauses or carries on, as the VOD player does, with focus left where it is. True for those
+     * keys, used or not (left to Android, they'd go to the last app that played something).
+     */
+    fun mediaKey(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (code !in PLAY_PAUSE_KEYS) return false
+        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return true
+        if (player.playingKey == null || player.status().error != null || !pauseWanted(code)) return true
+        if (fullScreen && !FireDialog.isShowing(activity) && !host.overlayOpen()) togglePause() else pauseQuietly()
+        return true
+    }
+
+    /** Whether [code] pauses or carries on now (Pause while paused, or Play while playing, does nothing). */
+    private fun pauseWanted(code: Int): Boolean {
+        val wantsPause = code == KeyEvent.KEYCODE_MEDIA_PAUSE
+        val wantsPlay = code == KeyEvent.KEYCODE_MEDIA_PLAY
+        return (wantsPause && !player.paused) || (wantsPlay && player.paused) || (!wantsPause && !wantsPlay)
+    }
+
+    /** Pauses or carries on with a word to say so, the controls and focus left as they are. */
+    private fun pauseQuietly() {
+        player.togglePause()
+        controls.setStatus(player.status())
+        showNotice(if (player.paused) "Paused" else "Playing")
     }
 
     private fun reveal(code: Int, event: KeyEvent) {

@@ -87,11 +87,20 @@ class SidePanel(private val activity: Activity) {
         }
     }
 
+    /**
+     * Told the window's width each time a window takes its place (opened, opened over another, come back to), so what
+     * the window covers (the player's subtitles) can move aside by as much.
+     */
+    var onWidthChanged: ((Int) -> Unit)? = null
+
     /** Wide (about 44% of the screen) or the usual third. Set once as a window opens, never while it moves. */
     private fun setWide(on: Boolean) {
         wide = on
+        // Wide windows are for long names and values: their values may grow wider before they're shortened.
+        rows.valueMaxDp = if (on) Rows.WIDE_VALUE_MAX_DP else Rows.VALUE_MAX_DP
         val width = if (on) wideWidth else normalWidth
         if (root.layoutParams.width != width) root.layoutParams = root.layoutParams.apply { this.width = width }
+        onWidthChanged?.invoke(width)
     }
 
     /** Opens a window; [wide] for one whose rows have long names (a playlist's groups or channels). */
@@ -379,7 +388,8 @@ class SidePanel(private val activity: Activity) {
 
     /**
      * A tappable row. [checked] shows the blue tick used for the current choice;
-     * [value] is shown on the right. A row that isn't [enabled] is dimmed and skipped by the D-pad.
+     * [value] is shown on the right. A row that isn't [enabled] (not available here) is dimmed ([dim]) and skipped by
+     * the D-pad; it stays in its card.
      */
     fun row(
         label: String,
@@ -396,9 +406,28 @@ class SidePanel(private val activity: Activity) {
         } else {
             row.isFocusable = false
             row.isClickable = false
-            row.alpha = 0.38f
+            dim(row)
         }
-        add(row, groupable = enabled)
+        add(row)
+        return row
+    }
+
+    /**
+     * Draws [row] faint, the one look for a row that can't be used just now (not available, or busy checking). Only
+     * what it shows fades: its slice of the card stays, so the card has no pale band in it.
+     */
+    fun dim(row: View) {
+        (row as? ViewGroup)?.let { Rows.dim(it) }
+    }
+
+    /** A row with an icon before its label, as the Settings tab lists the categories ([SettingsCategory.icon]). */
+    fun iconRow(label: String, icon: Int, onClick: () -> Unit): View {
+        val row = rows.build(label, null, null)
+        row.addView(rows.icon(icon, 16).apply {
+            (layoutParams as LinearLayout.LayoutParams).apply { marginStart = 0; marginEnd = rows.dp(10) }
+        }, 0)
+        row.setOnClickListener { onClick() }
+        add(row)
         return row
     }
 
@@ -415,9 +444,9 @@ class SidePanel(private val activity: Activity) {
     }
 
     /**
-     * A row with a small arrow button beside it, which shows or hides what belongs to it ([expanded]: pointing
-     * down, otherwise right). Right on the D-pad reaches the arrow, Left goes back; up and down pass both.
-     * [turned] turns the arrow from where it was, after a press.
+     * A row with a small arrow button beside it, which shows or hides what belongs to it: pointing down while closed
+     * and up while [expanded], as [dropdownRow]'s. Right on the D-pad reaches the arrow, Left goes back; up and down
+     * pass both. [turned] turns the arrow from where it was, after a press.
      */
     fun rowWithArrow(
         label: String,
@@ -432,8 +461,8 @@ class SidePanel(private val activity: Activity) {
         val chevron = ImageView(activity).apply {
             setImageResource(R.drawable.ic_chevron_down)
             imageTintList = rows.textColors
-            val to = if (expanded) 0f else -90f
-            rotation = if (turned) (if (expanded) -90f else 0f) else to
+            val to = if (expanded) 180f else 0f
+            rotation = if (turned) (if (expanded) 0f else 180f) else to
             if (turned) animate().rotation(to).setDuration(180).start()
         }
         val arrow = rows.base().apply {
@@ -615,12 +644,9 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
-    /**
-     * A row in smaller type, for a list of many (Playlists), with [trailing] after its value, such as [tickPill].
-     */
-    fun compactRow(label: String, value: String?, trailing: View?, onClick: () -> Unit): View {
+    /** A row with [trailing] after its value, such as [tickPill]; the same size as the other rows. */
+    fun rowWithPill(label: String, value: String?, trailing: View?, onClick: () -> Unit): View {
         val row = rows.build(label, value, null)
-        for (i in 0 until row.childCount) (row.getChildAt(i) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         if (trailing != null) row.addView(trailing)
         row.setOnClickListener { onClick() }
         add(row)
@@ -919,11 +945,19 @@ class SidePanel(private val activity: Activity) {
 
     /**
      * A setting with several values: shows the current one and opens a small picker window. [alsoChecked] is ticked
-     * there too: what the current value stands for (Auto's own pick).
+     * there too: what the current value stands for (Auto's own pick). [valueText] is the value as the row shows it,
+     * shorter than its name in the picker when that wouldn't fit the row.
      */
-    fun choice(label: String, options: List<String>, selected: Int, alsoChecked: Int? = null, onPick: (Int) -> Unit): View {
+    fun choice(
+        label: String,
+        options: List<String>,
+        selected: Int,
+        alsoChecked: Int? = null,
+        valueText: String? = null,
+        onPick: (Int) -> Unit,
+    ): View {
         // Always the value in words, even "Off" (no subtitle language): this row opens a picker, it isn't a switch.
-        val row = rows.build(label, options.getOrNull(selected) ?: "", null, asSwitch = false)
+        val row = rows.build(label, valueText ?: options.getOrNull(selected) ?: "", null, asSwitch = false)
         row.setOnClickListener {
             FireDialog.choose(activity, label, options, selected, besidePanel = true, alsoChecked = alsoChecked) { index ->
                 if (index != selected) onPick(index)
@@ -973,6 +1007,9 @@ class SidePanel(private val activity: Activity) {
             "This film" to R.drawable.ic_head_film,
             "This episode" to R.drawable.ic_head_film,
             "In this video" to R.drawable.ic_head_film,
+            "On this channel" to R.drawable.ic_head_tv,
+            "This copy" to R.drawable.ic_head_film,
+            "Copies" to R.drawable.ic_head_list,
             "Remote" to R.drawable.ic_head_remote,
             "Look" to R.drawable.ic_head_look,
             "Skipping" to R.drawable.ic_head_skip,
@@ -982,24 +1019,31 @@ class SidePanel(private val activity: Activity) {
             "Playlists" to R.drawable.ic_head_list,
             "Subtitle font" to R.drawable.ic_head_font,
             "Online subtitles and TMDB API" to R.drawable.ic_head_subs,
+            "Subtitle style" to R.drawable.ic_sub_style,
+            "Presets" to R.drawable.ic_head_star,
             "Other subtitles" to R.drawable.ic_head_subs,
             "Skip intro and credits" to R.drawable.ic_head_intro,
             "App" to R.drawable.ic_head_app,
             "Statuses" to R.drawable.ic_head_app,
-            "Playlists and EPG" to R.drawable.ic_head_list,
+            // As the Settings tab shows the category.
+            "Playlists & EPG" to R.drawable.ic_playlist_add,
             "Playlist" to R.drawable.ic_head_list,
-            "Account" to R.drawable.ic_head_app,
+            "Account" to R.drawable.ic_key,
             "Xtream Codes parameters" to R.drawable.ic_head_tv,
             "M3U playlist" to R.drawable.ic_head_tv,
-            "EPG sources" to R.drawable.ic_head_list,
+            "EPG sources" to R.drawable.ic_epg,
             "EPG" to R.drawable.ic_epg,
             "Groups" to R.drawable.ic_head_list,
             "Hide or show" to R.drawable.ic_head_look,
+            "Hidden groups" to R.drawable.ic_head_look,
+            "Favorites" to R.drawable.ic_head_star,
             "Order" to R.drawable.ic_head_list,
-            "Updates" to R.drawable.ic_head_app,
+            "Updates" to R.drawable.ic_refresh,
+            "Storage" to R.drawable.ic_head_download,
             // The Settings tab's Live TV window, beside its Remote and Playback.
             "Full screen" to R.drawable.ic_fullscreen,
-            "Guide" to R.drawable.ic_guide,
+            // A line icon like the others (the rail's filled guide glyph looks heavier at this size).
+            "Guide" to R.drawable.ic_epg,
             "Customs" to R.drawable.ic_head_star,
             "Downloaded before" to R.drawable.ic_head_download,
             "Search results" to R.drawable.ic_head_search,
