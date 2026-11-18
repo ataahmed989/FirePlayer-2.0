@@ -30,6 +30,9 @@ import app.fireplayer.ui.ListMath
 class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
     enum class Tab(val label: String, val icon: Int) {
+        HOME("Home", R.drawable.ic_home_rail),
+        MOVIES("Movies", R.drawable.ic_movies),
+        SHOWS("TV Shows", R.drawable.ic_tv_shows),
         LIVE("Live TV", R.drawable.ic_live),
         SETTINGS("Settings", R.drawable.ic_settings),
     }
