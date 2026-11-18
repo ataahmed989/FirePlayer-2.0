@@ -4,13 +4,19 @@ import android.util.Log
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.Episode
+import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.HeaderFeed
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.Page
+import app.fireplayer.vod.Position
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.hasImdbId
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -89,6 +95,8 @@ class DefaultVodRepository(
             is Source.NextEpisodes -> local(req, skip, limit, sink) { emptyList() }
             // Chips come from genres().
             is Source.Genres -> local(req, skip, limit, sink) { emptyList() }
+            // The title page fills these rows itself (details(), moreLikeThis()).
+            is Source.Fixed -> local(req, skip, limit, sink) { emptyList() }
         }
         return req
     }
@@ -139,6 +147,50 @@ class DefaultVodRepository(
     override fun removeLibraryListener(listener: () -> Unit) {
         listeners -= listener
     }
+
+    // ---- Title page (step 2) ----
+    // STUB FOR THE DATA ENGINEER (step 2): compiles and answers safely so the page can be built against it. details()
+    // gives only what the title already says (no meta, no TMDB, no episodes), moreLikeThis() nothing, resolve() only
+    // titles that already have their IMDb id; episode marks and positions aren't kept yet. Replace each with the real
+    // work (Cinemeta meta, TMDB details, More Like This, the per-episode library), following the contract's KDoc in
+    // VodContract.kt.
+
+    override fun details(title: Title, onDetails: (details: TitleDetails, fresh: Boolean) -> Unit): Cancel {
+        val req = Req()
+        post(req) { onDetails(TitleDetails.of(title), true) } // STUB (data engineer)
+        return req
+    }
+
+    override fun moreLikeThis(title: Title, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
+        val req = Req()
+        post(req) { onCards(emptyList(), true) } // STUB (data engineer)
+        return req
+    }
+
+    override fun resolve(title: Title, onTitle: (Title?) -> Unit): Cancel {
+        val req = Req()
+        post(req) { onTitle(title.takeIf { it.hasImdbId }) } // STUB (data engineer): no TMDB lookup yet
+        return req
+    }
+
+    override fun isEpisodeWatched(episode: Episode): Boolean = false // STUB (data engineer)
+
+    override fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean) = Unit // STUB (data engineer)
+
+    override fun markWatchedUpTo(details: TitleDetails, upTo: Episode) = Unit // STUB (data engineer)
+
+    override fun inContinueWatching(id: String): Boolean = library.continueWatching(null).any { it.title.id == id }
+
+    // STUB (data engineer): markedWatched isn't worked out yet.
+    override fun lastPlayed(title: Title): LastPlayed? = library.progressOf(title.kind, title.id)?.let {
+        LastPlayed(it.episode, Position(it.positionMs, it.durationMs, it.at), it.hidden)
+    }
+
+    override fun positionOf(episode: Episode): Position? = null // STUB (data engineer)
+
+    // STUB (data engineer): only the title's record; no episode position, no watched mark at the end.
+    override fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) =
+        library.recordProgress(title, episode, positionMs, durationMs)
 
     // ---- Cinemeta catalogs ----
 

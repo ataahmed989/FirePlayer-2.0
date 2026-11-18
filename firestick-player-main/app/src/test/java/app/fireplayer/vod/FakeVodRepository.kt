@@ -30,6 +30,22 @@ class FakeVodRepository : VodRepository {
     private val continueRemoved = HashSet<String>()
     private val listeners = ArrayList<() -> Unit>()
 
+    // ---- Title page (step 2) ----
+
+    /** Details by IMDb id; a title without an entry answers [TitleDetails.of] (fresh = true). */
+    val titleDetails = HashMap<String, TitleDetails>()
+    /** More Like This by IMDb id (empty when missing). */
+    val similar = HashMap<String, List<Card>>()
+    /** What [resolve] finds for a stand-in id; a missing one answers null. */
+    val resolved = HashMap<String, Title>()
+    /** Continue Watching records by IMDb id ([lastPlayed]); positions by episode id ([positionOf]). */
+    val records = HashMap<String, LastPlayed>()
+    val positions = HashMap<String, Position>()
+    /** The time [markWatchedUpTo] asks "aired?" at. */
+    var now = Long.MAX_VALUE
+    val detailsAsked = ArrayList<Title>()
+    private val watchedEpisodes = HashSet<String>()
+
     override fun rows(page: Page): List<RowSpec> = when (page) {
         Page.HOME -> listOf(
             RowSpec("home.continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true),
@@ -134,6 +150,54 @@ class FakeVodRepository : VodRepository {
 
     override fun removeLibraryListener(listener: () -> Unit) {
         listeners -= listener
+    }
+
+    override fun details(title: Title, onDetails: (details: TitleDetails, fresh: Boolean) -> Unit): Cancel {
+        detailsAsked += title
+        onDetails(titleDetails[title.id] ?: TitleDetails.of(title), true)
+        return Cancel { }
+    }
+
+    override fun moreLikeThis(title: Title, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
+        onCards(similar[title.id].orEmpty(), true)
+        return Cancel { }
+    }
+
+    override fun resolve(title: Title, onTitle: (Title?) -> Unit): Cancel {
+        onTitle(if (title.hasImdbId) title else resolved[title.id])
+        return Cancel { }
+    }
+
+    override fun isEpisodeWatched(episode: Episode): Boolean = episode.id in watchedEpisodes
+
+    override fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean) {
+        if (watched) watchedEpisodes += episodes.map { it.id } else watchedEpisodes -= episodes.map { it.id }.toSet()
+        changed()
+    }
+
+    override fun markWatchedUpTo(details: TitleDetails, upTo: Episode) {
+        if (!upTo.aired(now)) return
+        val upToHere = details.episodes.filter {
+            it.isSpecial == upTo.isSpecial && it.aired(now) &&
+                (it.season < upTo.season || (it.season == upTo.season && it.episode <= upTo.episode))
+        }
+        setEpisodesWatched(upToHere, true)
+    }
+
+    override fun inContinueWatching(id: String): Boolean =
+        id !in continueRemoved && id !in watched &&
+            catalogs.any { (source, cards) -> source is Source.ContinueWatching && cards.any { it.title.id == id } }
+
+    override fun lastPlayed(title: Title): LastPlayed? = records[title.id]
+
+    override fun positionOf(episode: Episode): Position? = positions[episode.id]
+
+    override fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) {
+        val position = Position(positionMs, durationMs, if (now == Long.MAX_VALUE) 0L else now)
+        records[title.id] = LastPlayed(episode, position)
+        if (episode != null) positions[Episode.idOf(title.id, episode.season, episode.episode)] = position
+        continueRemoved -= title.id
+        changed()
     }
 
     val listenerCount: Int get() = listeners.size
