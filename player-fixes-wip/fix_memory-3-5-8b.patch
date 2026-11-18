@@ -1,0 +1,1116 @@
+From 94422f671f2f1df249ca2eddccce6afabd0c8c43 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 19:38:36 +0000
+Subject: [PATCH] Film buffer sized to the TV's memory, no 4K skip preview on
+ small TVs, libass overlay only when used
+
+Fix 3: the film's buffer goes by the TV's memory in all (ActivityManager
+totalMem and isLowRamDevice), not the app's heap limit. FilmMemory/RamTier
+pick the tier: low-RAM or under 1.4 GiB 64 MiB with 4 s kept behind; under
+1.8 GiB 128 MiB / 6 s (the Fire TV Stick 4K Max); under 2.6 GiB 176 MiB /
+10 s; otherwise 256 MiB / 15 s. 0.6 x maxMemory and 400 MiB stay as upper
+caps, 48 MiB is the floor. FilmLoadControl owns the DefaultAllocator and
+can be squeezed at run time (PlayerFactory.Built.squeeze): step 1 fills to
+3/4, step 2 to 1/2 (never under 48 MiB), with the allocator trimmed; it
+never stops loading with under 5 s ahead, so start, stall and cushion
+rules are unchanged. PlayerActivity squeezes on onTrimMemory
+(RUNNING_LOW step 1, RUNNING_CRITICAL step 2) and on a 10 s MemoryInfo
+check in the play tick (low: step 1, still low 30 s later: step 2), and
+gives a step back after 2 minutes without pressure. The live player is
+unchanged.
+
+Fix 5: on TVs under 2.6 GiB the skip preview no longer goes past its
+1080p limit, so a 4K-only film gets no second 4K decoder; SeekPreview says
+so once through its failure path and skipping works as without previews.
+Its player is let go 3 s after skipping stops there (15 s elsewhere).
+
+Fix 8: libass's OpenGL overlay (TextureView, render thread, GL context)
+is attached only the first time an ASS/SSA track is chosen, instead of
+for every film; parsing and libass's renderer are set up as before, and
+"Keep embedded styling" means what it did.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     |  61 +++++-
+ .../java/app/fireplayer/player/AssOverlay.kt  |  30 +++
+ .../java/app/fireplayer/player/FilmMemory.kt  | 172 +++++++++++++++
+ .../app/fireplayer/player/PlayerFactory.kt    | 134 +++++++++---
+ .../java/app/fireplayer/ui/SeekPreview.kt     |  53 ++++-
+ .../app/fireplayer/player/AssOverlayTest.kt   |  47 ++++
+ .../app/fireplayer/player/FilmMemoryTest.kt   | 200 ++++++++++++++++++
+ .../java/app/fireplayer/ui/SeekPreviewTest.kt |  56 +++++
+ 8 files changed, 722 insertions(+), 31 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/AssOverlay.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/AssOverlayTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/FilmMemoryTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/ui/SeekPreviewTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index b65d335..be83f73 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -3,6 +3,7 @@ package app.fireplayer
+ import android.view.animation.DecelerateInterpolator
+ import android.widget.FrameLayout
+ import android.app.ActivityManager
++import android.content.ComponentCallbacks2
+ import android.content.Intent
+ import android.graphics.Paint
+ import android.media.AudioDeviceInfo
+@@ -62,9 +63,12 @@ import app.fireplayer.data.Prefs
+ import app.fireplayer.history.ContinueWatching
+ import app.fireplayer.history.ShowEpisodes
+ import app.fireplayer.history.WatchHistory
++import app.fireplayer.player.AssOverlay
+ import app.fireplayer.player.BufferWait
+ import app.fireplayer.player.DecoderCheck
+ import app.fireplayer.player.Delays
++import app.fireplayer.player.FilmMemory
++import app.fireplayer.player.MemoryPressure
+ import app.fireplayer.player.DisplaySwitch
+ import app.fireplayer.player.FpsMeter
+ import app.fireplayer.player.JumpFrameCheck
+@@ -244,6 +248,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+     private var glassAfterSeek = false
+     private var assHandler: AssHandler? = null
+     private var bufferWait: () -> BufferWait? = { null }
++    /** The film's player as built, for squeezing its buffer and putting up libass's overlay; null without a player. */
++    private var builtPlayer: PlayerFactory.Built? = null
++    /** How far the film's buffer is squeezed for the TV's memory; kept across new players (see checkMemory). */
++    private val memoryPressure = MemoryPressure()
+ 
+     // Views
+     private lateinit var root: ViewGroup
+@@ -1026,6 +1034,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         builtWithAss = prefs.keepAssStyling
+         assHandler = built.assHandler
+         bufferWait = built.bufferWait
++        builtPlayer = built
++        // A new player while the TV is still short of memory starts squeezed.
++        if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
+         p.setVideoSurfaceView(surfaceView)
+         p.addListener(this)
+         p.addAnalyticsListener(filmLoadErrors)
+@@ -1135,6 +1146,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         p.release()
+         assHandler?.release()
+         assHandler = null
++        builtPlayer = null
+         player = null
+         // The old player can't clear its last line any more, so do it here.
+         lastTextCues = emptyList()
+@@ -1534,6 +1546,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         updateChips()
+         matchFrameRate()
+         updatePictureReading()
++        // libass's overlay goes up the first time a styled track is chosen (see AssOverlay).
++        if (libassShowing()) builtPlayer?.assOverlay?.show()
+         // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
+         if (stylingNeedsRebuild()) {
+             handler.removeCallbacks(rebuildForAss)
+@@ -1680,9 +1694,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
+     }
+ 
+-    private fun libassShowing(): Boolean = assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
+-        it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
+-    } == true
++    private fun libassShowing(): Boolean = assHandler != null && AssOverlay.isStyled(selectedFormat(C.TRACK_TYPE_TEXT))
+ 
+     override fun onPlayerError(error: PlaybackException) {
+         val p = player ?: return
+@@ -2069,6 +2081,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             },
+             // Mid-skip the card shows the "+4:00"; the note waits for the jump.
+             onFailed = { note -> if (seeking) pendingNotice = note else showNotice(note, NOTE_MS) },
++            // On a TV short of memory (under 2.6 GiB) the preview's player goes 3 s after skipping stops, and a video
++            // with only pictures bigger than 1080p gets no preview (see PlayerFactory.buildPreview).
++            holdMs = FilmMemory.tier(this).previewHoldMs,
++            upTo1080pOnly = FilmMemory.tier(this).short,
+         )
+         seekRow = findViewById(R.id.seek_row)
+         timeElapsed = findViewById(R.id.time_elapsed)
+@@ -2307,10 +2323,45 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
+             // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
+             if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
++            if (chipTicks % MEMORY_CHECK_TICKS == 0) checkMemory()
+             handler.postDelayed(this, 200)
+         }
+     }
+ 
++    /**
++     * From [postPlayTick] every 10 s: Fire OS saying memory is low squeezes the film's buffer to three quarters, and to
++     * half when it's still low half a minute later; two minutes without it give a step back (see [MemoryPressure]).
++     * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
++     */
++    private fun checkMemory() {
++        if (player == null) return
++        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) squeezeFilmBuffer()
++    }
++
++    /** Gives the film's buffer the size [memoryPressure] calls for now. */
++    private fun squeezeFilmBuffer() {
++        val built = builtPlayer ?: return
++        val step = memoryPressure.step
++        val bytes = built.squeeze(step)
++        android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
++            ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
++    }
++
++    /**
++     * Fire OS asking the app in front to use less memory: the film's buffer gives a quarter back when memory is running
++     * low, and half when it's critical, until two minutes go by without it (see [checkMemory]).
++     */
++    override fun onTrimMemory(level: Int) {
++        super.onTrimMemory(level)
++        @Suppress("DEPRECATION")
++        val step = when (level) {
++            ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> 2
++            ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1
++            else -> return
++        }
++        if (memoryPressure.trimAsked(step, SystemClock.elapsedRealtime())) squeezeFilmBuffer()
++    }
++
+     /**
+      * The end of an episode, Netflix-style: when a show has a next episode, a card comes up where the credits start
+      * (only with times for them). Next episode counts [Prefs.autoCountdownSec] of playing and starts the next one, or,
+@@ -5960,7 +6011,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         const val LOOKUP_WAIT_MS = 3 * 60_000L
+         const val LOOKUP_BEFORE_END_MS = 4 * 60_000L
+         // The least the film keeps behind where it is (on TVs with little memory); a jump back further loads again.
+-        const val KEPT_BEHIND_MS = 5_000L
++        const val KEPT_BEHIND_MS = FilmMemory.LEAST_BACK_BUFFER_MS.toLong()
+         // Two film drops just after the preview connected, this close together, mean the server cuts one off.
+         const val CUT_OFF_PAIR_MS = 60_000L
+         const val POST_PLAY_COUNT_MS = 10_000L
+@@ -5991,6 +6042,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         const val CHIP_REFRESH_TICKS = 15
+         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
+         const val KEEP_QUALITY_TICKS = 150
++        /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
++        const val MEMORY_CHECK_TICKS = 50
+         /** A wait to load this soon after a jump is the jump's. */
+         const val JUMP_WAIT_MS = 3_000L
+         // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/AssOverlay.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/AssOverlay.kt
+new file mode 100644
+index 0000000..4ae786b
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/AssOverlay.kt
+@@ -0,0 +1,30 @@
++package app.fireplayer.player
++
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++
++/**
++ * libass's picture over the film, for styled (ASS/SSA) subtitles with "Keep embedded styling" on: an OpenGL TextureView
++ * with its own render thread and GL context, and a full-screen buffer once it draws, which libass wakes every third
++ * playback loop while it's on screen. Every film used to get one, styled track or not, so now it's put up only the first
++ * time a styled track is chosen ([show], with [attach] doing it), and goes with the player. The rest of libass (reading
++ * the tracks, its renderer) is set up with the player as before, so a styled track chosen later shows as it did.
++ */
++class AssOverlay(private val attach: () -> Unit) {
++    /** Whether the overlay is up. */
++    var shown = false
++        private set
++
++    /** Puts the overlay up, once: a styled track is chosen. */
++    fun show() {
++        if (shown) return
++        shown = true
++        attach()
++    }
++
++    companion object {
++        /** Whether [format], the subtitle track chosen, is one libass draws (ASS/SSA, before or after it's read). */
++        fun isStyled(format: Format?): Boolean =
++            format != null && (format.sampleMimeType == MimeTypes.TEXT_SSA || format.codecs == MimeTypes.TEXT_SSA)
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+new file mode 100644
+index 0000000..ef5ea7b
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+@@ -0,0 +1,172 @@
++package app.fireplayer.player
++
++import android.app.ActivityManager
++import android.content.Context
++
++/**
++ * How much memory the TV has, in the steps the film's buffer and the skip preview are sized by. It's read from the
++ * TV's total memory and whether Fire OS calls it a low-memory device, not from the app's heap limit: Fire OS gives
++ * FirePlayer the same 384 MB heap limit on a Fire TV Stick with 1.7 GB in all as on a TV with 3 GB, though the Stick
++ * can't spare it (seen: the Stick's low-memory killer looping while a 4K film held 230 MB of buffer, and the film
++ * losing frames).
++ */
++enum class RamTier(
++    /** The most the film's buffer holds, ahead and behind together (MiB). */
++    val budgetMiB: Int,
++    /** How much of the film is kept behind where it plays (ms), so going back a little plays at once. */
++    val backBufferMs: Int,
++) {
++    /** Fire OS's low-memory devices, and anything under 1.4 GiB. */
++    TINY(64, FilmMemory.LEAST_BACK_BUFFER_MS),
++    /** Under 1.8 GiB, as the Fire TV Stick 4K Max (1.7 GB). */
++    SMALL(128, 6_000),
++    /** Under 2.6 GiB: TVs sold as "2 GB". */
++    MEDIUM(176, 10_000),
++    /** 2.6 GiB and up. */
++    LARGE(256, 15_000),
++    ;
++
++    /**
++     * Short of memory for a second 4K picture: the skip preview keeps to pictures up to 1080p (a 4K-only film gets
++     * none) and lets its player go 3 s after skipping stops instead of 15 s.
++     */
++    val short: Boolean get() = this != LARGE
++
++    /** How long after the last skip the preview's player is kept, in case skipping starts again. */
++    val previewHoldMs: Long get() = if (short) 3_000L else 15_000L
++
++    companion object {
++        private const val GIB = 1L shl 30
++
++        /** The tier for a TV with [totalMemBytes] of memory in all; [lowRam] is Fire OS's isLowRamDevice. */
++        fun of(totalMemBytes: Long, lowRam: Boolean): RamTier = when {
++            lowRam -> TINY
++            // Not reported (never seen): the largest tier, still held to the heap limit (FilmMemory.plan).
++            totalMemBytes <= 0L -> LARGE
++            totalMemBytes < (1.4 * GIB).toLong() -> TINY
++            totalMemBytes < (1.8 * GIB).toLong() -> SMALL
++            totalMemBytes < (2.6 * GIB).toLong() -> MEDIUM
++            else -> LARGE
++        }
++    }
++}
++
++/** What the film's buffer gets on this TV (see [FilmMemory.plan]). */
++data class FilmBufferPlan(val tier: RamTier, val budgetBytes: Int, val backBufferMs: Int)
++
++/**
++ * The film's buffer and the TV's memory: how big the buffer is on this TV, how far it steps down while Fire OS is short
++ * of memory, and when it steps back up.
++ */
++object FilmMemory {
++    /** No film buffer is smaller than this, squeezed or not. */
++    const val FLOOR_BYTES = 48 shl 20
++    /** Nor bigger than this, whatever the TV. */
++    const val CEILING_BYTES = 400 shl 20
++    /** The most of the app's heap limit the film's buffer may take: the rest is the app's own. */
++    const val HEAP_SHARE = 0.6
++    /** The least any TV keeps behind where the film plays. */
++    const val LEAST_BACK_BUFFER_MS = 4_000
++    /**
++     * A squeezed buffer never stops loading with less than this ahead: what's kept behind can't be let go while the film
++     * plays, so a cap lowered under it would leave nothing ahead and stall the film.
++     */
++    const val MIN_AHEAD_US = 5_000_000L
++
++    /**
++     * The film's buffer on a TV of [tier] whose app heap limit is [maxHeapBytes] (Runtime.maxMemory): the tier's
++     * budget, but never more than [HEAP_SHARE] of the heap limit or [CEILING_BYTES], nor less than [FLOOR_BYTES].
++     * Held under the tier's budget by a small heap limit, it keeps behind what the tier that budget fits keeps, or
++     * the room ahead would shrink to a few seconds in a 4K film.
++     */
++    fun plan(tier: RamTier, maxHeapBytes: Long): FilmBufferPlan {
++        val budget = minOf(tier.budgetMiB.toLong() shl 20, (maxHeapBytes * HEAP_SHARE).toLong(), CEILING_BYTES.toLong())
++            .coerceAtLeast(FLOOR_BYTES.toLong()).toInt()
++        val fits = RamTier.entries.lastOrNull { (it.budgetMiB.toLong() shl 20) <= budget } ?: RamTier.TINY
++        return FilmBufferPlan(tier, budget, minOf(tier.backBufferMs, fits.backBufferMs))
++    }
++
++    /**
++     * What the buffer fills to at squeeze [step]: 0 is the whole [budgetBytes], 1 three quarters (Fire OS says memory
++     * is running low), 2 half (critical, or still low half a minute on); never below [FLOOR_BYTES].
++     */
++    fun capFor(budgetBytes: Int, step: Int): Int {
++        val cap = when {
++            step <= 0 -> budgetBytes
++            step == 1 -> (budgetBytes.toLong() * 3 / 4).toInt()
++            else -> budgetBytes / 2
++        }
++        return cap.coerceAtLeast(FLOOR_BYTES).coerceAtMost(budgetBytes)
++    }
++
++    /**
++     * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], or the whole
++     * [budgetBytes] while less than [MIN_AHEAD_US] is ahead.
++     */
++    fun fillLimit(capBytes: Int, budgetBytes: Int, aheadUs: Long): Int =
++        if (aheadUs >= MIN_AHEAD_US) capBytes else maxOf(capBytes, budgetBytes)
++
++    @Volatile private var tier: RamTier? = null
++
++    /** This TV's tier, read once (its total memory doesn't change). */
++    fun tier(context: Context): RamTier = tier ?: run {
++        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
++        val found = if (am == null) RamTier.LARGE else {
++            val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
++            RamTier.of(info.totalMem, am.isLowRamDevice)
++        }
++        tier = found
++        found
++    }
++
++    /** Whether Fire OS says memory is low right now (ActivityManager.MemoryInfo.lowMemory). */
++    fun lowNow(context: Context): Boolean {
++        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
++        return ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }.lowMemory
++    }
++}
++
++/**
++ * How far the film's buffer is squeezed for the TV's memory ([step]: 0 not at all, 1 to three quarters, 2 to half; see
++ * [FilmMemory.capFor]). Fire OS asking the app to trim (onTrimMemory) goes straight to the step it calls for; its
++ * "memory is low", read every 10 s, means step 1, and step 2 when still low [escalateMs] later. After [recoverMs]
++ * without either, it steps back up one step, and another after the same again. Times are elapsedRealtime.
++ */
++class MemoryPressure(
++    private val escalateMs: Long = 30_000L,
++    private val recoverMs: Long = 120_000L,
++) {
++    var step = 0
++        private set
++    // When the latest run of "memory is low" readings began, or -1 when the last reading wasn't low.
++    private var lowSince = -1L
++    // When memory was last short (a trim asked for, or a low reading), or when the last step back up was taken.
++    private var lastPressureAt = 0L
++
++    /** Fire OS asked the app to trim, calling for [wanted] (1 running low, 2 critical). True when the step changed. */
++    fun trimAsked(wanted: Int, nowMs: Long): Boolean {
++        lastPressureAt = nowMs
++        return raise(wanted)
++    }
++
++    /** The 10 s check: [low] is whether Fire OS says memory is low now. True when the step changed. */
++    fun checked(low: Boolean, nowMs: Long): Boolean {
++        if (low) {
++            if (lowSince < 0) lowSince = nowMs
++            lastPressureAt = nowMs
++            return raise(if (nowMs - lowSince >= escalateMs) 2 else 1)
++        }
++        lowSince = -1L
++        if (step == 0 || nowMs - lastPressureAt < recoverMs) return false
++        step--
++        lastPressureAt = nowMs
++        return true
++    }
++
++    private fun raise(wanted: Int): Boolean {
++        val next = wanted.coerceIn(0, 2)
++        if (next <= step) return false
++        step = next
++        return true
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index c643b64..c334e36 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -3,6 +3,7 @@ package app.fireplayer.player
+ import android.content.Context
+ import android.os.Handler
+ import android.os.SystemClock
++import android.util.Log
+ import androidx.annotation.OptIn
+ import androidx.media3.common.C
+ import androidx.media3.common.MimeTypes
+@@ -20,7 +21,9 @@ import androidx.media3.exoplayer.analytics.PlayerId
+ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+ import androidx.media3.exoplayer.source.TrackGroupArray
+ import androidx.media3.exoplayer.trackselection.ExoTrackSelection
++import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+ import androidx.media3.exoplayer.upstream.Allocator
++import androidx.media3.exoplayer.upstream.DefaultAllocator
+ import androidx.media3.exoplayer.ForwardingRenderer
+ import androidx.media3.common.Format
+ import androidx.media3.exoplayer.Renderer
+@@ -72,7 +75,20 @@ class BufferWait(val fraction: Float, val slowLine: Boolean, val atMs: Long)
+ @OptIn(UnstableApi::class)
+ object PlayerFactory {
+ 
+-    class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
++    class Built(
++        val player: ExoPlayer,
++        val assHandler: AssHandler?,
++        val bufferWait: () -> BufferWait?,
++        private val squeezer: (Int) -> Int,
++        /** libass's overlay over the film, put up the first time a styled track is chosen; null without libass. */
++        val assOverlay: AssOverlay?,
++    ) {
++        /**
++         * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
++         * 2 half (see [FilmMemory.capFor]). Gives back what the buffer now fills to, in bytes.
++         */
++        fun squeeze(step: Int): Int = squeezer(step)
++    }
+ 
+     /**
+      * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
+@@ -80,6 +96,10 @@ object PlayerFactory {
+      */
+     val FILM_SEEK = SeekParameters(2_000_000L, 0L)
+ 
++    /** The biggest picture the skip preview asks for; on a TV short of memory, the biggest it decodes at all. */
++    const val PREVIEW_MAX_WIDTH = 1920
++    const val PREVIEW_MAX_HEIGHT = 1080
++
+     /**
+      * Decoders for the skip preview. Its picture is decoded while the film plays, so 4K-class formats only get a
+      * hardware decoder: decoding them on the processor would take it from the film and make it stutter.
+@@ -140,16 +160,24 @@ object PlayerFactory {
+         val renderers = DefaultRenderersFactory(context)
+             .setEnableDecoderFallback(true)
+             .setMediaCodecSelector(PREVIEW_DECODERS)
++        val trackSelector = DefaultTrackSelector(context)
++        trackSelector.setParameters(
++            trackSelector.buildUponParameters()
++                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
++                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
++                .setMaxVideoSize(PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT)
++                // A film with no picture that small is still previewed at its own size, except on a TV short of memory
++                // (under 2.6 GiB): a second 4K decoder there, and its 25 MB pictures beside the film's, take what the
++                // film needs. A 4K-only film gets no preview on those (SeekPreview says so once) and skips as without.
++                .setExceedVideoConstraintsIfNecessary(!FilmMemory.tier(context).short)
++                .build(),
++        )
+         val player = ExoPlayer.Builder(context)
+             .setMediaSourceFactory(mediaSourceFactory)
+             .setRenderersFactory(renderers)
++            .setTrackSelector(trackSelector)
+             .setLoadControl(loadControl)
+             .build()
+-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+-            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+-            .setMaxVideoSize(1920, 1080)
+-            .build()
+         // Jumping to the nearest keyframe is what makes a preview quick.
+         player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+         player.volume = 0f
+@@ -256,21 +284,23 @@ object PlayerFactory {
+             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+             .setEnableDecoderFallback(true)
+ 
+-        // As much of the film as memory allows, up to two minutes ahead, topped up all the time. High-quality
++        // As much of the film as this TV can spare, up to two minutes ahead, topped up all the time. High-quality
+         // films fill it by size first; the stall-free stretch then depends on the connection, not a fixed
+-        // half minute.
+-        val budget = (Runtime.getRuntime().maxMemory() * 0.6).toLong().coerceIn(64L shl 20, 400L shl 20).toInt()
++        // half minute. What the TV can spare goes by its memory in all (FilmMemory), not the app's heap limit: Fire OS
++        // allows 384 MB even on a Stick with 1.7 GB, where a 230 MB buffer left the TV short of memory and the film
++        // losing frames.
++        val plan = FilmMemory.plan(FilmMemory.tier(context), Runtime.getRuntime().maxMemory())
++        val budget = plan.budgetBytes
+         // What's kept behind comes out of the same memory as what's ahead (for a 4K remux, about 8 MB a second), so
+-        // TVs with less of it keep less, or the room ahead would shrink to a few seconds.
+-        val backBufferMs = when {
+-            budget >= 280 shl 20 -> 15_000
+-            // Still one press back (10 s, landing up to 2 s early) on a TV with 384 MB for an app, as the Fire TV Stick
+-            // 4K Plus: at 10 s, going back one press in a 4K film loaded it all again (2 s, measured).
+-            budget >= 180 shl 20 -> 13_000
+-            else -> 5_000
+-        }
++        // TVs with less of it keep less, or the room ahead would shrink to a few seconds. Below 10 s, going back one
++        // press (10 s, landing up to 2 s early) loads that stretch again (2 s in a 4K film, measured).
++        val backBufferMs = plan.backBufferMs
++        Log.i("FirePlayer", "Film buffer: ${plan.tier} memory, ${budget shr 20} MiB, ${backBufferMs / 1000} s kept behind")
++        // Owned here so the film's buffer can give memory back while the TV is short of it (FilmLoadControl.squeeze).
++        val allocator = DefaultAllocator(/* trimOnReset = */ true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+         val loadControl = FilmLoadControl(
+             DefaultLoadControl.Builder()
++                .setAllocator(allocator)
+                 .setBufferDurationsMs(
+                     /* minBufferMs = */ 120_000,
+                     /* maxBufferMs = */ 120_000,
+@@ -286,6 +316,7 @@ object PlayerFactory {
+                 // couldn't be decoded.
+                 .setBackBuffer(backBufferMs, /* retainBackBufferFromKeyframe = */ true)
+                 .build(),
++            allocator,
+             budget,
+             serverSwitch,
+         )
+@@ -315,7 +346,7 @@ object PlayerFactory {
+                 .setMediaSourceFactory(mediaSourceFactory)
+                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
+                 .build()
+-            return Built(player, null) { loadControl.wait }
++            return Built(player, null, { loadControl.wait }, loadControl::squeeze, null)
+         }
+ 
+         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
+@@ -334,9 +365,11 @@ object PlayerFactory {
+             .setMediaSourceFactory(mediaSourceFactory)
+             .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays, vsync))
+             .build()
+-        assSubtitleView.withAssSupport(assHandler)
+         assHandler.init(player)
+-        return Built(player, assHandler) { loadControl.wait }
++        // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
++        // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
++        val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
++        return Built(player, assHandler, { loadControl.wait }, loadControl::squeeze, overlay)
+     }
+ }
+ 
+@@ -427,14 +460,26 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
+  * high-quality film on a slower line), playback waits for enough to then play a minute without stopping, instead of
+  * starting at once and stopping again every few seconds. Stalls that keep coming also make the next wait longer
+  * (4, 10, then 20 seconds).
++ *
++ * While the TV is short of memory the buffer fills to less than its budget ([squeeze]), and the memory it lets go of
++ * is freed instead of kept for reuse. [allocator] is [inner]'s, owned by [PlayerFactory.build] for that.
+  */
+ @OptIn(UnstableApi::class)
+ private class FilmLoadControl(
+     private val inner: DefaultLoadControl,
++    private val allocator: DefaultAllocator,
+     private val budgetBytes: Int,
+     private val serverSwitch: ServerSwitch,
+ ) : LoadControl {
+ 
++    /**
++     * What the buffer fills to: [budgetBytes], or less while the TV is short of memory. Set on the main thread, read on
++     * the playback thread.
++     */
++    @Volatile private var capBytes = budgetBytes
++    // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
++    private var trimmedAt = 0L
++
+     // When recent stalls began (elapsedRealtime), on the playback thread only.
+     private val stalls = ArrayDeque<Long>()
+     private var stallId = C.TIME_UNSET
+@@ -468,7 +513,8 @@ private class FilmLoadControl(
+         if (loadedToEnd(parameters)) return true
+         measure(parameters, waiting = true)
+         // Memory full means nothing more can come before playing on.
+-        if (inner.allocator.totalBytesAllocated >= budgetBytes) return true
++        val limit = FilmMemory.fillLimit(capBytes, budgetBytes, parameters.bufferedDurationUs)
++        if (allocator.totalBytesAllocated >= limit) return true
+         val buffered = parameters.bufferedDurationUs
+         val rate = fillRate()
+         val now = SystemClock.elapsedRealtime()
+@@ -489,7 +535,7 @@ private class FilmLoadControl(
+             maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
+         }
+         // Whichever comes first ends the wait: enough film, or full memory.
+-        val fraction = maxOf(buffered.toFloat() / neededUs, inner.allocator.totalBytesAllocated.toFloat() / budgetBytes)
++        val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)
+         wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
+         return buffered >= neededUs
+     }
+@@ -577,7 +623,40 @@ private class FilmLoadControl(
+ 
+     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
+         measure(parameters, waiting = false)
+-        return inner.shouldContinueLoading(parameters).also { loading = it }
++        // Media3's own rule stops at the whole budget; squeezed, it stops at the lower cap as well.
++        val wanted = inner.shouldContinueLoading(parameters)
++        val cap = capBytes
++        if (cap < budgetBytes) freeLetGo(cap)
++        val full = cap < budgetBytes &&
++            allocator.totalBytesAllocated >= FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
++        return (wanted && !full).also { loading = it }
++    }
++
++    /**
++     * Lowers what the buffer fills to while the TV is short of memory, or raises it back: [step] 0 is the whole budget,
++     * 1 three quarters, 2 half ([FilmMemory.capFor]). Memory loaded and let go of is no longer kept beyond the new
++     * size; what's in use (the film loaded ahead and kept behind) is let go of as the film plays on. On the main
++     * thread; gives back the new size in bytes.
++     */
++    fun squeeze(step: Int): Int {
++        val cap = FilmMemory.capFor(budgetBytes, step)
++        capBytes = cap
++        allocator.setTargetBufferSize(cap)
++        return cap
++    }
++
++    /**
++     * Squeezed: the memory the film let go of since (what's played past, and kept behind no longer) is freed rather
++     * than kept for reuse, at most once a second. Media3 frees it only on a jump. The cap is given to the allocator
++     * again first: Media3 sets it back to the whole budget when tracks are chosen, which can cross a squeeze made on
++     * the main thread at the same moment.
++     */
++    private fun freeLetGo(cap: Int) {
++        val now = SystemClock.elapsedRealtime()
++        if (now - trimmedAt < TRIM_EVERY_MS) return
++        trimmedAt = now
++        allocator.setTargetBufferSize(cap)
++        allocator.trim()
+     }
+ 
+     override fun shouldContinuePreloading(timeline: Timeline, mediaPeriodId: MediaSource.MediaPeriodId, bufferedDurationUs: Long) =
+@@ -589,19 +668,24 @@ private class FilmLoadControl(
+         parameters: LoadControl.Parameters,
+         trackGroups: TrackGroupArray,
+         trackSelections: Array<ExoTrackSelection?>,
+-    ) = inner.onTracksSelected(parameters, trackGroups, trackSelections)
++    ) {
++        inner.onTracksSelected(parameters, trackGroups, trackSelections)
++        // Media3 sets the memory kept for reuse back to the whole budget here; squeezed, it stays at the cap.
++        allocator.setTargetBufferSize(capBytes)
++    }
+ 
+     override fun onStopped(playerId: PlayerId) = inner.onStopped(playerId)
+ 
+     override fun onReleased(playerId: PlayerId) = inner.onReleased(playerId)
+ 
+-    override fun getAllocator(): Allocator = inner.allocator
++    override fun getAllocator(): Allocator = allocator
+ 
+     override fun getBackBufferDurationUs(playerId: PlayerId) = inner.getBackBufferDurationUs(playerId)
+ 
+     override fun retainBackBufferFromKeyframe(playerId: PlayerId) = inner.retainBackBufferFromKeyframe(playerId)
+ 
+     private companion object {
++        const val TRIM_EVERY_MS = 1_000L
+         const val STALL_MEMORY_MS = 5 * 60_000L
+         const val START_US = 1_000_000L
+         // Loading time needed before the speed is trusted.
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SeekPreview.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SeekPreview.kt
+index 7a420b1..bc24e34 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SeekPreview.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SeekPreview.kt
+@@ -8,22 +8,25 @@ import android.view.View
+ import android.widget.TextView
+ import androidx.annotation.OptIn
+ import androidx.media3.common.C
++import androidx.media3.common.Format
+ import androidx.media3.common.MediaItem
+ import androidx.media3.common.PlaybackException
+ import androidx.media3.common.Player
++import androidx.media3.common.Tracks
+ import androidx.media3.common.VideoSize
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.common.util.Util
+ import androidx.media3.datasource.HttpDataSource
+ import androidx.media3.exoplayer.ExoPlayer
+ import androidx.media3.ui.AspectRatioFrameLayout
++import app.fireplayer.player.PlayerFactory
+ import app.fireplayer.player.RedirectMemoryDataSource
+ 
+ /**
+  * The picture above the time bar while skipping: a still from where the jump will land.
+  *
+  * A second, video-only player seeks to the keyframe nearest each new target and shows it. It starts
+- * on the first press and is released a little after the last; its connection closes as soon as each
++ * on the first press and is released a little after the last ([holdMs]); its connection closes as soon as each
+  * picture is loaded. If it can't play the video, previews stop for that video with a short note saying
+  * why, and skipping works as before. A server that refuses the second connection (many IPTV accounts
+  * allow one at a time) turns previews off until the player is closed, so the film keeps its connection.
+@@ -42,6 +45,16 @@ class SeekPreview(
+     private val onShowing: (Boolean) -> Unit,
+     /** Called once when previews stop, with a short note saying why. */
+     private val onFailed: (String) -> Unit,
++    /**
++     * How long the preview's player is kept after skipping stops, in case it starts again: 15 s, or 3 s on a TV short
++     * of memory (see [app.fireplayer.player.RamTier.previewHoldMs]), where its decoder and pictures are missed most.
++     */
++    private val holdMs: Long = 15_000L,
++    /**
++     * The preview's player decodes no picture bigger than 1080p (a TV short of memory, see
++     * [app.fireplayer.player.PlayerFactory.buildPreview]), so a video with only bigger ones gets no preview.
++     */
++    private val upTo1080pOnly: Boolean = false,
+ ) : Player.Listener {
+ 
+     private val handler = Handler(Looper.getMainLooper())
+@@ -140,7 +153,7 @@ class SeekPreview(
+         card.animate().alpha(0f).setDuration(140).start()
+         setShown(false)
+         handler.removeCallbacks(releaseRunnable)
+-        handler.postDelayed(releaseRunnable, 15_000)
++        handler.postDelayed(releaseRunnable, holdMs)
+     }
+ 
+     /**
+@@ -289,6 +302,20 @@ class SeekPreview(
+             error.errorCode in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
+             else -> "No skip preview for this video (error ${error.errorCode})"
+         }
++        fail(note)
++    }
++
++    override fun onTracksChanged(tracks: Tracks) {
++        // A video whose picture the preview won't decode: bigger than 1080p on a TV short of memory (see
++        // PlayerFactory.buildPreview), which leaves the preview with no picture at all. No preview for this video then,
++        // said once, rather than an empty card on every press; skipping goes on as without previews.
++        if (upTo1080pOnly && tooBigToPreview(tracks, PlayerFactory.PREVIEW_MAX_WIDTH, PlayerFactory.PREVIEW_MAX_HEIGHT)) {
++            fail(TOO_BIG_NOTE)
++        }
++    }
++
++    /** Previews stop for this video, and [note] says why once; skipping goes on as without them. */
++    private fun fail(note: String) {
+         failedKey = itemKey
+         hide()
+         release()
+@@ -340,6 +367,7 @@ class SeekPreview(
+ 
+     companion object {
+         private const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
++        private const val TOO_BIG_NOTE = "No skip preview for this video: its picture is too big to decode twice on this TV"
+ 
+         // What IPTV servers answer when an account already has its connections in use.
+         private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)
+@@ -347,6 +375,27 @@ class SeekPreview(
+         /** How soon after the other player opened a connection a dropped one counts as cut off for it. */
+         const val CUT_OFF_MS = 3_000L
+ 
++        /**
++         * Whether [tracks] left the preview without a picture because every one is bigger than [maxWidth] x
++         * [maxHeight]. A picture whose size isn't given counts as fitting, as it does for Media3's track choice; one
++         * that fits but wasn't chosen (no decoder for it) isn't this, and is left as it was.
++         */
++        fun tooBigToPreview(tracks: Tracks, maxWidth: Int, maxHeight: Int): Boolean {
++            var any = false
++            for (group in tracks.groups) {
++                if (group.type != C.TRACK_TYPE_VIDEO) continue
++                if (group.isSelected) return false
++                for (i in 0 until group.length) {
++                    any = true
++                    val f = group.getTrackFormat(i)
++                    val fits = (f.width == Format.NO_VALUE || f.width <= maxWidth) &&
++                        (f.height == Format.NO_VALUE || f.height <= maxHeight)
++                    if (fits) return false
++                }
++            }
++            return any
++        }
++
+         /** Whether [error] is the server saying no to a connection, rather than a slow or broken one. */
+         fun isRefusal(error: Throwable?): Boolean = when (error) {
+             is HttpDataSource.InvalidResponseCodeException -> error.responseCode in REFUSAL_CODES
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/AssOverlayTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/AssOverlayTest.kt
+new file mode 100644
+index 0000000..26c611b
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/AssOverlayTest.kt
+@@ -0,0 +1,47 @@
++package app.fireplayer.player
++
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class AssOverlayTest {
++
++    @Test fun putUpOnlyWhenAsked() {
++        var attached = 0
++        val overlay = AssOverlay { attached++ }
++        // Built with the player: nothing over the film yet.
++        assertFalse(overlay.shown)
++        assertEquals(0, attached)
++        overlay.show()
++        assertTrue(overlay.shown)
++        assertEquals(1, attached)
++    }
++
++    @Test fun putUpOnceHoweverOftenAStyledTrackIsChosen() {
++        var attached = 0
++        val overlay = AssOverlay { attached++ }
++        repeat(5) { overlay.show() }
++        assertEquals(1, attached)
++    }
++
++    @Test fun styledTracksAreAssAndSsa() {
++        val ssa = Format.Builder().setSampleMimeType(MimeTypes.TEXT_SSA).build()
++        assertTrue(AssOverlay.isStyled(ssa))
++        // Read ahead as it loads, the track keeps its kind in codecs.
++        val readAhead = Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_MEDIA3_CUES).setCodecs(MimeTypes.TEXT_SSA).build()
++        assertTrue(AssOverlay.isStyled(readAhead))
++    }
++
++    @Test fun otherSubtitlesAndNoneAreNotStyled() {
++        assertFalse(AssOverlay.isStyled(null))
++        for (mime in listOf(MimeTypes.APPLICATION_SUBRIP, MimeTypes.TEXT_VTT, MimeTypes.APPLICATION_PGS, MimeTypes.APPLICATION_TTML)) {
++            assertFalse(mime, AssOverlay.isStyled(Format.Builder().setSampleMimeType(mime).build()))
++        }
++        val readAheadSrt = Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_MEDIA3_CUES)
++            .setCodecs(MimeTypes.APPLICATION_SUBRIP).build()
++        assertFalse(AssOverlay.isStyled(readAheadSrt))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/FilmMemoryTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/FilmMemoryTest.kt
+new file mode 100644
+index 0000000..0c64030
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/FilmMemoryTest.kt
+@@ -0,0 +1,200 @@
++package app.fireplayer.player
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class FilmMemoryTest {
++
++    private val mib = 1L shl 20
++    private val gib = 1L shl 30
++    // What Fire OS allows FirePlayer (largeHeap) on the Fire TV Sticks: dalvik.vm.heapsize 384m.
++    private val stickHeap = 384 * mib
++
++    private fun gib(x: Double) = (x * gib).toLong()
++
++    // ---- Tiers
++
++    @Test fun theFireTvStick4kMaxIsTheSmallTier() {
++        // AFTKRT reports about 1,710 MB in all (1.59 GiB).
++        assertEquals(RamTier.SMALL, RamTier.of(1_710_000_000L, lowRam = false))
++    }
++
++    @Test fun tiersGoByTheTvsMemoryInAll() {
++        assertEquals(RamTier.TINY, RamTier.of(gib(1.0), false))
++        assertEquals(RamTier.TINY, RamTier.of(gib(1.4) - 1, false))
++        assertEquals(RamTier.SMALL, RamTier.of(gib(1.4), false))
++        assertEquals(RamTier.SMALL, RamTier.of(gib(1.8) - 1, false))
++        assertEquals(RamTier.MEDIUM, RamTier.of(gib(1.8), false))
++        assertEquals(RamTier.MEDIUM, RamTier.of(gib(2.6) - 1, false))
++        assertEquals(RamTier.LARGE, RamTier.of(gib(2.6), false))
++        assertEquals(RamTier.LARGE, RamTier.of(4 * gib, false))
++    }
++
++    @Test fun aLowMemoryDeviceIsTheTinyTierWhateverItReports() {
++        assertEquals(RamTier.TINY, RamTier.of(4 * gib, lowRam = true))
++    }
++
++    @Test fun memoryNotReportedIsTheLargestTierHeldToTheHeapLimit() {
++        assertEquals(RamTier.LARGE, RamTier.of(0L, false))
++        // 0.6 of a 384 MiB heap, as before tiers.
++        assertEquals((stickHeap * 0.6).toInt(), FilmMemory.plan(RamTier.LARGE, stickHeap).budgetBytes)
++    }
++
++    // ---- The film's buffer for each tier
++
++    @Test fun eachTierGetsItsBudgetAndWhatItKeepsBehind() {
++        val bigHeap = 512 * mib
++        fun plan(t: RamTier) = FilmMemory.plan(t, bigHeap).let { (it.budgetBytes / mib).toInt() to it.backBufferMs }
++        assertEquals(64 to 4_000, plan(RamTier.TINY))
++        assertEquals(128 to 6_000, plan(RamTier.SMALL))
++        assertEquals(176 to 10_000, plan(RamTier.MEDIUM))
++        assertEquals(256 to 15_000, plan(RamTier.LARGE))
++    }
++
++    @Test fun theStickGetsAboutHalfItsOldBuffer() {
++        val plan = FilmMemory.plan(RamTier.of(1_710_000_000L, false), stickHeap)
++        assertEquals(128 * mib, plan.budgetBytes.toLong())
++        assertEquals(6_000, plan.backBufferMs)
++        // It was 0.6 x 384 MiB = 230 MiB, with 13 s kept behind.
++        assertTrue(plan.budgetBytes < stickHeap * 0.6)
++    }
++
++    @Test fun theHeapLimitStillCapsTheBudgetAndWhatsKeptBehind() {
++        // A 2.6 GiB+ TV whose app heap is 192 MiB: 0.6 of it, 115 MiB, under even the 128 MiB tier, so 4 s behind.
++        val plan = FilmMemory.plan(RamTier.LARGE, 192 * mib)
++        assertEquals((192 * mib * 0.6).toInt(), plan.budgetBytes)
++        assertEquals(4_000, plan.backBufferMs)
++        // Held to 230 MiB by the Stick's heap limit, a large TV keeps what a 176 MiB one does.
++        assertEquals(10_000, FilmMemory.plan(RamTier.LARGE, stickHeap).backBufferMs)
++    }
++
++    @Test fun neverUnder48NorOver400MiB() {
++        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.plan(RamTier.TINY, 32 * mib).budgetBytes)
++        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.plan(RamTier.LARGE, 16 * mib).budgetBytes)
++        for (t in RamTier.entries) assertTrue(FilmMemory.plan(t, 8 * gib).budgetBytes <= FilmMemory.CEILING_BYTES)
++    }
++
++    @Test fun lessMemoryNeverMeansMoreBuffer() {
++        for ((smaller, larger) in RamTier.entries.zipWithNext()) {
++            assertTrue(smaller.budgetMiB < larger.budgetMiB)
++            assertTrue(smaller.backBufferMs < larger.backBufferMs)
++        }
++        assertEquals(FilmMemory.LEAST_BACK_BUFFER_MS, RamTier.entries.minOf { it.backBufferMs })
++    }
++
++    // ---- Squeezing it while the TV is short of memory
++
++    @Test fun squeezeStepsAreThreeQuartersThenHalf() {
++        val budget = (128 * mib).toInt()
++        assertEquals(budget, FilmMemory.capFor(budget, 0))
++        assertEquals((96 * mib).toInt(), FilmMemory.capFor(budget, 1))
++        assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 2))
++        // Anything past the last step is the last step.
++        assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 5))
++    }
++
++    @Test fun squeezedNeverBelow48MiB() {
++        val budget = (64 * mib).toInt()
++        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 1))
++        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 2))
++        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(FilmMemory.FLOOR_BYTES, 2))
++    }
++
++    @Test fun aSqueezedBufferStillLoadsWhenLittleIsAhead() {
++        val budget = (128 * mib).toInt()
++        val cap = FilmMemory.capFor(budget, 2)
++        assertEquals(cap, FilmMemory.fillLimit(cap, budget, FilmMemory.MIN_AHEAD_US))
++        assertEquals(cap, FilmMemory.fillLimit(cap, budget, 60_000_000L))
++        // What's kept behind can't shrink while playing: under 5 s ahead, the whole budget may be used.
++        assertEquals(budget, FilmMemory.fillLimit(cap, budget, FilmMemory.MIN_AHEAD_US - 1))
++        assertEquals(budget, FilmMemory.fillLimit(cap, budget, 0L))
++        // Not squeezed: the budget either way.
++        assertEquals(budget, FilmMemory.fillLimit(budget, budget, 60_000_000L))
++    }
++
++    // ---- When to squeeze, and when to give it back
++
++    @Test fun lowMemoryOnceIsStepOne() {
++        val p = MemoryPressure()
++        assertFalse(p.checked(low = false, nowMs = 0))
++        assertTrue(p.checked(low = true, nowMs = 10_000))
++        assertEquals(1, p.step)
++    }
++
++    @Test fun stillLowHalfAMinuteLaterIsStepTwo() {
++        val p = MemoryPressure()
++        assertTrue(p.checked(true, 0))
++        assertFalse(p.checked(true, 10_000))
++        assertFalse(p.checked(true, 20_000))
++        assertEquals(1, p.step)
++        assertTrue(p.checked(true, 30_000))
++        assertEquals(2, p.step)
++        assertFalse(p.checked(true, 40_000))
++        assertEquals(2, p.step)
++    }
++
++    @Test fun aBreakInTheLowReadingsStartsTheHalfMinuteAgain() {
++        val p = MemoryPressure()
++        p.checked(true, 0)
++        p.checked(false, 10_000)
++        p.checked(true, 20_000)
++        p.checked(true, 40_000)
++        assertEquals(1, p.step)
++        p.checked(true, 50_000)
++        assertEquals(2, p.step)
++    }
++
++    @Test fun trimRequestsGoStraightToTheirStep() {
++        val p = MemoryPressure()
++        assertTrue(p.trimAsked(1, 0))
++        assertEquals(1, p.step)
++        assertTrue(p.trimAsked(2, 1_000))
++        assertEquals(2, p.step)
++        // A milder request never gives memory back.
++        assertFalse(p.trimAsked(1, 2_000))
++        assertEquals(2, p.step)
++    }
++
++    @Test fun stepsBackUpOneStepEveryTwoMinutesWithoutPressure() {
++        val p = MemoryPressure()
++        p.trimAsked(2, 0)
++        var t = 10_000L
++        while (t < 120_000L) {
++            assertFalse(p.checked(false, t))
++            t += 10_000L
++        }
++        assertEquals(2, p.step)
++        assertTrue(p.checked(false, 120_000))
++        assertEquals(1, p.step)
++        assertFalse(p.checked(false, 230_000))
++        assertTrue(p.checked(false, 240_000))
++        assertEquals(0, p.step)
++        assertFalse(p.checked(false, 600_000))
++        assertEquals(0, p.step)
++    }
++
++    @Test fun pressureAgainRestartsTheTwoMinutes() {
++        val p = MemoryPressure()
++        p.checked(true, 0)
++        p.checked(false, 10_000)
++        // Fire OS asks to trim at 100 s: no step back till 220 s.
++        p.trimAsked(1, 100_000)
++        assertFalse(p.checked(false, 130_000))
++        assertFalse(p.checked(false, 210_000))
++        assertTrue(p.checked(false, 220_000))
++        assertEquals(0, p.step)
++    }
++
++    // ---- The skip preview
++
++    @Test fun onlyTvsWith2_6GiBOrMoreKeepFourKPreviewsAndTheLongHold() {
++        assertFalse(RamTier.LARGE.short)
++        assertEquals(15_000L, RamTier.LARGE.previewHoldMs)
++        for (t in listOf(RamTier.TINY, RamTier.SMALL, RamTier.MEDIUM)) {
++            assertTrue(t.name, t.short)
++            assertEquals(t.name, 3_000L, t.previewHoldMs)
++        }
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/ui/SeekPreviewTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/ui/SeekPreviewTest.kt
+new file mode 100644
+index 0000000..8d0e7f2
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/ui/SeekPreviewTest.kt
+@@ -0,0 +1,56 @@
++package app.fireplayer.ui
++
++import androidx.media3.common.C
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++import androidx.media3.common.TrackGroup
++import androidx.media3.common.Tracks
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class SeekPreviewTest {
++
++    private fun video(w: Int, h: Int): Format =
++        Format.Builder().setSampleMimeType(MimeTypes.VIDEO_H265).setWidth(w).setHeight(h).build()
++
++    private fun group(vararg formats: Format, selected: Boolean = false) = Tracks.Group(
++        TrackGroup(*formats),
++        /* adaptiveSupported = */ false,
++        IntArray(formats.size) { C.FORMAT_HANDLED },
++        BooleanArray(formats.size) { selected && it == 0 },
++    )
++
++    private fun tracks(vararg groups: Tracks.Group) = Tracks(groups.toList())
++
++    private val audio = group(Format.Builder().setSampleMimeType(MimeTypes.AUDIO_E_AC3).build())
++
++    private fun tooBig(t: Tracks) = SeekPreview.tooBigToPreview(t, 1920, 1080)
++
++    @Test fun aFourKOnlyFilmLeftWithoutAPictureIsTooBig() {
++        assertTrue(tooBig(tracks(group(video(3840, 2160)), audio)))
++        // Scope films and 1440p are bigger than 1080p too.
++        assertTrue(tooBig(tracks(group(video(3840, 1600)))))
++        assertTrue(tooBig(tracks(group(video(2560, 1440)))))
++        assertTrue(tooBig(tracks(group(video(3840, 2160)), group(video(3840, 2160)))))
++    }
++
++    @Test fun aPictureThatWasChosenIsNeverTooBig() {
++        // A TV with memory to spare decodes the 4K picture (Media3 goes past the 1080p limit there).
++        assertFalse(tooBig(tracks(group(video(3840, 2160), selected = true))))
++    }
++
++    @Test fun aSmallerPictureLeftUnchosenIsSomethingElse() {
++        // Not chosen though it fits: no decoder for it, left as it was before the 1080p limit.
++        assertFalse(tooBig(tracks(group(video(3840, 2160), video(1920, 1080)))))
++        assertFalse(tooBig(tracks(group(video(1280, 720)))))
++        assertFalse(tooBig(tracks(group(video(1920, 800)))))
++        // Size not given: counts as fitting, as it does for Media3.
++        assertFalse(tooBig(tracks(group(Format.Builder().setSampleMimeType(MimeTypes.VIDEO_H265).build()))))
++    }
++
++    @Test fun noPictureAtAllIsNotTooBig() {
++        assertFalse(tooBig(Tracks.EMPTY))
++        assertFalse(tooBig(tracks(audio)))
++    }
++}
+-- 
+2.43.0
+

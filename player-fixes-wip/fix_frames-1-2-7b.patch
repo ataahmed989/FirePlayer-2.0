@@ -1,0 +1,2438 @@
+From 44faa791b9797e66d6f823cfeae42260570f787d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 19:20:57 +0000
+Subject: [PATCH 1/2] WIP: interrupted by a container restart; continue from
+ here
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/player/CopyHealth.kt  |  53 +++-
+ .../java/app/fireplayer/player/CopyRank.kt    |  47 +++-
+ .../java/app/fireplayer/player/FrameCounts.kt |  18 ++
+ .../java/app/fireplayer/player/FrameGaps.kt   |  90 ++++++
+ .../java/app/fireplayer/player/FramePacer.kt  |  76 ++++-
+ .../java/app/fireplayer/player/FrameTally.kt  | 111 ++++++++
+ .../java/app/fireplayer/player/MediaSpec.kt   |  10 +
+ .../fireplayer/player/PacedVideoRenderer.kt   |  45 ++-
+ .../app/fireplayer/player/PlaybackDiag.kt     | 260 ++++++++++++++++++
+ .../app/fireplayer/player/PlayerFactory.kt    |  21 +-
+ 10 files changed, 701 insertions(+), 30 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/FrameCounts.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/FrameTally.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyHealth.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyHealth.kt
+index e522e12..c058e90 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyHealth.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyHealth.kt
+@@ -1,12 +1,19 @@
+ package app.fireplayer.player
+ 
++import java.util.Locale
++
+ /**
+  * How a copy has played, over every time it was played: how long, how often it stopped to load (not counting the
+- * waits after a jump), how long those waits were, how often it failed to play at all, and how many damaged stretches it
+- * skipped. A few counters, kept beside what was measured of its picture ([MediaSpec]).
++ * waits after a jump), how long those waits were, how often it failed to play at all, how many damaged stretches it
++ * skipped, and how many of its frames were lost against how many were shown. A few counters, kept beside what was
++ * measured of its picture ([MediaSpec]).
++ *
++ * Only a copy that keeps stopping to load, or loses more than one frame in [LOST_SHARE] over [SMOOTH_AFTER_MS] or more
++ * of watching, counts against it ([troubled]). One that failed to play is said so in the list, but isn't held against it:
++ * most failures are the moment's (the provider's screen limit, the network), not the copy's.
+  *
+- * Only a copy that keeps stopping to load counts against it ([troubled]). One that failed to play is said so in the
+- * list, but isn't held against it: most failures are the moment's (the provider's screen limit, the network), not the copy's.
++ * [droppedFrames] counts every frame lost (dropped by Media3, shown twice, put on the refresh of the frame before, never
++ * decoded: see [FrameTally]); [renderedFrames] the frames sent to the screen.
+  */
+ data class CopyHealth(
+     val watchedMs: Long = 0,
+@@ -14,23 +21,40 @@ data class CopyHealth(
+     val stallMs: Long = 0,
+     val failures: Int = 0,
+     val skips: Int = 0,
++    val droppedFrames: Long = 0,
++    val renderedFrames: Long = 0,
+ ) {
+     operator fun plus(o: CopyHealth) = CopyHealth(
+         watchedMs + o.watchedMs, stalls + o.stalls, stallMs + o.stallMs, failures + o.failures, skips + o.skips,
++        droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames,
+     )
+ 
+     /**
+      * It keeps stopping to load: at least [MIN_STALLS] waits, and one a minute of film or more, or a tenth of the time
+      * spent waiting. A wait now and then over a long film doesn't count, nor does failing to play.
+      */
+-    val troubled: Boolean get() = stalls >= MIN_STALLS &&
++    private val buffers: Boolean get() = stalls >= MIN_STALLS &&
+         (stalls * STALL_EVERY_MS >= watchedMs || stallMs * WAITING_SHARE >= watchedMs)
+ 
+-    /** "failed to play", "buffered 7× in 20 min", "smooth over 40 min", or null when too little is known. */
++    /** It loses more than one frame in [LOST_SHARE], over [SMOOTH_AFTER_MS] or more of watching. */
++    val choppy: Boolean get() = watchedMs >= SMOOTH_AFTER_MS && droppedFrames * LOST_SHARE > droppedFrames + renderedFrames
++
++    /** It keeps stopping to load, or loses frames ([choppy]). */
++    val troubled: Boolean get() = buffers || choppy
++
++    /** The share of its frames lost, in percent; 0 when no frames were counted. */
++    val lostPercent: Double get() =
++        if (droppedFrames + renderedFrames <= 0) 0.0 else 100.0 * droppedFrames / (droppedFrames + renderedFrames)
++
++    /**
++     * "failed to play", "buffered 7× in 20 min", "loses 4.2% of frames", "smooth over 40 min", or null when too little is
++     * known.
++     */
+     fun summary(): String? {
+         val min = watchedMs / 60_000
+         return when {
+-            troubled -> if (min > 0) "buffered ${stalls}× in $min min" else "buffered ${stalls}× in the first minute"
++            buffers -> if (min > 0) "buffered ${stalls}× in $min min" else "buffered ${stalls}× in the first minute"
++            choppy -> "loses ${percent(lostPercent)} of frames"
+             failures > 0 && watchedMs < FAILURE_FORGIVEN_MS -> if (failures == 1) "failed to play" else "failed to play $failures times"
+             skips > 0 -> "skips damaged parts"
+             watchedMs >= SMOOTH_AFTER_MS && stalls == 0 -> "smooth over $min min"
+@@ -48,8 +72,20 @@ data class CopyHealth(
+         /** A copy that failed once and then played this long is no longer said to have failed. */
+         const val FAILURE_FORGIVEN_MS = 10 * 60_000L
+         private const val SMOOTH_AFTER_MS = 10 * 60_000L
++        /** More than one frame lost in this many (2%) is a copy that plays choppily. */
++        const val LOST_SHARE = 50L
++
++        /** "4.2%" under 10%, "17%" from there. */
++        fun percent(p: Double): String =
++            if (p < 10) String.format(Locale.US, "%.1f%%", p) else String.format(Locale.US, "%.0f%%", p)
+ 
+-        fun encode(h: CopyHealth): String = "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}"
++        /**
++         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames". The frame counts came later: a string
++         * kept before them has five fields, and still reads (with no frames counted); a version that only knows five
++         * reads the first five of these.
++         */
++        fun encode(h: CopyHealth): String =
++            "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}"
+ 
+         fun decode(text: String?): CopyHealth? {
+             val f = text?.split('|') ?: return null
+@@ -57,6 +93,7 @@ data class CopyHealth(
+             return CopyHealth(
+                 f[0].toLongOrNull() ?: 0, f[1].toIntOrNull() ?: 0, f[2].toLongOrNull() ?: 0,
+                 f[3].toIntOrNull() ?: 0, f[4].toIntOrNull() ?: 0,
++                f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0,
+             )
+         }
+     }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
+index 9f61e10..9013a06 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
+@@ -9,16 +9,19 @@ import kotlin.math.abs
+  * The picture decides first, by how much data it gets: for the same codec, more data for the same picture is a
+  * cleaner picture, whatever the frame size says (the frame often includes black bars). Between codecs, newer ones
+  * need less data for the same picture: a rule of thumb ([EFFICIENCY]) is used then, and the reason says so. HDR comes
+- * first when the screen shows it and the HDR copy isn't starved of data. Copies close in picture data (within
+- * [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but never recommended.
++ * first when the screen shows it and the HDR copy isn't starved of data. On a screen without HDR it's the other way
++ * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so a copy not known to be HDR
++ * comes first when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies
++ * close in picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is
++ * listed but never recommended.
+  *
+  * The data is weighed against the frame it has to fill ([perPixel], bits for each pixel of each frame): a copy with
+  * too little for its frame ([STARVED]; a 4K film under about 6 GB) loses to a smaller-framed copy that has enough and
+  * about as much data, since a well-fed 1080p looks cleaner than a starved 4K. And data past what a frame can use
+  * ([FULL]) doesn't count: a well-fed 4K copy isn't beaten by a 1080p one for the 1080p's bigger file.
+  *
+- * Before any of that, a copy that plays: one that keeps stopping to load ([CopyHealth.troubled]) is only recommended
+- * when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
++ * Before any of that, a copy that plays: one that keeps stopping to load, or loses frames ([CopyHealth.troubled]), is
++ * only recommended when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
+  * ([CopyLanguage.fit]): a copy known to lack it only when no copy is known to have it. Subtitles in the viewer's
+  * language only break a tie.
+  */
+@@ -30,7 +33,10 @@ object CopyRank {
+     /** Picture data within this share of each other counts as the same. */
+     const val CLOSE = 0.15
+ 
+-    /** An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data. */
++    /**
++     * An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data; on a
++     * screen that doesn't, a copy not known to be HDR wins over an HDR one the same way.
++     */
+     const val HDR_FLOOR = 0.7
+ 
+     /**
+@@ -148,13 +154,18 @@ object CopyRank {
+             measured.filter { isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
+                 .maxByOrNull { effective(it) }?.let { best = it }
+         }
++        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR.
++        if (!hdrScreen && isHdr(copies[best])) {
++            measured.filter { !isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
++                .maxByOrNull { effective(it) }?.let { best = it }
++        }
+         val others = all.sortedByDescending { effective(it) }
+         val against = if (best != current && current in copies.indices) current
+             else others.firstOrNull { it != best }
+         if (against == null) {
+             return Verdict(best, null, listOfNotNull("the only copy with its data rate known", health.getOrNull(best)?.summary()), emptyList())
+         }
+-        val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed)
++        val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed, hdrScreen)
+         // The frame each has to fill: said when it decided, ahead of the data's own figures unless those already say it.
+         val lessData = raw(best) < raw(against) * (1 + CLOSE)
+         val framed = when {
+@@ -199,6 +210,7 @@ object CopyRank {
+         bBits: Long,
+         picture: Boolean,
+         mixed: Boolean,
++        hdrScreen: Boolean,
+     ): Pair<MutableList<String>, MutableList<String>> {
+         val reasons = ArrayList<String>()
+         val costs = ArrayList<String>()
+@@ -217,13 +229,22 @@ object CopyRank {
+                 reasons += "about the same $what ($numbers)"
+             }
+         }
+-        // Only what's known on both sides: a file that doesn't say isn't taken for SDR.
+-        if (isHdr(a) && b.hdr == "SDR") reasons += "${a.hdr} instead of SDR"
+-        if (isHdr(a) && b.hdr == null) reasons += "${a.hdr} (the other doesn't say)"
+-        if (a.hdr == "SDR" && isHdr(b)) costs += "SDR instead of ${b.hdr}"
+-        if (a.hdr == null && isHdr(b)) costs += "no HDR stated, where the other is ${b.hdr}"
+-        if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+-        if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
++        if (hdrScreen) {
++            // Only what's known on both sides: a file that doesn't say isn't taken for SDR.
++            if (isHdr(a) && b.hdr == "SDR") reasons += "${a.hdr} instead of SDR"
++            if (isHdr(a) && b.hdr == null) reasons += "${a.hdr} (the other doesn't say)"
++            if (a.hdr == "SDR" && isHdr(b)) costs += "SDR instead of ${b.hdr}"
++            if (a.hdr == null && isHdr(b)) costs += "no HDR stated, where the other is ${b.hdr}"
++            if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
++            if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
++        } else {
++            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so it's no
++            // reason to pick a copy; what's said is which one the TV shows as it was made.
++            if (!isHdr(a) && isHdr(b)) {
++                reasons += (if (a.hdr == "SDR") "SDR" else "no HDR stated") + ", as this TV shows (the other's ${b.hdr} is turned into SDR)"
++            }
++            if (isHdr(a) && !isHdr(b)) costs += "${a.hdr} shown as SDR on this TV"
++        }
+         if (a.width > 0 && b.width > 0 && abs(a.width - b.width) >= 320) {
+             if (a.width > b.width) reasons += "${a.width} wide instead of ${b.width}" else costs += "${a.width} wide instead of ${b.width}"
+         }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameCounts.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameCounts.kt
+new file mode 100644
+index 0000000..e5b0ec6
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameCounts.kt
+@@ -0,0 +1,18 @@
++package app.fireplayer.player
++
++/**
++ * Frames lost that Media3 doesn't count, since the player screen came up: added up on the playback thread by
++ * [PacedVideoRenderer], read on the main thread ([PlaybackDiag]). Only ever go up.
++ *
++ * Media3 counts the frames it drops (too late) itself; these are the others:
++ * - [shownTwice]: frames the pacer put a refresh later than the one after the frame before ([FramePacer.LATER]), so the
++ *   frame before stayed on the screen for two refreshes;
++ * - [sameRefresh]: frames the pacer put on the refresh of the frame before ([FramePacer.SAME]), which would only have
++ *   taken its place there: skipped instead;
++ * - [neverDecoded]: frames missing from the film's times that Media3 didn't drop or skip either ([FrameGaps]).
++ */
++class FrameCounts {
++    @Volatile var shownTwice = 0L
++    @Volatile var sameRefresh = 0L
++    @Volatile var neverDecoded = 0L
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
+new file mode 100644
+index 0000000..b36ef2f
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
+@@ -0,0 +1,90 @@
++package app.fireplayer.player
++
++/**
++ * Frames the decoder never gave: gaps in the film's times between frames sent to the screen, less the frames Media3
++ * itself dropped or skipped in between (it counts those). A gap counts when it's more than [GAP] frames long.
++ *
++ * A frame's length is the one the film states ([statedFrameUs]), or else the middle one of the latest gaps between
++ * frames ([LENGTHS] of them): Matroska gives whole milliseconds, so a 24 fps film's frames are 41 or 42 ms apart.
++ *
++ * All on the playback thread, a few sums a frame and nothing made: see [PacedVideoRenderer].
++ */
++class FrameGaps {
++
++    /** One frame's length as the film states it, in µs; 0 when it doesn't, and the gaps measured are used. */
++    var statedFrameUs = 0L
++
++    private var lastUs = UNSET
++    private var dropped = 0
++    private var skipped = 0
++    private val lengths = LongArray(LENGTHS)
++    private val sorted = LongArray(LENGTHS)
++    private var count = 0
++    private var next = 0
++    private var measuredUs = 0L
++
++    /** Frames that should have come between the latest frame and the one before (Media3's drops included). */
++    var between = 0
++        private set
++
++    /** A new decoder, or a jump: the next frame starts afresh. */
++    fun reset() {
++        lastUs = UNSET
++        between = 0
++    }
++
++    /**
++     * A frame at [presentationUs] goes to the screen; [droppedSoFar] and [skippedSoFar] are Media3's counts
++     * (droppedBufferCount, skippedOutputBufferCount) as it does. Returns how many frames before it the decoder never gave.
++     */
++    fun frame(presentationUs: Long, droppedSoFar: Int, skippedSoFar: Int): Int {
++        // Media3's counts start again with a new renderer: then all of them are new.
++        val newDropped = if (droppedSoFar >= dropped) droppedSoFar - dropped else droppedSoFar
++        val newSkipped = if (skippedSoFar >= skipped) skippedSoFar - skipped else skippedSoFar
++        dropped = droppedSoFar
++        skipped = skippedSoFar
++        val last = lastUs
++        lastUs = presentationUs
++        between = 0
++        if (last == UNSET) return 0
++        val d = presentationUs - last
++        // A jump, or a frame out of order: not a gap.
++        if (d <= 0L || d > BREAK_US) return 0
++        val frameUs = frameUs()
++        remember(d)
++        if (frameUs <= 0L || d <= frameUs * GAP) return 0
++        between = ((d + frameUs / 2) / frameUs - 1).toInt().coerceAtLeast(0)
++        return (between - newDropped - newSkipped).coerceAtLeast(0)
++    }
++
++    /** The frame just seen was skipped here, not by Media3: its skip isn't one that explains a gap. */
++    fun skippedHere() {
++        skipped++
++    }
++
++    private fun frameUs(): Long = if (statedFrameUs > 0L) statedFrameUs else measuredUs
++
++    private fun remember(d: Long) {
++        lengths[next] = d
++        next = (next + 1) % LENGTHS
++        if (count < LENGTHS) count++
++        // The middle one, worked out again every so often: the gaps change little from frame to frame.
++        if (count >= MIN_LENGTHS && (next % REMEASURE == 0 || measuredUs == 0L)) {
++            System.arraycopy(lengths, 0, sorted, 0, count)
++            java.util.Arrays.sort(sorted, 0, count)
++            measuredUs = sorted[count / 2]
++        }
++    }
++
++    companion object {
++        /** A gap longer than this many frames has frames missing from it. */
++        const val GAP = 1.5
++        /** Further apart than this, frames are on either side of a jump. */
++        const val BREAK_US = 400_000L
++        /** The latest gaps between frames a frame's length is measured from. */
++        const val LENGTHS = 16
++        private const val MIN_LENGTHS = 4
++        private const val REMEASURE = 8
++        private const val UNSET = Long.MIN_VALUE
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
+index 21ef161..5232159 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
+@@ -18,18 +18,35 @@ import kotlin.math.roundToLong
+  * [mode] in the calls below counts the modes measured in turn ([VsyncFix.modes]): a different count means the TV has
+  * been on another mode since.
+  *
++ * Media3's times wobble from frame to frame (its clock is the sound's), by 10 to 15 ms at times. Judged one frame at a
++ * time, a film whose times sat near half a refresh from the TV's refreshes was moved a refresh later and a refresh
++ * earlier in turn: a frame held for two refreshes, then two frames on one refresh (only one of them shows), over and
++ * over, one frame in six or seven lost in a model of it. So the frames are moved by an average of how far they've been
++ * from their refreshes, not by a single frame: a wobble evens out, while a film whose rate isn't quite the TV's drifts
++ * the average along until a frame is moved, as it must be. A frame a whole refresh or more away (one before it was
++ * dropped, or never decoded) is followed at once.
++ *
++ * Each frame's [move] says what was done with it, for the counts of frames lost ([PacedVideoRenderer], [FrameCounts]).
++ *
+  * All on the playback thread.
+  */
+ class FramePacer {
+ 
+     private var refreshNs = 0L   // when a frame last reached the screen: one of the TV's refreshes
+     private var lastTargetNs = 0L
++    // How far behind its refresh a frame has been lately (ahead when below 0), in ns: an average of the latest frames,
++    // each counting for 1/SMOOTHING of it. Started afresh wherever lastTargetNs is.
++    private var behindNs = 0.0
+     private var previousNs = 0L
+     private var judgedPeriodNs = 0L
+     private var judgedMode = 0
+     private var fits = 0
+     private var misfits = 0
+ 
++    /** What [paced] did with the latest frame: [MEDIA3], [START], [NEXT], [LATER], [SAME] or [FOLLOWED]. */
++    var move = MEDIA3
++        private set
++
+     /** A refresh length the screen disagreed with: frames go out on Media3's times while it's the one measured. */
+     var offGridPeriodNs = 0L
+         private set
+@@ -41,6 +58,8 @@ class FramePacer {
+     fun reset() {
+         refreshNs = 0L
+         lastTargetNs = 0L
++        behindNs = 0.0
++        move = MEDIA3
+         previousNs = 0L
+         judgedPeriodNs = 0L
+         fits = 0
+@@ -85,11 +104,18 @@ class FramePacer {
+         return disagrees
+     }
+ 
+-    /** When to send out a frame Media3 would send at [releaseTimeNs]. */
++    /**
++     * When to send out a frame Media3 would send at [releaseTimeNs]. [move] then says what was done with it. When it's
++     * [SAME] the frame would only take the place of the one before on the screen, so it isn't sent at all
++     * ([PacedVideoRenderer] hands it back to the decoder), and the next frame goes to the refresh after the one before,
++     * as if this one hadn't come.
++     */
+     fun paced(releaseTimeNs: Long, unaligned: Boolean, periodNs: Long, mode: Int): Long {
+         val refresh = refreshNs
+         if (!unaligned || periodNs <= 0L || refresh == 0L || offGrid(periodNs, mode)) {
+             lastTargetNs = 0L
++            behindNs = 0.0
++            move = MEDIA3
+             return releaseTimeNs
+         }
+         val last = lastTargetNs
+@@ -97,14 +123,40 @@ class FramePacer {
+         if (last == 0L || abs(releaseTimeNs - last) > 3 * periodNs) {
+             // Starting, or after a jump or a pause: the refresh nearest the film's time
+             target = refresh + ((releaseTimeNs - refresh).toDouble() / periodNs).roundToLong() * periodNs
++            behindNs = 0.0
++            move = START
+         } else {
+             // Kept on the TV's refreshes, where the screen says they are
+             val off = Math.floorMod(last - refresh, periodNs)
+             val onGrid = last - if (off > periodNs / 2) off - periodNs else off
+             target = onGrid + periodNs
+             val behind = releaseTimeNs - target
+-            if (behind > SLACK * periodNs) target += periodNs
+-            else if (behind < -SLACK * periodNs) target -= periodNs
++            if (abs(behind) >= FOLLOW * periodNs) {
++                // A whole refresh or more off: a frame before this one was dropped or never decoded (or Media3's clock
++                // moved). Followed at once, and the average starts afresh from there.
++                target += (behind.toDouble() / periodNs).roundToLong() * periodNs
++                behindNs = 0.0
++                move = if (target <= onGrid) SAME else FOLLOWED
++            } else {
++                // Moved a refresh only when the frames have been that far off for a while, not for one frame's wobble;
++                // the move is taken off the average, which is measured from the new refreshes from then on.
++                behindNs += (behind - behindNs) / SMOOTHING
++                move = NEXT
++                if (behindNs > SLACK * periodNs) {
++                    target += periodNs
++                    behindNs -= periodNs
++                    move = LATER
++                } else if (behindNs < -SLACK * periodNs) {
++                    target -= periodNs
++                    behindNs += periodNs
++                    move = SAME
++                }
++            }
++            if (move == SAME) {
++                // Not sent: the frame before keeps its refresh, and the next frame goes to the one after.
++                lastTargetNs = onGrid
++                return target - periodNs / 2
++            }
+         }
+         lastTargetNs = target
+         // Half a refresh early: the TV shows it at that refresh, whichever way the timing wobbles
+@@ -112,7 +164,25 @@ class FramePacer {
+     }
+ 
+     companion object {
++        /** Frames go out on Media3's own times: they aren't paced. */
++        const val MEDIA3 = 0
++        /** The first frame, or the first after a jump or a pause: on the refresh nearest its time. */
++        const val START = 1
++        /** On the refresh after the frame before's: the usual. */
++        const val NEXT = 2
++        /** A refresh later than that (+1 refresh): the frame before stays on the screen for two refreshes. */
++        const val LATER = 3
++        /** On the frame before's refresh (−1 refresh, or further back): it would only replace that one, so it's skipped. */
++        const val SAME = 4
++        /** Followed at once a refresh or more later: a frame before it didn't come (dropped, or never decoded). */
++        const val FOLLOWED = 5
++
++        /** How far, in refreshes, the frames' average must stray from their refresh before they're moved by one. */
+         const val SLACK = 0.6
++        /** A single frame this far off, in refreshes, is followed at once, without waiting for the average. */
++        const val FOLLOW = 0.9
++        /** Each frame counts for 1/SMOOTHING of the average. */
++        const val SMOOTHING = 16
+         /** Frames judged at a time. */
+         const val JUDGED = 24
+         /** Of those, how many between refreshes means the screen disagrees: a third, so a stray late frame can't. */
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameTally.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameTally.kt
+new file mode 100644
+index 0000000..55665ea
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameTally.kt
+@@ -0,0 +1,111 @@
++package app.fireplayer.player
++
++/**
++ * The frames shown and lost over the last minute, second by second: for Picture & sound's "Dropped" row, the
++ * FirePlayerDiag log ([PlaybackDiag]) and how each copy plays ([CopyHealth]).
++ *
++ * [sample] is given the counts so far once a second: Media3's own (frames it dropped, frames it sent to the screen,
++ * from its DecoderCounters) and [FrameCounts]'. Each kind is kept apart:
++ * - [DROPPED]: Media3 dropped them (too late);
++ * - [TWICE]: the frame before was shown twice ([FrameCounts.shownTwice]);
++ * - [SAME]: put on the refresh of the frame before, so skipped ([FrameCounts.sameRefresh]);
++ * - [NEVER]: the decoder never gave them ([FrameCounts.neverDecoded]);
++ * - [RENDERED]: sent to the screen.
++ *
++ * Media3's counts start again with each new decoder session ([sample]'s fresh, or a count lower than the last).
++ * Nothing is made after it's built. On the main thread.
++ */
++class FrameTally(private val seconds: Int = 60) {
++
++    private val buckets = Array(KINDS) { LongArray(seconds) }
++    private val last = LongArray(KINDS)
++    private var lastSecond = Long.MIN_VALUE
++
++    /** What the latest [sample] added, by kind. */
++    private val added = LongArray(KINDS)
++
++    /** Frames lost of every kind in the latest [sample]. */
++    val addedLost: Long get() = added[DROPPED] + added[TWICE] + added[SAME] + added[NEVER]
++
++    /** Frames sent to the screen in the latest [sample]. */
++    val addedRendered: Long get() = added[RENDERED]
++
++    /** What the latest [sample] added of [kind]. */
++    fun added(kind: Int): Long = added[kind]
++
++    /**
++     * The counts so far at [nowMs] (any clock in ms that only goes forward). [fresh]: Media3's counts are from a new
++     * decoder session, so they count from 0 again.
++     */
++    fun sample(
++        nowMs: Long,
++        dropped: Long,
++        rendered: Long,
++        shownTwice: Long,
++        sameRefresh: Long,
++        neverDecoded: Long,
++        fresh: Boolean = false,
++    ) {
++        val second = nowMs / 1000
++        if (lastSecond == Long.MIN_VALUE) {
++            // The first sample: only where counting starts from.
++            lastSecond = second
++            set(dropped, rendered, shownTwice, sameRefresh, neverDecoded)
++            added.fill(0)
++            return
++        }
++        // Seconds gone by since the last sample start empty (all of them, after more than the minute).
++        if (second > lastSecond) {
++            val gone = minOf(second - lastSecond, seconds.toLong()).toInt()
++            for (k in 1..gone) {
++                val slot = Math.floorMod(lastSecond + k, seconds.toLong()).toInt()
++                for (b in buckets) b[slot] = 0
++            }
++            lastSecond = second
++        }
++        val slot = Math.floorMod(second, seconds.toLong()).toInt()
++        add(DROPPED, dropped, fresh, slot)
++        add(RENDERED, rendered, fresh, slot)
++        add(TWICE, shownTwice, false, slot)
++        add(SAME, sameRefresh, false, slot)
++        add(NEVER, neverDecoded, false, slot)
++    }
++
++    private fun add(kind: Int, now: Long, fresh: Boolean, slot: Int) {
++        val d = if (fresh || now < last[kind]) now else now - last[kind]
++        last[kind] = now
++        added[kind] = d
++        buckets[kind][slot] += d
++    }
++
++    private fun set(dropped: Long, rendered: Long, shownTwice: Long, sameRefresh: Long, neverDecoded: Long) {
++        last[DROPPED] = dropped
++        last[RENDERED] = rendered
++        last[TWICE] = shownTwice
++        last[SAME] = sameRefresh
++        last[NEVER] = neverDecoded
++    }
++
++    /** Frames of [kind] over the last minute (the last [seconds] seconds sampled). */
++    fun minute(kind: Int): Long {
++        var sum = 0L
++        for (v in buckets[kind]) sum += v
++        return sum
++    }
++
++    /** Frames lost of every kind over the last minute. */
++    fun minuteLost(): Long = minute(DROPPED) + minute(TWICE) + minute(SAME) + minute(NEVER)
++
++    /** "dropped 3 · shown twice 0 · same refresh 1 · never decoded 0", over the last minute. */
++    fun minuteLine(): String =
++        "dropped ${minute(DROPPED)} · shown twice ${minute(TWICE)} · same refresh ${minute(SAME)} · never decoded ${minute(NEVER)}"
++
++    companion object {
++        const val DROPPED = 0
++        const val TWICE = 1
++        const val SAME = 2
++        const val NEVER = 3
++        const val RENDERED = 4
++        private const val KINDS = 5
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/MediaSpec.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/MediaSpec.kt
+index 74e3372..70f3349 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/MediaSpec.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/MediaSpec.kt
+@@ -71,6 +71,16 @@ data class MediaSpec(
+         videoBps.takeIf { it > 0 }?.let { mbps(it) },
+     ).joinToString(" · ").ifEmpty { null }
+ 
++    /**
++     * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
++     * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen.
++     */
++    fun rangeLine(hdrScreen: Boolean): String = when {
++        hdr == null -> "Not stated by the file"
++        hdr != "SDR" && !hdrScreen -> "$hdr · shown as SDR (TV reports no HDR)"
++        else -> hdr
++    }
++
+     /** "TrueHD Atmos 7.1", "DD+ 5.1", "Stereo": the sound pod. */
+     fun soundLine(): String? {
+         val layout = channelsLabel(channels)
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+index ebd3c82..27910a8 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+@@ -1,9 +1,11 @@
+ package app.fireplayer.player
+ 
++import android.media.MediaFormat
+ import android.os.Handler
+ import android.os.Looper
+ import android.util.Log
+ import androidx.annotation.OptIn
++import androidx.media3.common.Format
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+@@ -20,12 +22,21 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+  * than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't quite the TV's. When the screen's times
+  * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again, until they fit again
+  * (see [FramePacer]).
++ *
++ * It also counts the frames lost that Media3 doesn't ([counts]): frames the pacer held a refresh longer or put on the
++ * refresh of the frame before (that one isn't sent at all: the screen would only have shown it in place of the frame
++ * before), and frames the decoder never gave ([FrameGaps]).
+  */
+ @OptIn(UnstableApi::class)
+-class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaCodecVideoRenderer(builder) {
++class PacedVideoRenderer(
++    builder: Builder,
++    private val vsync: VsyncFix,
++    private val counts: FrameCounts,
++) : MediaCodecVideoRenderer(builder) {
+ 
+     // On the playback thread.
+     private val pacer = FramePacer()
++    private val gaps = FrameGaps()
+ 
+     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
+         val periodNs = vsync.tvPeriodNs
+@@ -48,6 +59,7 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
+     ) {
+         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
+         pacer.reset()
++        gaps.reset()
+         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
+         if (getConfiguration().tunneling) return
+         val looper = Looper.myLooper() ?: return
+@@ -58,8 +70,37 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
+         }
+     }
+ 
++    override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
++        super.onOutputFormatChanged(format, mediaFormat)
++        // A frame's length as the film states it, to tell a gap in its times by.
++        gaps.statedFrameUs = if (format.frameRate > 0f) (1_000_000.0 / format.frameRate).toLong() else 0L
++    }
++
++    override fun onPositionReset(positionUs: Long, joining: Boolean) {
++        super.onPositionReset(positionUs, joining)
++        // A jump: the frames after it don't follow on from those before.
++        gaps.reset()
++    }
++
+     override fun renderOutputBufferV21(codec: MediaCodecAdapter, index: Int, presentationTimeUs: Long, releaseTimeNs: Long) {
+-        super.renderOutputBufferV21(codec, index, presentationTimeUs, paced(releaseTimeNs))
++        val decoded = decoderCounters
++        val missing = gaps.frame(presentationTimeUs, decoded.droppedBufferCount, decoded.skippedOutputBufferCount)
++        if (missing > 0) counts.neverDecoded += missing
++        val at = paced(releaseTimeNs)
++        when (pacer.move) {
++            FramePacer.SAME -> {
++                // It would only take the place of the frame before on the screen: given back to the decoder at once
++                // instead, and counted by Media3 as a frame skipped.
++                counts.sameRefresh++
++                skipOutputBuffer(codec, index, presentationTimeUs)
++                gaps.skippedHere()
++                return
++            }
++            FramePacer.LATER -> counts.shownTwice++
++            // A refresh further on with no frame missing before it: the frame before held for an extra refresh.
++            FramePacer.FOLLOWED -> if (gaps.between == 0) counts.shownTwice++
++        }
++        super.renderOutputBufferV21(codec, index, presentationTimeUs, at)
+     }
+ 
+     private fun paced(releaseTimeNs: Long): Long = pacer.paced(releaseTimeNs, vsync.unaligned, vsync.tvPeriodNs, vsync.modes)
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
+new file mode 100644
+index 0000000..f13e28a
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
+@@ -0,0 +1,260 @@
++package app.fireplayer.player
++
++import android.app.ActivityManager
++import android.content.Context
++import android.os.Build
++import android.os.Debug
++import android.os.PowerManager
++import android.os.SystemClock
++import android.util.Log
++import androidx.annotation.OptIn
++import androidx.media3.common.Format
++import androidx.media3.common.Player
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.DecoderCounters
++import androidx.media3.exoplayer.DecoderReuseEvaluation
++import androidx.media3.exoplayer.ExoPlayer
++import androidx.media3.exoplayer.analytics.AnalyticsListener
++import java.util.Locale
++import java.util.concurrent.ExecutorService
++import java.util.concurrent.Executors
++import java.util.concurrent.atomic.AtomicBoolean
++
++/**
++ * What the film player does to its frames and the Fire TV's memory, in the log under one tag, "FirePlayerDiag", so a
++ * choppy film can be told apart afterwards: Media3 dropping late frames, the pacer holding or skipping frames, the
++ * decoder never giving them, the film's memory, the system short of memory, or heat.
++ *
++ * - Events, one line each: the video decoder chosen (and released), the picture's and the sound's format, the film
++ *   stopping to load and going on, Media3's batches of dropped frames.
++ * - Once every [LOG_EVERY_S] seconds while the film plays, one line: the frames shown and lost in those seconds and over
++ *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh,
++ *   the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
++ *
++ * Never a link, a name or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats and times.
++ *
++ * [second] comes from the player screen's tick once a second, on the main thread. The memory and heat are read on a
++ * thread of its own, as reading the app's memory takes a while.
++ */
++@OptIn(UnstableApi::class)
++class PlaybackDiag(context: Context) : AnalyticsListener {
++
++    private val app = context.applicationContext
++
++    /** Given to the film's video renderer, which counts the frames lost that Media3 doesn't ([PlayerFactory.build]). */
++    val counts = FrameCounts()
++
++    /** The last minute's frames, kept from [second]. */
++    val tally = FrameTally()
++
++    // On the main thread.
++    private var counters: DecoderCounters? = null
++    private var seconds = 0
++    private val sinceLog = LongArray(5)
++    private var readyOnce = false
++    private var waitingSince = 0L
++    private var jumpedAt = 0L
++
++    private val busy = AtomicBoolean(false)
++    private var reader: ExecutorService? = null
++
++    /** A new player: its first wait to load isn't a stall. */
++    fun newPlayer() {
++        readyOnce = false
++        waitingSince = 0L
++        counters = null
++    }
++
++    /**
++     * Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line.
++     * [filmBytes] is the memory the film's loaded part holds, [refreshHz] the TV's refresh rate, [hdrScreen] whether
++     * the TV reports HDR.
++     */
++    fun second(player: ExoPlayer, filmBytes: Long, refreshHz: Float, hdrScreen: Boolean) {
++        val c = player.videoDecoderCounters
++        if (c != null) {
++            c.ensureUpdated()
++            val fresh = c !== counters
++            counters = c
++            tally.sample(
++                SystemClock.elapsedRealtime(), c.droppedBufferCount.toLong(), c.renderedOutputBufferCount.toLong(),
++                counts.shownTwice, counts.sameRefresh, counts.neverDecoded, fresh,
++            )
++        } else {
++            // No picture being decoded: only the pacer's and gaps' counts move on (they don't).
++            tally.sample(SystemClock.elapsedRealtime(), lastDropped(), lastRendered(), counts.shownTwice, counts.sameRefresh,
++                counts.neverDecoded)
++        }
++        for (k in sinceLog.indices) sinceLog[k] += tally.added(k)
++        if (++seconds % LOG_EVERY_S != 0) return
++        val playing = player.isPlaying
++        if (!playing || !Log.isLoggable(TAG, Log.INFO)) {
++            sinceLog.fill(0)
++            return
++        }
++        val line = StringBuilder(400)
++            .append("play pos=").append(player.currentPosition / 1000).append('s')
++            .append(" shown=").append(sinceLog[FrameTally.RENDERED])
++            .append(" dropped=").append(sinceLog[FrameTally.DROPPED])
++            .append(" twice=").append(sinceLog[FrameTally.TWICE])
++            .append(" same=").append(sinceLog[FrameTally.SAME])
++            .append(" never=").append(sinceLog[FrameTally.NEVER])
++            .append(" min[shown=").append(tally.minute(FrameTally.RENDERED))
++            .append(" dropped=").append(tally.minute(FrameTally.DROPPED))
++            .append(" twice=").append(tally.minute(FrameTally.TWICE))
++            .append(" same=").append(tally.minute(FrameTally.SAME))
++            .append(" never=").append(tally.minute(FrameTally.NEVER)).append(']')
++            .append(" ahead=").append(player.totalBufferedDuration).append("ms")
++            .append(" buf=").append(mb(filmBytes))
++            .append(' ').append(video(player.videoFormat))
++            .append(" tv=").append(String.format(Locale.US, "%.3fHz", refreshHz))
++            .append(" tvHdr=").append(if (hdrScreen) 1 else 0)
++        sinceLog.fill(0)
++        // The rest is read on its own thread; one at a time, a line left out if the one before hasn't finished.
++        if (!busy.compareAndSet(false, true)) return
++        val pool = reader ?: Executors.newSingleThreadExecutor { r ->
++            Thread(r, "FirePlayerDiag").apply {
++                isDaemon = true
++                priority = Thread.MIN_PRIORITY
++            }
++        }.also { reader = it }
++        try {
++            pool.execute {
++                try {
++                    Log.i(TAG, line.append(' ').append(system()).toString())
++                } finally {
++                    busy.set(false)
++                }
++            }
++        } catch (e: RuntimeException) {
++            busy.set(false)
++        }
++    }
++
++    private fun lastDropped(): Long = counters?.droppedBufferCount?.toLong() ?: 0L
++    private fun lastRendered(): Long = counters?.renderedOutputBufferCount?.toLong() ?: 0L
++
++    /** The app's memory, the system's, and the heat: "java=270MB native=60MB gfx=118MB pss=448MB avail=412MB low=0 heat=0". */
++    private fun system(): String {
++        val out = StringBuilder(160)
++        runCatching {
++            val m = Debug.MemoryInfo()
++            Debug.getMemoryInfo(m)
++            var javaKb = m.dalvikPss.toLong()
++            var nativeKb = m.nativePss.toLong()
++            var graphicsKb = -1L
++            if (Build.VERSION.SDK_INT >= 23) {
++                m.getMemoryStat("summary.java-heap")?.toLongOrNull()?.let { javaKb = it }
++                m.getMemoryStat("summary.native-heap")?.toLongOrNull()?.let { nativeKb = it }
++                m.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { graphicsKb = it }
++            }
++            out.append("java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
++            if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
++            out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
++        }
++        runCatching {
++            val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
++            val mi = ActivityManager.MemoryInfo()
++            am.getMemoryInfo(mi)
++            out.append(" avail=").append(mb(mi.availMem)).append(" low=").append(if (mi.lowMemory) 1 else 0)
++        }
++        runCatching {
++            val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
++            if (Build.VERSION.SDK_INT >= 29) out.append(" heat=").append(pm.currentThermalStatus)
++            if (Build.VERSION.SDK_INT >= 30) {
++                val headroom = pm.getThermalHeadroom(HEADROOM_AHEAD_S)
++                if (!headroom.isNaN()) out.append(" headroom=").append(String.format(Locale.US, "%.2f", headroom))
++            }
++        }
++        return out.toString().trim()
++    }
++
++    /** The reader's thread is let go: with the player screen. */
++    fun release() {
++        reader?.shutdownNow()
++        reader = null
++    }
++
++    // --- Events
++
++    override fun onVideoDecoderInitialized(
++        eventTime: AnalyticsListener.EventTime,
++        decoderName: String,
++        initializedTimestampMs: Long,
++        initializationDurationMs: Long,
++    ) {
++        Log.i(TAG, "decoder video $decoderName started in ${initializationDurationMs}ms")
++    }
++
++    override fun onVideoDecoderReleased(eventTime: AnalyticsListener.EventTime, decoderName: String) {
++        Log.i(TAG, "decoder video $decoderName released")
++    }
++
++    override fun onVideoInputFormatChanged(
++        eventTime: AnalyticsListener.EventTime,
++        format: Format,
++        decoderReuseEvaluation: DecoderReuseEvaluation?,
++    ) {
++        Log.i(TAG, "format " + video(format) + (format.bitrate.takeIf { it > 0 }?.let { " bitrate=${it / 1000}kb/s" } ?: ""))
++    }
++
++    override fun onAudioInputFormatChanged(
++        eventTime: AnalyticsListener.EventTime,
++        format: Format,
++        decoderReuseEvaluation: DecoderReuseEvaluation?,
++    ) {
++        Log.i(TAG, "format audio=${format.sampleMimeType} channels=${format.channelCount} rate=${format.sampleRate}" +
++            (format.codecs?.let { " codecs=$it" } ?: ""))
++    }
++
++    override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
++        Log.i(TAG, "drops $droppedFrames in ${elapsedMs}ms")
++    }
++
++    override fun onPositionDiscontinuity(
++        eventTime: AnalyticsListener.EventTime,
++        oldPosition: Player.PositionInfo,
++        newPosition: Player.PositionInfo,
++        reason: Int,
++    ) {
++        if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
++    }
++
++    override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
++        val now = SystemClock.elapsedRealtime()
++        when (state) {
++            Player.STATE_BUFFERING -> if (readyOnce && waitingSince == 0L) {
++                waitingSince = now
++                Log.i(TAG, "rebuffer start pos=${eventTime.currentPlaybackPositionMs / 1000}s " +
++                    "ahead=${eventTime.totalBufferedDurationMs}ms" + if (now - jumpedAt < AFTER_JUMP_MS) " after a jump" else "")
++            }
++            Player.STATE_READY -> {
++                if (waitingSince > 0L) Log.i(TAG, "rebuffer end after ${now - waitingSince}ms")
++                waitingSince = 0L
++                readyOnce = true
++            }
++            else -> waitingSince = 0L
++        }
++    }
++
++    companion object {
++        const val TAG = "FirePlayerDiag"
++        /** Seconds between the lines while the film plays. */
++        const val LOG_EVERY_S = 10
++        private const val HEADROOM_AHEAD_S = 10
++        private const val AFTER_JUMP_MS = 3_000L
++
++        private fun mb(bytes: Long): String = String.format(Locale.US, "%.1fMB", bytes / 1_048_576.0)
++
++        /** "video=3840x2160@23.976 mime=video/hevc codecs=hvc1.2.4.L153.B0 hdr=HDR10 bits=10": no ids, no labels. */
++        fun video(f: Format?): String {
++            if (f == null) return "video=none"
++            val spec = MediaSpec.of(f, null)
++            val fps = if (f.frameRate > 0f) String.format(Locale.US, "@%.3f", f.frameRate) else ""
++            return "video=${f.width}x${f.height}$fps mime=${f.sampleMimeType}" +
++                (f.codecs?.let { " codecs=$it" } ?: "") +
++                " hdr=${spec.hdr ?: "unstated"}" +
++                (spec.bitDepth.takeIf { it > 0 }?.let { " bits=$it" } ?: "")
++        }
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index c643b64..7bb2254 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -72,7 +72,13 @@ class BufferWait(val fraction: Float, val slowLine: Boolean, val atMs: Long)
+ @OptIn(UnstableApi::class)
+ object PlayerFactory {
+ 
+-    class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
++    class Built(
++        val player: ExoPlayer,
++        val assHandler: AssHandler?,
++        val bufferWait: () -> BufferWait?,
++        /** The memory the film's loaded part holds now, in bytes (for the FirePlayerDiag log). */
++        val filmBytes: () -> Long = { 0L },
++    )
+ 
+     /**
+      * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
+@@ -244,6 +250,8 @@ object PlayerFactory {
+         embeddedCues: EmbeddedCues? = null,
+         /** Where damaged stretches of a film the player went past are noted, so the viewer can be told. */
+         damageSkips: DamageSkips? = null,
++        /** Where the video renderer counts the frames lost that Media3 doesn't (see [PacedVideoRenderer]). */
++        frameCounts: FrameCounts = FrameCounts(),
+     ): Built {
+         IndexCache.dir = context.cacheDir
+         val serverSwitch = ServerSwitch()
+@@ -252,7 +260,7 @@ object PlayerFactory {
+         val extractors = DefaultExtractorsFactory()
+             .setConstantBitrateSeekingEnabled(true)
+ 
+-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap)
++        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap, frameCounts)
+             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+             .setEnableDecoderFallback(true)
+ 
+@@ -315,7 +323,7 @@ object PlayerFactory {
+                 .setMediaSourceFactory(mediaSourceFactory)
+                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
+                 .build()
+-            return Built(player, null) { loadControl.wait }
++            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes })
+         }
+ 
+         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
+@@ -336,7 +344,7 @@ object PlayerFactory {
+             .build()
+         assSubtitleView.withAssSupport(assHandler)
+         assHandler.init(player)
+-        return Built(player, assHandler) { loadControl.wait }
++        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes })
+     }
+ }
+ 
+@@ -460,6 +468,9 @@ private class FilmLoadControl(
+     @Volatile var wait: BufferWait? = null
+         private set
+ 
++    /** The memory the film's loaded part holds now, in bytes: any thread (Media3's allocator answers under its lock). */
++    val allocatedBytes: Long get() = inner.allocator.totalBytesAllocated.toLong()
++
+     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
+         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
+         if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
+@@ -699,6 +710,7 @@ private class TvRenderersFactory(
+     private val displaySwitch: DisplaySwitch,
+     private val vsync: VsyncFix,
+     private val speechTap: SpeechTap,
++    private val frameCounts: FrameCounts,
+ ) : DefaultRenderersFactory(context) {
+     /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
+     override fun buildVideoRenderers(
+@@ -727,6 +739,7 @@ private class TvRenderersFactory(
+                 .setEventListener(eventListener)
+                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
+             vsync,
++            frameCounts,
+         )
+     }
+ 
+-- 
+2.43.0
+
+
+From 127ab77c25478b20abbcdd182f0d8d9610b5d80d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 20:12:03 +0000
+Subject: [PATCH 2/2] Player fixes 1, 2, 7: count every lost frame, steadier
+ pacer, choppy copies
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Finishes the interrupted work of 44faa79.
+
+Fix 1, count every lost frame:
+- FramePacer says what it did with each frame (move: next, a refresh
+  later, same refresh as the frame before, followed, earlier, start,
+  Media3's own times). PacedVideoRenderer counts frames shown twice and
+  frames put on the same refresh (FrameCounts).
+- FrameGaps counts frames the decoder never gave: gaps in the film's
+  times over 1.5 frames, less Media3's dropped and skipped deltas. A
+  frame's length is measured (median of the latest 16 gaps); gaps are
+  only counted once measured, so a wrongly stated rate can't invent them.
+- FrameTally keeps a rolling per-minute tally (Media3 dropped, shown
+  twice, same refresh, never decoded, shown), sampled once a second from
+  postPlayTick.
+- PlaybackDiag (log tag FirePlayerDiag): event lines for the decoder
+  chosen and released, picture and sound formats, rebuffer start and end,
+  Media3's drop batches; every 10 s while playing, one line with those
+  counts (10 s and last minute), buffered ms, the film allocator's bytes,
+  the picture (size, fps, codec, HDR type, bits), the decoder, the TV's
+  refresh rate and HDR types, Java/native/graphics/total memory
+  (Debug.MemoryInfo), availMem/threshold/lowMemory, thermal status (API
+  29+) and headroom (API 30+). Read on its own low-priority thread, one
+  at a time. Never a link, title or key.
+- Picture & sound's "Dropped" row: "Last minute: dropped X · shown twice
+  Y · same refresh Z · never decoded W", then Media3's total; refreshed
+  once a second while the window is open.
+
+Fix 2, steadier pacer:
+- FramePacer.paced keeps an average of 'behind' (alpha 1/16) and moves a
+  refresh only when the average passes 0.6 of one, taking the move off
+  the average; it is reset wherever lastTargetNs resets.
+- A frame 0.9 of a refresh or more from where the frames have been is
+  followed at once; frames missing in the film's times (FrameGaps) are
+  followed exactly, so a Media3 drop leaves one gap even with jitter.
+- Frames are paced by the film's frame length, so a TV at twice or three
+  times the film's rate (25 fps on 50 Hz) keeps 2 or 3 refreshes a frame.
+- "Same refresh as the frame before" now skips the buffer
+  (skipOutputBuffer) instead of queueing one SurfaceFlinger would drop,
+  except for a frame Media3 waits on as the first one shown.
+- In the model of the research (20,000 frames at 23.976 on 23.976 Hz)
+  10-15 ms jitter near half a refresh lost 12.7-17.9% of frames with the
+  old rule and 0-0.035% now; 0.1% drift is still corrected one move at a
+  time; a Media3 drop gives exactly one gap.
+
+Fix 7, choppy copies:
+- CopyHealth gains droppedFrames (every lost kind) and renderedFrames,
+  encoded as optional 6th and 7th fields: old 5-field strings still
+  decode, and old readers still read the first five. A copy losing more
+  than 2% of frames over 10+ minutes is troubled and says "loses N% of
+  frames" instead of "smooth". Fed once a second from the tally (frames
+  lost in the 3 s after a jump aren't held against the copy).
+- Picture & sound's "Range" says "HDR10 · shown as SDR (TV reports no
+  HDR)" on a TV without HDR.
+- CopyRank on a TV without HDR prefers an SDR copy with at least
+  HDR_FLOOR of the best copy's data, gives no HDR/10-bit reasons there,
+  and notes "HDR10 shown as SDR on this TV" as a cost.
+
+Tests: FramePacerTest (jitter, drift, drops, twice the rate, moves),
+FrameGapsTest, FrameTallyTest, CopyFramesTest, PlaybackDiagTest.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     |  63 +++++-
+ .../java/app/fireplayer/player/CopyRank.kt    |  23 +-
+ .../java/app/fireplayer/player/FrameGaps.kt   |  23 +-
+ .../java/app/fireplayer/player/FramePacer.kt  |  86 ++++---
+ .../fireplayer/player/PacedVideoRenderer.kt   |  51 ++++-
+ .../app/fireplayer/player/PlaybackDiag.kt     |  76 +++++--
+ .../app/fireplayer/player/CopyFramesTest.kt   | 104 +++++++++
+ .../app/fireplayer/player/FrameGapsTest.kt    | 105 +++++++++
+ .../app/fireplayer/player/FramePacerTest.kt   | 214 ++++++++++++++++++
+ .../app/fireplayer/player/FrameTallyTest.kt   |  60 +++++
+ .../app/fireplayer/player/PlaybackDiagTest.kt |  42 ++++
+ 11 files changed, 769 insertions(+), 78 deletions(-)
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/CopyFramesTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/FrameGapsTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/FrameTallyTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/PlaybackDiagTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index b65d335..db6b888 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -77,6 +77,7 @@ import app.fireplayer.player.NextPick
+ import app.fireplayer.player.ShowGuide
+ import app.fireplayer.player.SpeechTap
+ import app.fireplayer.player.PictureFit
++import app.fireplayer.player.PlaybackDiag
+ import app.fireplayer.player.PlayerFactory
+ import app.fireplayer.player.ServerSwitch
+ import app.fireplayer.player.ThreadBeat
+@@ -235,6 +236,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+     private var delayPanelOpen = false
+ 
+     private var player: ExoPlayer? = null
++    // The frames shown and lost, and the FirePlayerDiag log (see PlaybackDiag): one for the screen, across its players.
++    private val diagMade = lazy { PlaybackDiag(this) }
++    private val diag by diagMade
++    // Picture & sound's "Dropped" value while it's on screen, kept up to date once a second.
++    private var droppedFact: TextView? = null
+     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
+     private var vsyncFix: VsyncFix? = null
+     // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
+@@ -791,6 +797,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         super.onDestroy()
+         barWatch?.release()
+         liveSettings?.release()
++        if (diagMade.isInitialized()) diag.release()
+         if (stale) return
+         io.execute { titleBook?.close() }
+         // One replaced by a newer player leaves the screen's mode to that one.
+@@ -1016,6 +1023,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             speechTap = speechTap,
+             embeddedCues = embeddedCues,
+             damageSkips = damageSkips,
++            frameCounts = diag.counts,
+         )
+         vsyncFix = vsync.also { it.start() }
+         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
+@@ -1030,6 +1038,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         p.addListener(this)
+         p.addAnalyticsListener(filmLoadErrors)
+         p.addAnalyticsListener(droppedFrames)
++        diag.newPlayer()
++        diag.filmBytes = built.filmBytes
++        p.addAnalyticsListener(diag)
+         p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
+         fpsMeter.reset()
+         p.pauseAtEndOfMediaItems = sleepAtEnd
+@@ -1130,6 +1141,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         frameRateMatcher.unwatch()
+         threadBeat = null
+         p.removeListener(this)
++        if (diagMade.isInitialized()) diag.playerGone()
+         // Its listener is gone, so the glass won't hear that it stopped playing.
+         backdrop?.playing = false
+         p.release()
+@@ -2304,6 +2316,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             tellDamageSkip()
+             // The pods' data rates firm up as the film loads.
+             chipTicks++
++            if (chipTicks % FRAME_COUNT_TICKS == 0) countFrames()
+             if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
+             // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
+             if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
+@@ -4744,7 +4757,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             if (spec.width > 0 && spec.height > 0) "${spec.width}×${spec.height}" else null,
+             spec.fps.takeIf { it > 0 }?.let { fpsLabel(it).replace(" FPS", " fps") },
+         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
+-        pairs += "Range" to fact(spec.hdr ?: "Not stated by the file")
++        // On a TV that reports no HDR the Fire TV turns HDR into SDR: said, so the row doesn't claim what isn't seen.
++        pairs += "Range" to fact(spec.rangeLine(hdrScreen()))
+         pairs += "Data" to fact(
+             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
+                 (if (spec.videoHow == MediaSpec.How.MEASURED) over(video?.id) else "stated by the file")
+@@ -4771,14 +4785,51 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+                 "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
+             )
+         }
+-        (p as? ExoPlayer)?.videoDecoderCounters?.let { c ->
+-            c.ensureUpdated()
+-            val shown = c.renderedOutputBufferCount
+-            if (shown > 0) pairs += "Dropped" to fact("${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames")
++        droppedFact = null
++        droppedLine()?.let { line ->
++            // Kept, so countFrames can bring it up to date while the window is open.
++            pairs += "Dropped" to fact(line).also {
++                it.maxLines = 5
++                droppedFact = it
++            }
+         }
+         facts(pairs)
+     }
+ 
++    /**
++     * Picture & sound's "Dropped": the last minute's lost frames by kind ([PlaybackDiag]: dropped by Media3 as too late,
++     * the frame before shown twice, put on the refresh of the frame before, never decoded), then Media3's own count of
++     * dropped frames since the film started. Null before a frame has been shown.
++     */
++    private fun droppedLine(): String? {
++        val c = player?.videoDecoderCounters ?: return null
++        c.ensureUpdated()
++        val shown = c.renderedOutputBufferCount
++        if (shown <= 0) return null
++        return "Last minute: ${diag.tally.minuteLine()}\n" +
++            "In all: ${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames dropped"
++    }
++
++    /**
++     * From [postPlayTick], once a second: the frames shown and lost since the last second ([PlaybackDiag], which also
++     * writes its log line every 10 s), added to how the copy playing has played ([CopyHealth]), and Picture & sound's
++     * "Dropped" brought up to date while it's open.
++     */
++    private fun countFrames() {
++        val p = player ?: return
++        diag.second(p)
++        // Frames dropped while the film catches up after a jump are the jump's, not the copy's (as with its waits).
++        val lost = if (SystemClock.elapsedRealtime() - jumpedAt < JUMP_WAIT_MS) 0L else diag.tally.addedLost
++        val shown = diag.tally.addedRendered
++        if (lost > 0 || shown > 0) {
++            healthFor(p.currentMediaItem?.localConfiguration?.uri)
++            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown)
++        }
++        val v = droppedFact ?: return
++        if (!v.isAttachedToWindow) droppedFact = null
++        else if (panel.isOpen) droppedLine()?.let { v.text = it }
++    }
++
+     // What was measured of each copy played, kept so copies can be compared later: by provider and id, no login.
+     private val qualitySeen by lazy { getSharedPreferences("quality_seen", MODE_PRIVATE) }
+ 
+@@ -5991,6 +6042,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         const val CHIP_REFRESH_TICKS = 15
+         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
+         const val KEEP_QUALITY_TICKS = 150
++        /** The frames shown and lost are counted this often (play ticks of 200 ms: once a second; see countFrames). */
++        const val FRAME_COUNT_TICKS = 5
+         /** A wait to load this soon after a jump is the jump's. */
+         const val JUMP_WAIT_MS = 3_000L
+         // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
+index 9013a06..bb6ed90 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/CopyRank.kt
+@@ -10,10 +10,10 @@ import kotlin.math.abs
+  * cleaner picture, whatever the frame size says (the frame often includes black bars). Between codecs, newer ones
+  * need less data for the same picture: a rule of thumb ([EFFICIENCY]) is used then, and the reason says so. HDR comes
+  * first when the screen shows it and the HDR copy isn't starved of data. On a screen without HDR it's the other way
+- * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so a copy not known to be HDR
+- * comes first when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies
+- * close in picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is
+- * listed but never recommended.
++ * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so an SDR copy comes first
++ * when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies close in
++ * picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but
++ * never recommended.
+  *
+  * The data is weighed against the frame it has to fill ([perPixel], bits for each pixel of each frame): a copy with
+  * too little for its frame ([STARVED]; a 4K film under about 6 GB) loses to a smaller-framed copy that has enough and
+@@ -35,7 +35,7 @@ object CopyRank {
+ 
+     /**
+      * An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data; on a
+-     * screen that doesn't, a copy not known to be HDR wins over an HDR one the same way.
++     * screen that doesn't, an SDR copy wins over an HDR one the same way.
+      */
+     const val HDR_FLOOR = 0.7
+ 
+@@ -154,9 +154,10 @@ object CopyRank {
+             measured.filter { isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
+                 .maxByOrNull { effective(it) }?.let { best = it }
+         }
+-        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR.
++        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR. Only a copy known to
++        // be SDR: one whose file doesn't say may be HDR too.
+         if (!hdrScreen && isHdr(copies[best])) {
+-            measured.filter { !isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
++            measured.filter { copies[it].hdr == "SDR" && effective(it) >= effective(best) * HDR_FLOOR }
+                 .maxByOrNull { effective(it) }?.let { best = it }
+         }
+         val others = all.sortedByDescending { effective(it) }
+@@ -238,11 +239,9 @@ object CopyRank {
+             if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+             if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+         } else {
+-            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so it's no
+-            // reason to pick a copy; what's said is which one the TV shows as it was made.
+-            if (!isHdr(a) && isHdr(b)) {
+-                reasons += (if (a.hdr == "SDR") "SDR" else "no HDR stated") + ", as this TV shows (the other's ${b.hdr} is turned into SDR)"
+-            }
++            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so neither is a
++            // reason to pick a copy. What's said instead is which one the TV shows as it was made.
++            if (a.hdr == "SDR" && isHdr(b)) reasons += "SDR, as this TV shows it (the other's ${b.hdr} is turned into SDR)"
+             if (isHdr(a) && !isHdr(b)) costs += "${a.hdr} shown as SDR on this TV"
+         }
+         if (a.width > 0 && b.width > 0 && abs(a.width - b.width) >= 320) {
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
+index b36ef2f..e4446dd 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FrameGaps.kt
+@@ -4,15 +4,18 @@ package app.fireplayer.player
+  * Frames the decoder never gave: gaps in the film's times between frames sent to the screen, less the frames Media3
+  * itself dropped or skipped in between (it counts those). A gap counts when it's more than [GAP] frames long.
+  *
+- * A frame's length is the one the film states ([statedFrameUs]), or else the middle one of the latest gaps between
+- * frames ([LENGTHS] of them): Matroska gives whole milliseconds, so a 24 fps film's frames are 41 or 42 ms apart.
++ * A frame's length is the middle one of the latest gaps between frames ([LENGTHS] of them): Matroska gives whole
++ * milliseconds, so a 24 fps film's frames are 41 or 42 ms apart, and the middle one is either. Gaps are only counted once
++ * a few have been measured: what the frames do wins over what the file says (an interlaced film can state its fields'
++ * rate, twice its frames'). The length the film states ([stated]) is only [frameUs] until then, for the pacer.
+  *
+  * All on the playback thread, a few sums a frame and nothing made: see [PacedVideoRenderer].
+  */
+ class FrameGaps {
+ 
+-    /** One frame's length as the film states it, in µs; 0 when it doesn't, and the gaps measured are used. */
++    /** One frame's length as the film states it, in µs (0 when it doesn't): [frameUs] until the gaps have been measured. */
+     var statedFrameUs = 0L
++        private set
+ 
+     private var lastUs = UNSET
+     private var dropped = 0
+@@ -33,6 +36,15 @@ class FrameGaps {
+         between = 0
+     }
+ 
++    /** The film's stated frame length, in µs (0: not stated), as its format comes: another one is measured afresh. */
++    fun stated(frameUs: Long) {
++        if (frameUs == statedFrameUs) return
++        statedFrameUs = frameUs
++        count = 0
++        next = 0
++        measuredUs = 0L
++    }
++
+     /**
+      * A frame at [presentationUs] goes to the screen; [droppedSoFar] and [skippedSoFar] are Media3's counts
+      * (droppedBufferCount, skippedOutputBufferCount) as it does. Returns how many frames before it the decoder never gave.
+@@ -50,8 +62,8 @@ class FrameGaps {
+         val d = presentationUs - last
+         // A jump, or a frame out of order: not a gap.
+         if (d <= 0L || d > BREAK_US) return 0
+-        val frameUs = frameUs()
+         remember(d)
++        val frameUs = measuredUs
+         if (frameUs <= 0L || d <= frameUs * GAP) return 0
+         between = ((d + frameUs / 2) / frameUs - 1).toInt().coerceAtLeast(0)
+         return (between - newDropped - newSkipped).coerceAtLeast(0)
+@@ -62,7 +74,8 @@ class FrameGaps {
+         skipped++
+     }
+ 
+-    private fun frameUs(): Long = if (statedFrameUs > 0L) statedFrameUs else measuredUs
++    /** One frame's length in µs: as measured, else as the film states it; 0 until known. */
++    val frameUs: Long get() = if (measuredUs > 0L) measuredUs else statedFrameUs
+ 
+     private fun remember(d: Long) {
+         lengths[next] = d
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
+index 5232159..16234f0 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FramePacer.kt
+@@ -5,7 +5,8 @@ import kotlin.math.roundToLong
+ 
+ /**
+  * [PacedVideoRenderer]'s timing, apart from Media3 so it can be tested: each frame goes to the TV's refresh after the one
+- * before, the refreshes timed from when frames reached the screen.
++ * before (as many refreshes after it as a frame lasts, on a TV at twice or three times the film's rate), the refreshes
++ * timed from when frames reached the screen.
+  *
+  * It also checks those times against the refresh measured. On a TV at the measured rate, frames reach the screen a whole
+  * number of refreshes apart. Once, after the TV came on at 59.94 Hz in the middle of a film, frames went on being paced
+@@ -23,8 +24,8 @@ import kotlin.math.roundToLong
+  * earlier in turn: a frame held for two refreshes, then two frames on one refresh (only one of them shows), over and
+  * over, one frame in six or seven lost in a model of it. So the frames are moved by an average of how far they've been
+  * from their refreshes, not by a single frame: a wobble evens out, while a film whose rate isn't quite the TV's drifts
+- * the average along until a frame is moved, as it must be. A frame a whole refresh or more away (one before it was
+- * dropped, or never decoded) is followed at once.
++ * the average along until a frame is moved, as it must be. A frame a whole refresh or more away from where the frames
++ * have been (one before it was dropped, or never decoded) is followed at once.
+  *
+  * Each frame's [move] says what was done with it, for the counts of frames lost ([PacedVideoRenderer], [FrameCounts]).
+  *
+@@ -43,7 +44,7 @@ class FramePacer {
+     private var fits = 0
+     private var misfits = 0
+ 
+-    /** What [paced] did with the latest frame: [MEDIA3], [START], [NEXT], [LATER], [SAME] or [FOLLOWED]. */
++    /** What [paced] did with the latest frame: [MEDIA3], [START], [NEXT], [LATER], [SAME], [FOLLOWED] or [EARLIER]. */
+     var move = MEDIA3
+         private set
+ 
+@@ -105,12 +106,19 @@ class FramePacer {
+     }
+ 
+     /**
+-     * When to send out a frame Media3 would send at [releaseTimeNs]. [move] then says what was done with it. When it's
+-     * [SAME] the frame would only take the place of the one before on the screen, so it isn't sent at all
+-     * ([PacedVideoRenderer] hands it back to the decoder), and the next frame goes to the refresh after the one before,
+-     * as if this one hadn't come.
++     * When to send out a frame Media3 would send at [releaseTimeNs]; [frameNs] is the film's frame length (0 when not known
++     * yet), [missing] how many frames are missing before this one in the film's times (Media3 dropped them, or the decoder
++     * never gave them: [FrameGaps.between]). [move] then says what was done with it. When it's [SAME] the frame would only
++     * take the place of the one before on the screen, so it isn't sent at all ([PacedVideoRenderer] hands it back to the
++     * decoder), and the next frame goes where this one would have gone, as if it hadn't come.
++     *
++     * A frame after missing ones goes as many frames further on at once: the film's times say so for certain, where
++     * Media3's release time, wobbling, might not.
++     *
++     * Each frame is shown for as many refreshes as a frame of the film lasts: one on a TV at the film's rate, two or three
++     * on one at twice or three times it (FrameRateMatcher picks 50 Hz for a 25 fps film when the TV has no 25 Hz).
+      */
+-    fun paced(releaseTimeNs: Long, unaligned: Boolean, periodNs: Long, mode: Int): Long {
++    fun paced(releaseTimeNs: Long, unaligned: Boolean, periodNs: Long, mode: Int, frameNs: Long = 0L, missing: Int = 0): Long {
+         val refresh = refreshNs
+         if (!unaligned || periodNs <= 0L || refresh == 0L || offGrid(periodNs, mode)) {
+             lastTargetNs = 0L
+@@ -118,9 +126,11 @@ class FramePacer {
+             move = MEDIA3
+             return releaseTimeNs
+         }
++        val each = if (frameNs > 0L) (frameNs.toDouble() / periodNs).roundToLong().coerceIn(1L, MAX_EACH) else 1L
++        val skipped = missing.coerceIn(0, MAX_MISSING)
+         val last = lastTargetNs
+         var target: Long
+-        if (last == 0L || abs(releaseTimeNs - last) > 3 * periodNs) {
++        if (last == 0L || abs(releaseTimeNs - last) > (each * (1 + skipped) + 2) * periodNs) {
+             // Starting, or after a jump or a pause: the refresh nearest the film's time
+             target = refresh + ((releaseTimeNs - refresh).toDouble() / periodNs).roundToLong() * periodNs
+             behindNs = 0.0
+@@ -129,31 +139,43 @@ class FramePacer {
+             // Kept on the TV's refreshes, where the screen says they are
+             val off = Math.floorMod(last - refresh, periodNs)
+             val onGrid = last - if (off > periodNs / 2) off - periodNs else off
+-            target = onGrid + periodNs
+-            val behind = releaseTimeNs - target
+-            if (abs(behind) >= FOLLOW * periodNs) {
++            // The refresh after the frame before's; this frame's own, further on by the frames missing before it.
++            val usual = onGrid + each * periodNs
++            val next = usual + skipped * each * periodNs
++            target = next
++            var behind = (releaseTimeNs - target).toDouble()
++            // How far this frame is from where the latest frames have been: a wobble is a fraction of a refresh.
++            val jump = behind - behindNs
++            val followed = abs(jump) >= FOLLOW * periodNs
++            if (followed) {
+                 // A whole refresh or more off: a frame before this one was dropped or never decoded (or Media3's clock
+-                // moved). Followed at once, and the average starts afresh from there.
+-                target += (behind.toDouble() / periodNs).roundToLong() * periodNs
+-                behindNs = 0.0
+-                move = if (target <= onGrid) SAME else FOLLOWED
+-            } else {
++                // moved). Followed at once, by the whole refreshes it jumped (judged against the average, so a wobble on
++                // top of a jump doesn't move it a refresh too far), and counted in the average from its new refresh.
++                val refreshes = (jump / periodNs).roundToLong()
++                target += refreshes * periodNs
++                behind -= refreshes * periodNs
++            }
++            behindNs += (behind - behindNs) / SMOOTHING
++            if (!followed) {
+                 // Moved a refresh only when the frames have been that far off for a while, not for one frame's wobble;
+                 // the move is taken off the average, which is measured from the new refreshes from then on.
+-                behindNs += (behind - behindNs) / SMOOTHING
+-                move = NEXT
+                 if (behindNs > SLACK * periodNs) {
+                     target += periodNs
+                     behindNs -= periodNs
+-                    move = LATER
+                 } else if (behindNs < -SLACK * periodNs) {
+                     target -= periodNs
+                     behindNs += periodNs
+-                    move = SAME
+                 }
+             }
++            move = when {
++                target <= onGrid -> SAME
++                target < usual -> EARLIER
++                target == usual -> NEXT
++                followed || skipped > 0 -> FOLLOWED
++                else -> LATER
++            }
+             if (move == SAME) {
+-                // Not sent: the frame before keeps its refresh, and the next frame goes to the one after.
++                // Not sent: the frame before keeps its refresh, and the next frame goes where this one would have.
+                 lastTargetNs = onGrid
+                 return target - periodNs / 2
+             }
+@@ -168,14 +190,22 @@ class FramePacer {
+         const val MEDIA3 = 0
+         /** The first frame, or the first after a jump or a pause: on the refresh nearest its time. */
+         const val START = 1
+-        /** On the refresh after the frame before's: the usual. */
++        /** On the refresh after the frame before's (a frame's length of refreshes after it): the usual. */
+         const val NEXT = 2
+-        /** A refresh later than that (+1 refresh): the frame before stays on the screen for two refreshes. */
++        /** A refresh later than that (+1 refresh): the frame before stays on the screen a refresh longer, shown twice. */
+         const val LATER = 3
+         /** On the frame before's refresh (−1 refresh, or further back): it would only replace that one, so it's skipped. */
+         const val SAME = 4
+-        /** Followed at once a refresh or more later: a frame before it didn't come (dropped, or never decoded). */
++        /**
++         * A refresh or more later than [NEXT] at once: frames before it didn't come (dropped, or never decoded), or Media3's
++         * time moved on a whole refresh.
++         */
+         const val FOLLOWED = 5
++        /**
++         * Sooner than [NEXT] but after the frame before's refresh: only on a TV at a multiple of the film's rate, where the
++         * frame before is shown a refresh less than its due. No frame is lost.
++         */
++        const val EARLIER = 6
+ 
+         /** How far, in refreshes, the frames' average must stray from their refresh before they're moved by one. */
+         const val SLACK = 0.6
+@@ -183,6 +213,10 @@ class FramePacer {
+         const val FOLLOW = 0.9
+         /** Each frame counts for 1/SMOOTHING of the average. */
+         const val SMOOTHING = 16
++        /** The most refreshes a frame is shown for, on a TV at a multiple of the film's rate. */
++        const val MAX_EACH = 4L
++        /** The most frames missing that are followed by the film's times: further apart is a jump (and starts afresh). */
++        const val MAX_MISSING = 8
+         /** Frames judged at a time. */
+         const val JUDGED = 24
+         /** Of those, how many between refreshes means the screen disagrees: a third, so a stray late frame can't. */
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+index 27910a8..827cd91 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+@@ -7,6 +7,7 @@ import android.util.Log
+ import androidx.annotation.OptIn
+ import androidx.media3.common.Format
+ import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.Renderer
+ import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+ 
+@@ -18,14 +19,17 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+  * refreshes fall close to those times, that half millisecond tips frames onto the refresh before or after, and pairs
+  * of frames land on one refresh while the next shows nothing (one interval in ten on a 4K film, measured on a Fire TV
+  * Stick 4K Plus). Here the TV's refreshes are timed from when frames actually reached the screen, and each frame goes
+- * to the refresh after the one before; the film's own times only move that on by a refresh when the two drift more
+- * than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't quite the TV's. When the screen's times
++ * to the refresh after the one before; the film's own times only move that on by a refresh when the two have drifted,
++ * on average over the latest frames, more than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't
++ * quite the TV's (or at once when a frame is a whole refresh off: one before it never came). When the screen's times
+  * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again, until they fit again
+  * (see [FramePacer]).
+  *
+  * It also counts the frames lost that Media3 doesn't ([counts]): frames the pacer held a refresh longer or put on the
+  * refresh of the frame before (that one isn't sent at all: the screen would only have shown it in place of the frame
+- * before), and frames the decoder never gave ([FrameGaps]).
++ * before, and the decoder gets its buffer back sooner), and frames the decoder never gave ([FrameGaps]). A frame
++ * Media3 waits on as the first one shown (after a jump, a new decoder or surface, the next film) is always sent: until
++ * one is shown Media3 isn't ready, and skipping it would only hold the picture back.
+  */
+ @OptIn(UnstableApi::class)
+ class PacedVideoRenderer(
+@@ -37,6 +41,8 @@ class PacedVideoRenderer(
+     // On the playback thread.
+     private val pacer = FramePacer()
+     private val gaps = FrameGaps()
++    // A frame has been sent since Media3 last started waiting for its first one: only then may one be skipped.
++    private var firstSent = false
+ 
+     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
+         val periodNs = vsync.tvPeriodNs
+@@ -60,6 +66,7 @@ class PacedVideoRenderer(
+         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
+         pacer.reset()
+         gaps.reset()
++        firstSent = false
+         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
+         if (getConfiguration().tunneling) return
+         val looper = Looper.myLooper() ?: return
+@@ -73,38 +80,58 @@ class PacedVideoRenderer(
+     override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
+         super.onOutputFormatChanged(format, mediaFormat)
+         // A frame's length as the film states it, to tell a gap in its times by.
+-        gaps.statedFrameUs = if (format.frameRate > 0f) (1_000_000.0 / format.frameRate).toLong() else 0L
++        gaps.stated(if (format.frameRate > 0f) (1_000_000.0 / format.frameRate).toLong() else 0L)
++    }
++
++    override fun onEnabled(joining: Boolean, mayRenderStartOfStream: Boolean) {
++        super.onEnabled(joining, mayRenderStartOfStream)
++        firstSent = false
+     }
+ 
+     override fun onPositionReset(positionUs: Long, joining: Boolean) {
+         super.onPositionReset(positionUs, joining)
+         // A jump: the frames after it don't follow on from those before.
+         gaps.reset()
++        firstSent = false
++    }
++
++    override fun onProcessedStreamChange() {
++        super.onProcessedStreamChange()
++        // The next film or episode: Media3 waits for its first frame.
++        firstSent = false
++    }
++
++    override fun handleMessage(messageType: Int, message: Any?) {
++        super.handleMessage(messageType, message)
++        // A new surface: Media3 waits for the first frame on it.
++        if (messageType == Renderer.MSG_SET_VIDEO_OUTPUT) firstSent = false
+     }
+ 
+     override fun renderOutputBufferV21(codec: MediaCodecAdapter, index: Int, presentationTimeUs: Long, releaseTimeNs: Long) {
+         val decoded = decoderCounters
+         val missing = gaps.frame(presentationTimeUs, decoded.droppedBufferCount, decoded.skippedOutputBufferCount)
+         if (missing > 0) counts.neverDecoded += missing
+-        val at = paced(releaseTimeNs)
++        val frameUs = gaps.frameUs
++        val at = pacer.paced(releaseTimeNs, vsync.unaligned, vsync.tvPeriodNs, vsync.modes, frameUs * 1000, gaps.between)
+         when (pacer.move) {
+-            FramePacer.SAME -> {
++            FramePacer.SAME -> if (firstSent) {
+                 // It would only take the place of the frame before on the screen: given back to the decoder at once
+                 // instead, and counted by Media3 as a frame skipped.
+                 counts.sameRefresh++
+                 skipOutputBuffer(codec, index, presentationTimeUs)
+                 gaps.skippedHere()
+                 return
+-            }
+-            FramePacer.LATER -> counts.shownTwice++
+-            // A refresh further on with no frame missing before it: the frame before held for an extra refresh.
+-            FramePacer.FOLLOWED -> if (gaps.between == 0) counts.shownTwice++
++            } // Else sent all the same, on that refresh: Media3 waits for it, and the frame it replaces is from before.
++            // The frame before held for an extra refresh: a move later, or a refresh further on with no frame missing
++            // before it. Counted once the film's frame length is known: until then the pacer can't tell a TV at twice
++            // the film's rate, where every frame is two refreshes on.
++            FramePacer.LATER -> if (frameUs > 0L) counts.shownTwice++
++            FramePacer.FOLLOWED -> if (frameUs > 0L && gaps.between == 0) counts.shownTwice++
+         }
++        firstSent = true
+         super.renderOutputBufferV21(codec, index, presentationTimeUs, at)
+     }
+ 
+-    private fun paced(releaseTimeNs: Long): Long = pacer.paced(releaseTimeNs, vsync.unaligned, vsync.tvPeriodNs, vsync.modes)
+-
+     private companion object {
+         const val TAG = "FirePlayer"
+     }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
+index f13e28a..2fd2163 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlaybackDiag.kt
+@@ -2,11 +2,13 @@ package app.fireplayer.player
+ 
+ import android.app.ActivityManager
+ import android.content.Context
++import android.hardware.display.DisplayManager
+ import android.os.Build
+ import android.os.Debug
+ import android.os.PowerManager
+ import android.os.SystemClock
+ import android.util.Log
++import android.view.Display
+ import androidx.annotation.OptIn
+ import androidx.media3.common.Format
+ import androidx.media3.common.Player
+@@ -28,13 +30,15 @@ import java.util.concurrent.atomic.AtomicBoolean
+  * - Events, one line each: the video decoder chosen (and released), the picture's and the sound's format, the film
+  *   stopping to load and going on, Media3's batches of dropped frames.
+  * - Once every [LOG_EVERY_S] seconds while the film plays, one line: the frames shown and lost in those seconds and over
+- *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh,
+- *   the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
++ *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh and
++ *   the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
+  *
+- * Never a link, a name or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats and times.
++ * Never a link, a title or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats, times
++ * and the decoder's name.
+  *
+- * [second] comes from the player screen's tick once a second, on the main thread. The memory and heat are read on a
+- * thread of its own, as reading the app's memory takes a while.
++ * [second] comes from the player screen's tick once a second, on the main thread, and only adds up counts there. The
++ * TV, the memory and the heat are read on a thread of its own, as reading the app's memory takes a while: at most one
++ * line at a time, so a slow read can't pile up.
+  */
+ @OptIn(UnstableApi::class)
+ class PlaybackDiag(context: Context) : AnalyticsListener {
+@@ -47,6 +51,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+     /** The last minute's frames, kept from [second]. */
+     val tally = FrameTally()
+ 
++    /** The memory the film's loaded part holds now, in bytes: set with each new player ([PlayerFactory.Built.filmBytes]). */
++    var filmBytes: () -> Long = NO_BYTES
++
+     // On the main thread.
+     private var counters: DecoderCounters? = null
+     private var seconds = 0
+@@ -54,6 +61,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+     private var readyOnce = false
+     private var waitingSince = 0L
+     private var jumpedAt = 0L
++    // The video decoder in use, by its name ("OMX.MTK.VIDEO.DECODER.HEVC"). Media3 tells its listeners on the main thread.
++    private var decoder = "none"
+ 
+     private val busy = AtomicBoolean(false)
+     private var reader: ExecutorService? = null
+@@ -63,14 +72,16 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+         readyOnce = false
+         waitingSince = 0L
+         counters = null
++        decoder = "none"
+     }
+ 
+-    /**
+-     * Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line.
+-     * [filmBytes] is the memory the film's loaded part holds, [refreshHz] the TV's refresh rate, [hdrScreen] whether
+-     * the TV reports HDR.
+-     */
+-    fun second(player: ExoPlayer, filmBytes: Long, refreshHz: Float, hdrScreen: Boolean) {
++    /** The player was let go: nothing of it is held on to here. */
++    fun playerGone() {
++        filmBytes = NO_BYTES
++    }
++
++    /** Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line. */
++    fun second(player: ExoPlayer) {
+         val c = player.videoDecoderCounters
+         if (c != null) {
+             c.ensureUpdated()
+@@ -105,10 +116,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+             .append(" same=").append(tally.minute(FrameTally.SAME))
+             .append(" never=").append(tally.minute(FrameTally.NEVER)).append(']')
+             .append(" ahead=").append(player.totalBufferedDuration).append("ms")
+-            .append(" buf=").append(mb(filmBytes))
++            .append(" buf=").append(mb(filmBytes()))
+             .append(' ').append(video(player.videoFormat))
+-            .append(" tv=").append(String.format(Locale.US, "%.3fHz", refreshHz))
+-            .append(" tvHdr=").append(if (hdrScreen) 1 else 0)
++            .append(" decoder=").append(decoder)
+         sinceLog.fill(0)
+         // The rest is read on its own thread; one at a time, a line left out if the one before hasn't finished.
+         if (!busy.compareAndSet(false, true)) return
+@@ -134,9 +144,21 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+     private fun lastDropped(): Long = counters?.droppedBufferCount?.toLong() ?: 0L
+     private fun lastRendered(): Long = counters?.renderedOutputBufferCount?.toLong() ?: 0L
+ 
+-    /** The app's memory, the system's, and the heat: "java=270MB native=60MB gfx=118MB pss=448MB avail=412MB low=0 heat=0". */
++    /**
++     * The TV, the app's memory, the system's, and the heat:
++     * "tv=23.976Hz tvHdr=none java=270.0MB native=60.0MB gfx=118.0MB pss=448.0MB avail=412.0MB low=0 heat=0 headroom=0.41".
++     */
+     private fun system(): String {
+-        val out = StringBuilder(160)
++        val out = StringBuilder(200)
++        runCatching {
++            val display = (app.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).getDisplay(Display.DEFAULT_DISPLAY)
++            out.append("tv=").append(String.format(Locale.US, "%.3fHz", display.refreshRate))
++            if (Build.VERSION.SDK_INT >= 24) {
++                @Suppress("DEPRECATION")
++                val types = display.hdrCapabilities?.supportedHdrTypes
++                out.append(" tvHdr=").append(hdrTypes(types))
++            }
++        }
+         runCatching {
+             val m = Debug.MemoryInfo()
+             Debug.getMemoryInfo(m)
+@@ -148,7 +170,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+                 m.getMemoryStat("summary.native-heap")?.toLongOrNull()?.let { nativeKb = it }
+                 m.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { graphicsKb = it }
+             }
+-            out.append("java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
++            out.append(" java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
+             if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
+             out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
+         }
+@@ -156,7 +178,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+             val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+             val mi = ActivityManager.MemoryInfo()
+             am.getMemoryInfo(mi)
+-            out.append(" avail=").append(mb(mi.availMem)).append(" low=").append(if (mi.lowMemory) 1 else 0)
++            out.append(" avail=").append(mb(mi.availMem)).append(" threshold=").append(mb(mi.threshold))
++                .append(" low=").append(if (mi.lowMemory) 1 else 0)
+         }
+         runCatching {
+             val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+@@ -183,10 +206,12 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+         initializedTimestampMs: Long,
+         initializationDurationMs: Long,
+     ) {
++        decoder = decoderName
+         Log.i(TAG, "decoder video $decoderName started in ${initializationDurationMs}ms")
+     }
+ 
+     override fun onVideoDecoderReleased(eventTime: AnalyticsListener.EventTime, decoderName: String) {
++        if (decoder == decoderName) decoder = "none"
+         Log.i(TAG, "decoder video $decoderName released")
+     }
+ 
+@@ -243,9 +268,24 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
+         const val LOG_EVERY_S = 10
+         private const val HEADROOM_AHEAD_S = 10
+         private const val AFTER_JUMP_MS = 3_000L
++        private val NO_BYTES: () -> Long = { 0L }
+ 
+         private fun mb(bytes: Long): String = String.format(Locale.US, "%.1fMB", bytes / 1_048_576.0)
+ 
++        /** The HDR types a TV reports (Display.HdrCapabilities' numbers), "HDR10,HLG"; "none" when it reports none. */
++        fun hdrTypes(types: IntArray?): String {
++            if (types == null || types.isEmpty()) return "none"
++            return types.joinToString(",") {
++                when (it) {
++                    1 -> "DV"
++                    2 -> "HDR10"
++                    3 -> "HLG"
++                    4 -> "HDR10+"
++                    else -> "type$it"
++                }
++            }
++        }
++
+         /** "video=3840x2160@23.976 mime=video/hevc codecs=hvc1.2.4.L153.B0 hdr=HDR10 bits=10": no ids, no labels. */
+         fun video(f: Format?): String {
+             if (f == null) return "video=none"
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/CopyFramesTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/CopyFramesTest.kt
+new file mode 100644
+index 0000000..818bc5b
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/CopyFramesTest.kt
+@@ -0,0 +1,104 @@
++package app.fireplayer.player
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** How a copy's lost frames count against it, and copies on a TV that reports no HDR. */
++class CopyFramesTest {
++
++    // --- Frames lost, kept with each copy
++
++    @Test
++    fun aStringKeptBeforeTheFrameCountsStillReads() {
++        // Five fields, as every copy played before the frame counts was kept.
++        assertEquals(CopyHealth(600_000, 2, 5_000, 0, 1), CopyHealth.decode("600000|2|5000|0|1"))
++        assertEquals(0L, CopyHealth.decode("600000|2|5000|0|1")!!.droppedFrames)
++        assertNull(CopyHealth.decode("600000|2"))
++        assertNull(CopyHealth.decode(null))
++    }
++
++    @Test
++    fun theFrameCountsAreKeptAndAnOlderVersionStillReadsTheRest() {
++        val h = CopyHealth(watchedMs = 1_200_000, stalls = 1, stallMs = 900, failures = 0, skips = 2, droppedFrames = 431, renderedFrames = 28_000)
++        val text = CopyHealth.encode(h)
++        assertEquals("1200000|1|900|0|2|431|28000", text)
++        assertEquals(h, CopyHealth.decode(text))
++        // A version that knows only the first five reads them as it always did.
++        assertEquals("1200000|1|900|0|2", text.split('|').take(5).joinToString("|"))
++        assertEquals(CopyHealth(2_400_000, 2, 1_800, 0, 4, 862, 56_000), h + h)
++    }
++
++    @Test
++    fun aCopyThatLosesMoreThanTwoPercentOverTenMinutesIsTroubled() {
++        val choppy = CopyHealth(watchedMs = 12 * 60_000L, droppedFrames = 2_900, renderedFrames = 14_400)
++        assertTrue(choppy.troubled)
++        assertEquals("loses 17% of frames", choppy.summary())
++        assertEquals("loses 4.2% of frames", CopyHealth(watchedMs = 40 * 60_000L, droppedFrames = 2_400, renderedFrames = 55_000).summary())
++        // Under ten minutes says too little, however many.
++        assertFalse(CopyHealth(watchedMs = 9 * 60_000L, droppedFrames = 2_000, renderedFrames = 10_000).troubled)
++        // Two in a hundred isn't more than 2%: still smooth.
++        val edge = CopyHealth(watchedMs = 40 * 60_000L, droppedFrames = 1_150, renderedFrames = 56_350)
++        assertFalse(edge.troubled)
++        assertEquals("smooth over 40 min", edge.summary())
++        // Copies kept before the counts (no frames counted) are as they were.
++        assertEquals("smooth over 40 min", CopyHealth(watchedMs = 40 * 60_000L).summary())
++    }
++
++    @Test
++    fun aCopyThatLosesFramesLosesToOneThatDoesnt() {
++        val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 12.0))
++        val health = listOf(
++            CopyHealth(watchedMs = 30 * 60_000L, droppedFrames = 7_000, renderedFrames = 36_000),
++            CopyHealth(watchedMs = 20 * 60_000L, renderedFrames = 28_000),
++        )
++        val v = CopyRank.rank(copies, 0, false, health)
++        assertEquals(1, v.best)
++        assertEquals("the other loses 16% of frames", v.reasons.first())
++    }
++
++    // --- A TV that reports no HDR
++
++    private fun copy(codec: String, mbps: Double, depth: Int = 10, hdr: String? = "SDR") =
++        MediaSpec(videoCodec = codec, width = 3840, height = 2160, bitDepth = depth, hdr = hdr, videoBps = (mbps * 1e6).toLong(),
++            videoHow = MediaSpec.How.STATED, audioCodec = "DD+", channels = 6)
++
++    @Test
++    fun onATvWithoutHdrAnSdrCopyWithEnoughDataComesFirst() {
++        val copies = listOf(copy("HEVC", 15.0, hdr = "HDR10"), copy("HEVC", 12.0, depth = 8))
++        val sdrTv = CopyRank.rank(copies, 0, hdrScreen = false)
++        assertEquals(1, sdrTv.best)
++        assertTrue(sdrTv.reasons.toString(), sdrTv.reasons.contains("SDR, as this TV shows it (the other's HDR10 is turned into SDR)"))
++        assertTrue(sdrTv.reasons.none { it.contains("HDR10 instead") || it.contains("-bit instead") })
++        // On a TV that shows HDR the HDR copy, with more data, stays first, and says why.
++        val hdrTv = CopyRank.rank(copies, 1, hdrScreen = true)
++        assertEquals(0, hdrTv.best)
++        assertTrue(hdrTv.reasons.contains("HDR10 instead of SDR"))
++        assertTrue(hdrTv.reasons.contains("10-bit instead of 8-bit"))
++    }
++
++    @Test
++    fun onATvWithoutHdrHdrIsNoReasonToPickACopy() {
++        // The SDR copy has too little data (under 70% of the HDR one's): the HDR copy stays first, but its HDR and 10 bits
++        // aren't given as reasons, and what it gives up is said.
++        val copies = listOf(copy("HEVC", 20.0, hdr = "HDR10"), copy("HEVC", 8.0, depth = 8))
++        val v = CopyRank.rank(copies, 1, hdrScreen = false)
++        assertEquals(0, v.best)
++        assertTrue(v.reasons.none { it.contains("HDR") || it.contains("-bit instead") })
++        assertTrue(v.tradeOffs.toString(), v.tradeOffs.contains("HDR10 shown as SDR on this TV"))
++        // A copy whose file doesn't say isn't taken for SDR: no copy is put first for it.
++        val unknown = listOf(copy("HEVC", 15.0, hdr = "HDR10"), copy("HEVC", 12.0, hdr = null))
++        assertEquals(0, CopyRank.rank(unknown, 1, hdrScreen = false).best)
++    }
++
++    @Test
++    fun theRangeRowSaysWhenTheTvShowsHdrAsSdr() {
++        assertEquals("HDR10 · shown as SDR (TV reports no HDR)", MediaSpec(hdr = "HDR10").rangeLine(hdrScreen = false))
++        assertEquals("Dolby Vision · shown as SDR (TV reports no HDR)", MediaSpec(hdr = "Dolby Vision").rangeLine(hdrScreen = false))
++        assertEquals("HDR10", MediaSpec(hdr = "HDR10").rangeLine(hdrScreen = true))
++        assertEquals("SDR", MediaSpec(hdr = "SDR").rangeLine(hdrScreen = false))
++        assertEquals("Not stated by the file", MediaSpec().rangeLine(hdrScreen = false))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameGapsTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameGapsTest.kt
+new file mode 100644
+index 0000000..bddd273
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameGapsTest.kt
+@@ -0,0 +1,105 @@
++package app.fireplayer.player
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class FrameGapsTest {
++
++    /** Frame [k]'s time in a 23.976 fps Matroska film: whole milliseconds, so 41 or 42 ms apart. */
++    private fun us(k: Int): Long = 10_000_000L + (k * 1001L * 1000 / 24000) * 1000
++
++    /** Frames [from] until [to] go to the screen with Media3's counts as given; what each says was never decoded, summed. */
++    private fun FrameGaps.play(from: Int, to: Int, dropped: Int = 0, skipped: Int = 0): Int =
++        (from until to).sumOf { frame(us(it), dropped, skipped) }
++
++    @Test
++    fun framesThatFollowOnHaveNoGaps() {
++        val gaps = FrameGaps()
++        assertEquals(0, gaps.play(0, 500))
++        assertEquals(0, gaps.between)
++        // The middle gap of the latest: 42 ms (Matroska's rounding), against 41.7 as the film would say.
++        assertEquals(42_000L, gaps.frameUs)
++    }
++
++    @Test
++    fun aFrameTheDecoderNeverGaveIsCounted() {
++        val gaps = FrameGaps()
++        gaps.play(0, 100)
++        // Frame 100 never came, and Media3 neither dropped nor skipped it.
++        assertEquals(1, gaps.frame(us(101), 0, 0))
++        assertEquals(1, gaps.between)
++        // Three in a row.
++        assertEquals(3, gaps.frame(us(105), 0, 0))
++        assertEquals(0, gaps.frame(us(106), 0, 0))
++    }
++
++    @Test
++    fun framesMedia3DroppedOrSkippedAreItsOwnToCount() {
++        val gaps = FrameGaps()
++        gaps.play(0, 100)
++        // Media3 dropped frame 100 (too late): a gap, but its own count says so.
++        assertEquals(0, gaps.frame(us(101), 1, 0))
++        assertEquals(1, gaps.between)
++        // Of the three missing before frame 107 it skipped one and dropped another: the third was never decoded.
++        gaps.play(102, 104, dropped = 1)
++        assertEquals(1, gaps.frame(us(107), 2, 1))
++    }
++
++    @Test
++    fun aFrameSkippedHereDoesntExplainAGap() {
++        val gaps = FrameGaps()
++        gaps.play(0, 100)
++        // Frame 100 is skipped by the renderer itself (put on the refresh of the one before): Media3's count goes up by one.
++        gaps.frame(us(100), 0, 0)
++        gaps.skippedHere()
++        assertEquals(0, gaps.frame(us(101), 0, 1))
++        // Frame 102 never comes: the skip before it doesn't account for it.
++        assertEquals(1, gaps.frame(us(103), 0, 1))
++    }
++
++    @Test
++    fun aJumpOrANewDecoderIsNotAGap() {
++        val gaps = FrameGaps()
++        gaps.play(0, 100)
++        // Two seconds on: a jump.
++        assertEquals(0, gaps.frame(us(148), 0, 0))
++        // Started afresh: the first frame after has nothing before it.
++        gaps.reset()
++        assertEquals(0, gaps.frame(us(300), 0, 0))
++        assertEquals(0, gaps.between)
++        // A new renderer counts from 0 again: a count lower than the last is all new drops.
++        gaps.play(301, 310, dropped = 5)
++        assertEquals(0, gaps.frame(us(311), 1, 0))
++        assertEquals(1, gaps.frame(us(313), 1, 0))
++    }
++
++    @Test
++    fun gapsCountOnlyOnceTheFramesHaveBeenMeasured() {
++        val gaps = FrameGaps()
++        gaps.stated(41_708L)
++        // Until then the film's stated length is the pacer's to go by, but no gap is counted on it alone.
++        assertEquals(41_708L, gaps.frameUs)
++        gaps.frame(us(0), 0, 0)
++        assertEquals(0, gaps.frame(us(3), 0, 0))
++        assertEquals(0, gaps.play(4, 10))
++        assertEquals(42_000L, gaps.frameUs)
++        assertEquals(2, gaps.frame(us(12), 0, 0))
++        // Nothing stated, nothing measured: nothing known.
++        assertEquals(0L, FrameGaps().frameUs)
++    }
++
++    @Test
++    fun whatTheFramesDoWinsOverWhatTheFileSays() {
++        // An interlaced film stating its fields' rate, twice its frames': no gaps, and its frames' own length.
++        val gaps = FrameGaps()
++        gaps.stated(20_854L)
++        assertEquals(0, gaps.play(0, 300))
++        assertEquals(42_000L, gaps.frameUs)
++        assertEquals(1, gaps.frame(us(301), 0, 0))
++        // The next film at another rate: measured afresh.
++        gaps.stated(16_683L)
++        assertEquals(16_683L, gaps.frameUs)
++        gaps.stated(16_683L)
++        assertEquals(16_683L, gaps.frameUs)
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/FramePacerTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/FramePacerTest.kt
+index 4cabf4c..b69b5fb 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/player/FramePacerTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/FramePacerTest.kt
+@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
+ import org.junit.Assert.assertNotEquals
+ import org.junit.Assert.assertTrue
+ import org.junit.Test
++import kotlin.math.abs
+ 
+ class FramePacerTest {
+ 
+@@ -145,9 +146,222 @@ class FramePacerTest {
+         assertFalse(tripped)
+     }
+ 
++    // --- Media3's times wobbling, drifting, and frames dropped (a port of the research's model, sim/pacer_fix_sim.py)
++
++    /**
++     * Media3 sends out frame k at base + k frames, the film [driftPpm] slower than the TV (faster below 0), each time off
++     * by up to [jitterMs] either way, at [phase] of a refresh from the TV's refreshes; it drops every [dropEvery]th frame.
++     * The TV refreshes [refreshesEach] times a frame (2: a 25 fps film on a 50 Hz TV). The screen shows a frame at its first
++     * refresh from the time it's given, and only the newest of those due at one refresh; the pacer hears of a frame shown
++     * three frames later. The pacer is told of the frames missing before each one ([FrameGaps.between]) unless
++     * [toldMissing] is false. [perFrame]: the rule before, each frame judged alone, for comparison.
++     *
++     * Counted from the second second on: the first frames go out on Media3's times until one has been seen on the screen.
++     */
++    private class Model(
++        val jitterMs: Double = 0.0,
++        val phase: Double = 0.0,
++        val driftPpm: Double = 0.0,
++        val dropEvery: Int = 0,
++        val refreshesEach: Int = 1,
++        val perFrame: Boolean = false,
++        val toldMissing: Boolean = true,
++        seed: Long = 1,
++    ) {
++        val tvNs = FILM_NS / refreshesEach
++        val pacer = FramePacer()
++        private val random = java.util.Random(seed)
++        private val sent = ArrayList<Long>()
++        /** Refresh → the frame shown at it. */
++        val shown = java.util.TreeMap<Long, Int>()
++        /** Frames Media3 dropped, with a frame after them. */
++        var dropped = 0
++        var skipped = 0
++        /** Frames sent for a refresh another frame was sent for later: only that one shows. */
++        var replaced = 0
++        /** The furthest a frame was put from Media3's time for it, in refreshes, after the first second. */
++        var furthest = 0.0
++        private var oldRefresh = 0L
++        private var oldLast = 0L
++
++        fun play(frames: Int): Model {
++            val base = 1_000L * FILM_NS + (phase * tvNs).toLong()
++            var missing = 0
++            for (k in 0 until frames) {
++                val release = base + (k * FILM_NS * (1 + driftPpm * 1e-6)).toLong() +
++                    ((random.nextDouble() * 2 - 1) * jitterMs * 1e6).toLong()
++                val counted = k >= WARM
++                if (dropEvery > 0 && k % dropEvery == dropEvery - 1) {
++                    if (counted && k < frames - 1) dropped++
++                    missing++
++                    continue
++                }
++                val out = if (perFrame) oldPaced(release)
++                    else pacer.paced(release, true, tvNs, 1, FILM_NS, if (toldMissing) missing else 0)
++                missing = 0
++                if (!perFrame && pacer.move == FramePacer.SAME) {
++                    if (counted) skipped++
++                    continue
++                }
++                sent += out
++                val refresh = Math.floorDiv(out + tvNs - 1, tvNs)
++                val before = shown.put(refresh, k)
++                if (before != null && before >= WARM) replaced++
++                if (counted) furthest = maxOf(furthest, abs(refresh * tvNs - release).toDouble() / tvNs)
++                if (sent.size >= 3) {
++                    val heard = Math.floorDiv(sent[sent.size - 3] + tvNs - 1, tvNs) * tvNs
++                    if (perFrame) oldRefresh = heard else pacer.rendered(heard, true, tvNs, 1)
++                }
++            }
++            return this
++        }
++
++        /** Frames lost: two sent for one refresh (only one shows), or not sent at all. */
++        val lost: Int get() = replaced + skipped
++
++        /** Times a frame stayed on the screen longer than a frame lasts: a frame shown twice. */
++        val repeats: Int get() = shown.entries.zipWithNext()
++            .count { (a, b) -> a.value >= WARM && b.key - a.key > refreshesEach }
++
++        /** FramePacer.paced as it was: each frame moved a refresh when it alone was 0.6 of one off. */
++        private fun oldPaced(release: Long): Long {
++            val p = tvNs
++            if (oldRefresh == 0L) {
++                oldLast = 0L
++                return release
++            }
++            var target: Long
++            if (oldLast == 0L || abs(release - oldLast) > 3 * p) {
++                target = oldRefresh + Math.round((release - oldRefresh).toDouble() / p) * p
++            } else {
++                val off = Math.floorMod(oldLast - oldRefresh, p)
++                target = oldLast - (if (off > p / 2) off - p else off) + p
++                val behind = release - target
++                if (behind > 0.6 * p) target += p else if (behind < -0.6 * p) target -= p
++            }
++            oldLast = target
++            return target - p / 2
++        }
++    }
++
++    @Test
++    fun aWobbleNearHalfARefreshLosesNoFrames() {
++        // Media3's times 10 to 15 ms either way of their mean, near half a refresh from the TV's: judged one frame at a
++        // time, one frame in seven or eight was lost; averaged, next to none.
++        for ((jitter, phase) in listOf(10.0 to 0.45, 15.0 to 0.5, 15.0 to 0.25, 12.0 to 0.55)) {
++            for (seed in 1L..3L) {
++                val now = Model(jitterMs = jitter, phase = phase, seed = seed).play(FRAMES)
++                val case = "±$jitter ms at $phase of a refresh, seed $seed"
++                assertTrue("$case: ${now.lost} lost", now.lost <= FRAMES / 500)
++                assertTrue("$case: ${now.repeats} shown twice", now.repeats <= FRAMES / 500)
++                assertTrue("$case: ${now.furthest} refreshes off", now.furthest < 1.5)
++            }
++        }
++        val before = Model(jitterMs = 15.0, phase = 0.5, perFrame = true).play(FRAMES)
++        assertTrue("${before.lost} lost before", before.lost >= FRAMES / 10)
++        assertTrue("${before.repeats} shown twice before", before.repeats >= FRAMES / 10)
++        assertTrue(Model(jitterMs = 10.0, phase = 0.45, perFrame = true).play(FRAMES).lost >= FRAMES / 12)
++    }
++
++    @Test
++    fun aFilmNotQuiteAtTheTvsRateIsStillKeptInStep() {
++        // 0.1% apart, 20 frames over 20,000, with a wobble: each of them taken up by one move, and no more.
++        val drift = FRAMES / 1000
++        val slower = Model(jitterMs = 5.0, phase = 0.4, driftPpm = 1000.0).play(FRAMES)
++        assertTrue("${slower.repeats} shown twice", slower.repeats in drift - 1..drift + 1)
++        assertEquals(0, slower.lost)
++        assertTrue("${slower.furthest} refreshes off", slower.furthest < 1.5)
++        // A 24 fps film on a 23.976 Hz TV: a frame left out now and then (skipped, not sent), none shown twice.
++        val faster = Model(jitterMs = 5.0, phase = 0.4, driftPpm = -1000.0).play(FRAMES)
++        assertTrue("${faster.skipped} skipped", faster.skipped in drift - 1..drift + 1)
++        assertEquals(faster.skipped, faster.lost)
++        assertTrue("${faster.repeats} shown twice", faster.repeats <= 1)
++        assertTrue("${faster.furthest} refreshes off", faster.furthest < 1.5)
++    }
++
++    @Test
++    fun aFrameMedia3DroppedLeavesExactlyOneGap() {
++        // (A 15 ms wobble right at half a refresh moves a frame now and then by itself: aWobbleNearHalfARefreshLosesNoFrames.)
++        for (jitter in listOf(0.0, 10.0)) {
++            for (phase in listOf(0.0, 0.3, 0.5, 0.7)) {
++                val run = Model(jitterMs = jitter, phase = phase, dropEvery = 37).play(FRAMES)
++                val case = "±$jitter ms at $phase of a refresh"
++                assertEquals(case, run.dropped, run.repeats)
++                assertEquals(case, 0, run.lost)
++                assertTrue("$case: ${run.furthest} refreshes off", run.furthest < 1.5)
++            }
++        }
++        // Not told of the frame missing (its length not known yet): Media3's time alone, a refresh on, is followed.
++        for (phase in listOf(0.0, 0.3, 0.5, 0.7)) {
++            val run = Model(phase = phase, dropEvery = 37, toldMissing = false).play(FRAMES)
++            assertEquals("at $phase of a refresh", run.dropped, run.repeats)
++            assertEquals("at $phase of a refresh", 0, run.lost)
++        }
++    }
++
++    @Test
++    fun aTvAtTwiceTheFilmsRateShowsEachFrameForTwoRefreshes() {
++        // A 25 fps film on a 50 Hz TV (here 23.976 on 47.952): each frame two refreshes, even with a wobble.
++        val run = Model(jitterMs = 6.0, phase = 0.3, refreshesEach = 2).play(FRAMES)
++        assertEquals(0, run.lost)
++        assertEquals(0, run.repeats)
++        assertTrue(run.shown.keys.toList().takeLast(1000).zipWithNext().all { (a, b) -> b - a == 2L })
++        // A frame Media3 dropped: one gap of four refreshes, followed at once.
++        val dropping = Model(phase = 0.3, refreshesEach = 2, dropEvery = 50).play(FRAMES)
++        assertEquals(0, dropping.lost)
++        assertEquals(dropping.dropped, dropping.repeats)
++    }
++
++    @Test
++    fun eachFramesMoveIsSaid() {
++        val p = FILM_NS
++        val pacer = FramePacer()
++        assertEquals(1_000L, pacer.paced(1_000L, true, p, 1))
++        assertEquals(FramePacer.MEDIA3, pacer.move)
++        pacer.rendered(100 * p, true, p, 1)
++        pacer.paced(101 * p, true, p, 1)
++        assertEquals(FramePacer.START, pacer.move)
++        pacer.paced(102 * p, true, p, 1)
++        assertEquals(FramePacer.NEXT, pacer.move)
++        // A frame missing in the film's times: the next goes a refresh further on, whatever Media3's time for it.
++        assertEquals(104 * p - p / 2, pacer.paced(103 * p + p / 3, true, p, 1, p, missing = 1))
++        assertEquals(FramePacer.FOLLOWED, pacer.move)
++        // Media3's time a whole refresh on, with no frame missing: followed at once too.
++        assertEquals(106 * p - p / 2, pacer.paced(106 * p, true, p, 1))
++        assertEquals(FramePacer.FOLLOWED, pacer.move)
++        assertEquals(107 * p - p / 2, pacer.paced(107 * p, true, p, 1))
++        assertEquals(FramePacer.NEXT, pacer.move)
++        // Media3's time back a whole frame: on the refresh of the frame before, so it isn't sent ...
++        val skipped = pacer.paced(107 * p, true, p, 1)
++        assertEquals(FramePacer.SAME, pacer.move)
++        assertEquals(107 * p - p / 2, skipped)
++        // ... and the next goes to the refresh after the last one sent.
++        assertEquals(108 * p - p / 2, pacer.paced(108 * p, true, p, 1))
++        assertEquals(FramePacer.NEXT, pacer.move)
++        // Moved a refresh later only once the frames have been late for a while, not for one frame.
++        var t = 108 * p
++        val moves = ArrayList<Int>()
++        repeat(80) {
++            t += p
++            pacer.paced(t + (0.7 * p).toLong(), true, p, 1)
++            moves += pacer.move
++        }
++        assertEquals(FramePacer.NEXT, moves.first())
++        assertEquals(1, moves.count { it == FramePacer.LATER })
++        assertTrue(moves.all { it == FramePacer.NEXT || it == FramePacer.LATER })
++        // A new decoder starts afresh.
++        pacer.reset()
++        assertEquals(t, pacer.paced(t, true, p, 1))
++        assertEquals(FramePacer.MEDIA3, pacer.move)
++    }
++
+     private companion object {
+         val FILM_NS = (1e9 * 1001 / 24000).toLong()
+         const val SENT_EARLY_NS = 45_000_000L
+         const val HEARD_AFTER_NS = 3_000_000L
++        /** Frames in each run of the model: about 14 minutes of film. */
++        const val FRAMES = 20_000
++        /** The model's first second, before frames are paced, isn't counted. */
++        const val WARM = 24
+     }
+ }
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameTallyTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameTallyTest.kt
+new file mode 100644
+index 0000000..e5f35ae
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/FrameTallyTest.kt
+@@ -0,0 +1,60 @@
++package app.fireplayer.player
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class FrameTallyTest {
++
++    @Test
++    fun theFirstSampleIsOnlyWhereCountingStarts() {
++        val t = FrameTally()
++        t.sample(5_000, dropped = 10, rendered = 1_000, shownTwice = 3, sameRefresh = 2, neverDecoded = 1)
++        assertEquals(0L, t.minuteLost())
++        assertEquals(0L, t.minute(FrameTally.RENDERED))
++        assertEquals(0L, t.addedLost)
++    }
++
++    @Test
++    fun eachKindIsKeptApart() {
++        val t = FrameTally()
++        t.sample(5_000, 10, 1_000, 3, 2, 1)
++        t.sample(6_000, 12, 1_024, 3, 3, 2)
++        assertEquals(2L, t.minute(FrameTally.DROPPED))
++        assertEquals(24L, t.minute(FrameTally.RENDERED))
++        assertEquals(0L, t.minute(FrameTally.TWICE))
++        assertEquals(1L, t.minute(FrameTally.SAME))
++        assertEquals(1L, t.minute(FrameTally.NEVER))
++        assertEquals(4L, t.addedLost)
++        assertEquals(24L, t.addedRendered)
++        assertEquals("dropped 2 · shown twice 0 · same refresh 1 · never decoded 1", t.minuteLine())
++    }
++
++    @Test
++    fun onlyTheLastMinuteCounts() {
++        val t = FrameTally()
++        // A frame dropped every second for 100 seconds: the last minute has 60 of them.
++        for (s in 0..100) t.sample(s * 1_000L, s.toLong(), s * 24L, 0, 0, 0)
++        assertEquals(60L, t.minute(FrameTally.DROPPED))
++        assertEquals(60 * 24L, t.minute(FrameTally.RENDERED))
++        // Nothing for two minutes (the screen was stopped): only what came after.
++        t.sample(230_000, 102, 2_424, 0, 0, 0)
++        assertEquals(2L, t.minute(FrameTally.DROPPED))
++        // Two samples in the same second add up.
++        t.sample(230_400, 103, 2_448, 0, 0, 0)
++        assertEquals(3L, t.minute(FrameTally.DROPPED))
++    }
++
++    @Test
++    fun media3sCountsFromANewDecoderStartAgain() {
++        val t = FrameTally()
++        t.sample(0, 50, 5_000, 0, 0, 0)
++        // A new decoder session (another track, the next episode): its counts from 0, all of them new.
++        t.sample(1_000, 2, 30, 0, 0, 0, fresh = true)
++        assertEquals(2L, t.minute(FrameTally.DROPPED))
++        assertEquals(30L, t.minute(FrameTally.RENDERED))
++        // A count lower than the last is taken the same way, whoever says so.
++        t.sample(2_000, 1, 20, 0, 0, 0)
++        assertEquals(3L, t.minute(FrameTally.DROPPED))
++        assertEquals(50L, t.minute(FrameTally.RENDERED))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/PlaybackDiagTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/PlaybackDiagTest.kt
+new file mode 100644
+index 0000000..eb3f89f
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/PlaybackDiagTest.kt
+@@ -0,0 +1,42 @@
++package app.fireplayer.player
++
++import androidx.media3.common.C
++import androidx.media3.common.ColorInfo
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Test
++
++class PlaybackDiagTest {
++
++    @Test
++    fun thePictureIsDescribedByItsFormatOnly() {
++        val format = Format.Builder()
++            // A track's id and label can carry anything the file or the add-on put there: never written.
++            .setId("https://example.invalid/abcdef/film.mkv")
++            .setLabel("My copy")
++            .setSampleMimeType(MimeTypes.VIDEO_H265)
++            .setCodecs("hvc1.2.4.L153.B0")
++            .setWidth(3840)
++            .setHeight(2160)
++            .setFrameRate(23.976f)
++            .setColorInfo(
++                ColorInfo.Builder().setColorTransfer(C.COLOR_TRANSFER_ST2084).setColorSpace(C.COLOR_SPACE_BT2020)
++                    .setLumaBitdepth(10).build(),
++            )
++            .build()
++        val line = PlaybackDiag.video(format)
++        assertEquals("video=3840x2160@23.976 mime=video/hevc codecs=hvc1.2.4.L153.B0 hdr=HDR10 bits=10", line)
++        assertFalse(line.contains("http") || line.contains("example") || line.contains("My copy"))
++        assertEquals("video=none", PlaybackDiag.video(null))
++    }
++
++    @Test
++    fun theTvsHdrTypesByName() {
++        assertEquals("none", PlaybackDiag.hdrTypes(null))
++        assertEquals("none", PlaybackDiag.hdrTypes(IntArray(0)))
++        assertEquals("HDR10,HLG,HDR10+,DV", PlaybackDiag.hdrTypes(intArrayOf(2, 3, 4, 1)))
++        assertEquals("type9", PlaybackDiag.hdrTypes(intArrayOf(9)))
++    }
++}
+-- 
+2.43.0
+

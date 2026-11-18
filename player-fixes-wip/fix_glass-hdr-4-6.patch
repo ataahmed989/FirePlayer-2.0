@@ -1,0 +1,1382 @@
+From 766adc30e8f1ec2e09452a5aa6bc9bfb1d9b866c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 20:17:42 +0000
+Subject: [PATCH] Glass lighter in 4K HDR on small TVs; HDR10+ kept from the
+ decoder when the TV lacks it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fix 4, the Glass look kept and lightened:
+- GlassLoad: "heavy video" is a 4K (2000+ lines, or 3000+ across for wide
+  3840x1600 films) HDR video (PQ, HLG or Dolby Vision) on a TV under 1.8 GiB
+  (or Fire OS low-RAM). Then the glass copies the film at most 2 times a second
+  (or the lower setting) and the cut probe looks every 500 ms instead of 100 ms.
+- PlayerActivity tells GlassBackdrop and BarWatch on every track or video size
+  change; BarWatch looks half as often (2 s / 8 s) with heavy video.
+- The Glass refresh row shows e.g. "8 a second · 2 in 4K HDR" while lowered;
+  the stored pref and its key are unchanged.
+- With no glass on screen for 5 s, GlassBackdrop lets go of its copy buffers,
+  the faded-out pictures, off-screen glass's film shaders and the GlassBakes
+  cache, so their textures can leave HWUI's GPU cache (which no public API can
+  purge, and whose Android 11 budget at a 4K mode never evicts). A paused
+  film's blurred picture is kept. Also on onStop.
+
+Fix 6, HDR10+ masked when the TV can't use it:
+- Hdr10PlusMask, ported from Media3 main's HevcSeiUtil (Apache-2.0, credited):
+  in each Annex-B HEVC access unit, prefix SEI T.35 messages with the HDR10+
+  prefix B5 003C 0001 04 get payloadType 254, in place, without allocation;
+  emulation-prevention bytes handled; scanning stops at the first VCL NAL, so
+  suffix SEI and Dolby Vision RPU NALs are never touched.
+- Hdr10PlusGate reads Display.getHdrCapabilities() (API 24+) at each player
+  start and on display changes: mask when HDR10+ is not reported (Android 10+),
+  or when no HDR at all is reported on Android 7-9; never when unknown.
+- PacedVideoRenderer overrides onQueueInputBuffer for HEVC decoders (and Dolby
+  Vision on HEVC), skipping encrypted buffers; logs once when it masks.
+
+Tests: Hdr10PlusMaskTest (15), GlassLoadTest (6), BarWatchTest (1).
+Build and all 481 unit tests pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     |  27 ++
+ .../app/fireplayer/player/Hdr10PlusGate.kt    |  78 +++++
+ .../app/fireplayer/player/Hdr10PlusMask.kt    | 204 +++++++++++++
+ .../fireplayer/player/PacedVideoRenderer.kt   |  31 +-
+ .../app/fireplayer/player/PlayerFactory.kt    |   6 +-
+ .../main/java/app/fireplayer/ui/BarWatch.kt   |  27 +-
+ .../java/app/fireplayer/ui/GlassBackdrop.kt   | 116 +++++++-
+ .../java/app/fireplayer/ui/GlassDrawable.kt   |  18 ++
+ .../main/java/app/fireplayer/ui/GlassLoad.kt  |  98 +++++++
+ .../java/app/fireplayer/ui/SettingsPanels.kt  |  10 +-
+ .../fireplayer/player/Hdr10PlusMaskTest.kt    | 276 ++++++++++++++++++
+ .../java/app/fireplayer/ui/BarWatchTest.kt    |  15 +
+ .../java/app/fireplayer/ui/GlassLoadTest.kt   |  94 ++++++
+ 13 files changed, 980 insertions(+), 20 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusGate.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusMask.kt
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassLoad.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/player/Hdr10PlusMaskTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/ui/BarWatchTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/ui/GlassLoadTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index b65d335..459cd3a 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -82,6 +82,7 @@ import app.fireplayer.player.ServerSwitch
+ import app.fireplayer.player.ThreadBeat
+ import app.fireplayer.player.TitleInfo
+ import app.fireplayer.player.VsyncFix
++import app.fireplayer.player.Hdr10PlusGate
+ import app.fireplayer.player.XtreamAccount
+ import app.fireplayer.player.Copies
+ import app.fireplayer.player.CopyRank
+@@ -117,6 +118,7 @@ import app.fireplayer.ui.EpisodesSheet
+ import app.fireplayer.ui.FireDialog
+ import app.fireplayer.ui.Glass
+ import app.fireplayer.ui.GlassBackdrop
++import app.fireplayer.ui.GlassLoad
+ import app.fireplayer.ui.SeekBarView
+ import app.fireplayer.ui.SeekPreview
+ import app.fireplayer.ui.SettingsPanels
+@@ -237,6 +239,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+     private var player: ExoPlayer? = null
+     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
+     private var vsyncFix: VsyncFix? = null
++    // Whether the TV takes HDR10+, which the film's decoder isn't given when it doesn't (see Hdr10PlusGate).
++    private var hdr10PlusGate: Hdr10PlusGate? = null
+     // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
+     private var backdrop: GlassBackdrop? = null
+     override val glassBackdrop: GlassBackdrop? get() = backdrop
+@@ -1003,6 +1007,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             return
+         }
+         val vsync = VsyncFix(this)
++        val hdr10Plus = Hdr10PlusGate(this)
+         val built = PlayerFactory.build(
+             context = this,
+             delays = delays,
+@@ -1012,12 +1017,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             headers = headersFromIntent(),
+             pictureText = pictureText,
+             vsync = vsync,
++            hdr10Plus = hdr10Plus,
+             displaySwitch = displaySwitch,
+             speechTap = speechTap,
+             embeddedCues = embeddedCues,
+             damageSkips = damageSkips,
+         )
+         vsyncFix = vsync.also { it.start() }
++        // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
++        hdr10PlusGate = hdr10Plus.also { it.start() }
+         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
+         frameRateMatcher.watch { rematchFrameRate() }
+         val p = built.player
+@@ -1127,6 +1135,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         countPlaying(false)
+         vsyncFix?.stop()
+         vsyncFix = null
++        hdr10PlusGate?.stop()
++        hdr10PlusGate = null
+         frameRateMatcher.unwatch()
+         threadBeat = null
+         p.removeListener(this)
+@@ -1532,6 +1542,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         followSubtitle()
+         refreshLabels()
+         updateChips()
++        updateGlassLoad()
+         matchFrameRate()
+         updatePictureReading()
+         // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
+@@ -1551,9 +1562,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         }
+         applyDisplayMode()
+         updateChips()
++        updateGlassLoad()
+         backdrop?.frameChanged()
+     }
+ 
++    /**
++     * Tells the glass and the black-bar watch whether the video playing is 4K HDR on a TV short of memory
++     * ([GlassLoad.heavy]): they copy the film less often then. Asked again whenever the video's format or size changes.
++     */
++    private fun updateGlassLoad() {
++        val heavy = GlassLoad.heavy(
++            selectedFormat(C.TRACK_TYPE_VIDEO),
++            player?.videoSize?.width ?: 0,
++            player?.videoSize?.height ?: 0,
++            GlassLoad.smallRam(this),
++        )
++        backdrop?.heavyVideo = heavy
++        barWatch?.heavyVideo = heavy
++    }
++
+     // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.
+     private var lastFrameFixAt = 0L
+     // Set by a jump the viewer made, used up by the first frame after it.
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusGate.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusGate.kt
+new file mode 100644
+index 0000000..6a56213
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusGate.kt
+@@ -0,0 +1,78 @@
++package app.fireplayer.player
++
++import android.app.Activity
++import android.content.Context
++import android.hardware.display.DisplayManager
++import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.util.Log
++import android.view.Display
++
++/**
++ * Whether the TV can show HDR10+, for the film's video renderer ([PacedVideoRenderer]): when it can't, HDR10+ is
++ * hidden from the decoder ([Hdr10PlusMask]). Read from the display as each player starts and again whenever the display
++ * changes (HDR turned on at the TV, the TV switched or reconnected), so a TV that gains or loses HDR10+ in the middle of
++ * a film is followed from its next frame. One per player, like [VsyncFix].
++ */
++class Hdr10PlusGate(private val activity: Activity) {
++
++    /** HDR10+ is hidden from the decoder: the TV doesn't report it. Read on the playback thread. */
++    @Volatile var mask = false
++        private set
++
++    private val handler = Handler(Looper.getMainLooper())
++    private var running = false
++
++    private val displayListener = object : DisplayManager.DisplayListener {
++        override fun onDisplayChanged(displayId: Int) {
++            if (displayId == Display.DEFAULT_DISPLAY && running) refresh()
++        }
++
++        override fun onDisplayAdded(displayId: Int) = Unit
++        override fun onDisplayRemoved(displayId: Int) = Unit
++    }
++
++    /** As the player is built, before its first frame reaches the decoder. Main thread. */
++    fun start() {
++        if (!running) {
++            running = true
++            displays()?.registerDisplayListener(displayListener, handler)
++        }
++        refresh()
++    }
++
++    /** As the player is released. Main thread. */
++    fun stop() {
++        if (!running) return
++        running = false
++        displays()?.unregisterDisplayListener(displayListener)
++    }
++
++    private fun refresh() {
++        val now = Hdr10PlusMask.shouldMask(Build.VERSION.SDK_INT, hdrTypes())
++        if (now != mask) {
++            Log.i(TAG, if (now) "The TV doesn't report HDR10+: HDR10+ metadata is kept from the decoder" else
++                "The TV reports HDR10+: HDR10+ metadata goes to the decoder")
++        }
++        mask = now
++    }
++
++    /** The HDR types the TV reports (Android 7 and later), or null when they can't be read. */
++    private fun hdrTypes(): IntArray? {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null
++        return try {
++            @Suppress("DEPRECATION")
++            activity.windowManager.defaultDisplay?.hdrCapabilities?.supportedHdrTypes
++        } catch (e: RuntimeException) {
++            null
++        }
++    }
++
++    // By name: looking it up by class needs Android 6.
++    private fun displays() = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
++
++    private companion object {
++        const val TAG = "FirePlayer"
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusMask.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusMask.kt
+new file mode 100644
+index 0000000..52442d7
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/Hdr10PlusMask.kt
+@@ -0,0 +1,204 @@
++package app.fireplayer.player
++
++import androidx.media3.common.MimeTypes
++import java.nio.ByteBuffer
++
++/**
++ * Hides HDR10+ from the decoder when the TV can't use it ([Hdr10PlusGate], [PacedVideoRenderer]).
++ *
++ * HDR10+ travels inside an HEVC film as an SEI message (ITU-T T.35, with Samsung's country and provider codes) ahead of
++ * each frame's picture data. A TV without HDR10+ has no use for it, yet the decoder still takes it in for every frame:
++ * on a Fire TV Stick 4K Max playing a Dolby Vision + HDR10+ film on a TV that reported no HDR, the MediaTek decoder
++ * logged "Hdr10Plus Buffer Header is FULL" on every frame, and the errors stopped once HDR was turned on at the TV.
++ * Here each such message's type byte is changed, in place, from 4 (T.35) to 254 (a type no decoder knows), so decoders
++ * skip it: nothing moves, nothing is copied, and the picture and the film's other metadata (HDR10's own, and Dolby
++ * Vision's, which comes after the picture data) are left as they are.
++ *
++ * Ported from Media3's HevcSeiUtil (androidx/media, main branch,
++ * libraries/exoplayer/src/main/java/androidx/media3/exoplayer/video/HevcSeiUtil.java; Copyright 2026 The Android Open
++ * Source Project, Apache License 2.0), which masks the other T.35 messages and keeps HDR10+: this masks HDR10+ only,
++ * found as Media3's CodecSpecificDataUtil.isHdr10PlusMetadata finds it, read here past any emulation-prevention bytes.
++ */
++object Hdr10PlusMask {
++
++    /** HEVC's prefix SEI: the messages that come before a frame's picture data. */
++    private const val PREFIX_SEI = 39
++    /** NAL unit types 0 to 31 are picture data (VCL): the prefix SEI is all before the first of them. */
++    private const val LAST_VCL = 31
++    /** user_data_registered_itu_t_t35. */
++    private const val T35 = 4
++    /** A reserved SEI payload type, which decoders skip (Media3's SEI_PAYLOAD_TYPE_UNSPECIFIED). */
++    const val MASKED_TYPE = 254
++    /**
++     * How an HDR10+ message starts: country code 0xB5 (United States), provider code 0x003C (Samsung), provider
++     * oriented code 0x0001, application identifier 4 (ST 2094-40).
++     */
++    private val HDR10_PLUS = intArrayOf(0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04)
++
++    /** Display.HdrCapabilities.HDR_TYPE_HDR10_PLUS (Android 10). */
++    const val HDR_TYPE_HDR10_PLUS = 4
++
++    /**
++     * Whether the decoder of [codecMime] is given an HEVC stream: HEVC itself, or Dolby Vision carried on HEVC
++     * ([codecs] dvhe or dvh1: profiles 4, 5, 7 and 8). Dolby Vision on H.264 or AV1 has no HEVC SEI to look at.
++     */
++    fun hevcStream(codecMime: String?, codecs: String?): Boolean = when (codecMime) {
++        MimeTypes.VIDEO_H265 -> true
++        MimeTypes.VIDEO_DOLBY_VISION -> codecs != null && (codecs.startsWith("dvhe") || codecs.startsWith("dvh1"))
++        else -> false
++    }
++
++    /**
++     * Whether HDR10+ is hidden from the decoder on a TV whose display reports [hdrTypes] (Display.HdrCapabilities;
++     * null when it can't be read) under Android [sdk]:
++     *  - Android 10 and later: whenever HDR10+ isn't among them.
++     *  - Android 7 to 9 can't report HDR10+ at all (the type came with Android 10), so only on a TV reporting no HDR
++     *    whatever: a TV with HDR may still take HDR10+ the way the TV box itself passes it on.
++     *  - Before Android 7, or when the display can't be read: never, as before.
++     */
++    fun shouldMask(sdk: Int, hdrTypes: IntArray?): Boolean = when {
++        sdk < 24 || hdrTypes == null -> false
++        sdk >= 29 -> HDR_TYPE_HDR10_PLUS !in hdrTypes
++        else -> hdrTypes.isEmpty()
++    }
++
++    /**
++     * Masks every HDR10+ message in the prefix SEI of the access unit in [buffer], from its position to its limit
++     * (Annex B: each NAL unit after a 00 00 01 or 00 00 00 01 start code, as Media3's extractors hand HEVC to the
++     * decoder). Stops at the first picture (VCL) NAL unit, so the picture data, and a suffix SEI or Dolby Vision's RPU
++     * after it, are never read. The position and limit stay as they were. Returns how many messages were masked.
++     */
++    fun mask(buffer: ByteBuffer): Int {
++        if (buffer.isReadOnly) return 0
++        val limit = buffer.limit()
++        var search = buffer.position()
++        if (limit - search < 4) return 0
++        var masked = 0
++        while (search < limit) {
++            val nal = startCode(buffer, search, limit)
++            // The NAL unit header's first byte follows the three bytes 00 00 01.
++            if (nal + 3 >= limit) break
++            val type = (buffer.get(nal + 3).toInt() and 0x7E) shr 1
++            if (type <= LAST_VCL) break
++            if (type == PREFIX_SEI) {
++                // Its messages start after the two-byte header and end where the next NAL unit starts.
++                val end = startCode(buffer, nal + 5, limit)
++                masked += maskMessages(buffer, nal + 5, end)
++                search = end
++            } else {
++                search = nal + 3
++            }
++        }
++        return masked
++    }
++
++    /** Masks the HDR10+ messages of one prefix SEI NAL unit, whose messages lie from [from] to [end]. */
++    private fun maskMessages(buffer: ByteBuffer, from: Int, end: Int): Int {
++        var at = from
++        // Zero bytes just read, carried across the whole NAL unit: 00 00 03 is an emulation-prevention byte, which the
++        // encoder put in so the data can't look like a start code, and which isn't part of the message.
++        var zeros = 0
++        var masked = 0
++        while (at < end) {
++            // payloadType: 0xFF bytes adding 255 each, then a last byte. T.35 is the single byte 4.
++            var payloadType = 0
++            var typeAt = -1
++            var typeRead = false
++            while (at < end) {
++                val b = buffer.get(at).toInt() and 0xFF
++                if (b == 0x03 && zeros >= 2) {
++                    zeros = 0
++                    at++
++                    continue
++                }
++                zeros = if (b == 0) zeros + 1 else 0
++                payloadType += b
++                if (b != 0xFF) {
++                    if (payloadType == T35) typeAt = at
++                    at++
++                    typeRead = true
++                    break
++                }
++                at++
++            }
++            // Cut short (or only the closing bits left): nothing more to look at.
++            if (!typeRead) break
++            // payloadSize, read the same way.
++            var payloadSize = 0
++            var sizeRead = false
++            while (at < end) {
++                val b = buffer.get(at).toInt() and 0xFF
++                if (b == 0x03 && zeros >= 2) {
++                    zeros = 0
++                    at++
++                    continue
++                }
++                zeros = if (b == 0) zeros + 1 else 0
++                payloadSize += b
++                at++
++                if (b != 0xFF) {
++                    sizeRead = true
++                    break
++                }
++            }
++            if (!sizeRead) break
++            if (typeAt >= 0 && isHdr10Plus(buffer, at, end, zeros, payloadSize)) {
++                buffer.put(typeAt, MASKED_TYPE.toByte())
++                masked++
++            }
++            // Past the payload: payloadSize bytes of the message, not counting emulation-prevention bytes.
++            var left = payloadSize
++            while (left > 0 && at < end) {
++                val b = buffer.get(at).toInt() and 0xFF
++                at++
++                if (b == 0x03 && zeros >= 2) {
++                    zeros = 0
++                } else {
++                    zeros = if (b == 0) zeros + 1 else 0
++                    left--
++                }
++            }
++        }
++        return masked
++    }
++
++    /**
++     * Whether the T.35 payload starting at [start] (with [zeros] zero bytes just before it) is HDR10+: its first
++     * bytes, emulation-prevention bytes left out, are [HDR10_PLUS], all inside the message's [size] and before [end].
++     */
++    private fun isHdr10Plus(buffer: ByteBuffer, start: Int, end: Int, zeros: Int, size: Int): Boolean {
++        if (size < HDR10_PLUS.size) return false
++        var at = start
++        var z = zeros
++        var i = 0
++        while (i < HDR10_PLUS.size) {
++            if (at >= end) return false
++            val b = buffer.get(at).toInt() and 0xFF
++            at++
++            if (b == 0x03 && z >= 2) {
++                z = 0
++                continue
++            }
++            z = if (b == 0) z + 1 else 0
++            if (b != HDR10_PLUS[i]) return false
++            i++
++        }
++        return true
++    }
++
++    /**
++     * Where the next start code (00 00 01) from [from] begins: the offset of its first 00, so its NAL unit's header is
++     * 3 bytes on (a four-byte 00 00 00 01 is found from its second 00). [limit] when there's none.
++     */
++    private fun startCode(buffer: ByteBuffer, from: Int, limit: Int): Int {
++        var zeros = 0
++        var at = from
++        while (at < limit) {
++            val b = buffer.get(at).toInt() and 0xFF
++            if (zeros >= 2 && b == 0x01) return at - 2
++            zeros = if (b == 0) zeros + 1 else 0
++            at++
++        }
++        return limit
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+index ebd3c82..3410783 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PacedVideoRenderer.kt
+@@ -5,6 +5,7 @@ import android.os.Looper
+ import android.util.Log
+ import androidx.annotation.OptIn
+ import androidx.media3.common.util.UnstableApi
++import androidx.media3.decoder.DecoderInputBuffer
+ import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+ 
+@@ -20,12 +21,22 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+  * than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't quite the TV's. When the screen's times
+  * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again, until they fit again
+  * (see [FramePacer]).
++ *
++ * It also keeps HDR10+ from the decoder while the TV doesn't report HDR10+ ([hdr10Plus], [Hdr10PlusMask]).
+  */
+ @OptIn(UnstableApi::class)
+-class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaCodecVideoRenderer(builder) {
++class PacedVideoRenderer(
++    builder: Builder,
++    private val vsync: VsyncFix,
++    private val hdr10Plus: Hdr10PlusGate,
++) : MediaCodecVideoRenderer(builder) {
+ 
+     // On the playback thread.
+     private val pacer = FramePacer()
++    /** The decoder is given HEVC (Dolby Vision on HEVC included), whose HDR10+ can be masked. */
++    private var hevc = false
++    /** HDR10+ was masked since the decoder was made: logged the first time, which shows the film has HDR10+. */
++    private var masked = false
+ 
+     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
+         val periodNs = vsync.tvPeriodNs
+@@ -48,6 +59,8 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
+     ) {
+         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
+         pacer.reset()
++        hevc = Hdr10PlusMask.hevcStream(codecInfo?.mimeType, codecInputFormat?.codecs)
++        masked = false
+         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
+         if (getConfiguration().tunneling) return
+         val looper = Looper.myLooper() ?: return
+@@ -62,6 +75,22 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
+         super.renderOutputBufferV21(codec, index, presentationTimeUs, paced(releaseTimeNs))
+     }
+ 
++    /**
++     * Each sample on its way to the decoder, after Media3 has put it together and before it's queued: HDR10+ is masked
++     * in place when the TV doesn't report HDR10+. Only the few hundred bytes before the picture data are read, with
++     * nothing made, so it costs microseconds a frame.
++     */
++    override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
++        if (hevc && hdr10Plus.mask && !buffer.isEncrypted) {
++            val data = buffer.data
++            if (data != null && Hdr10PlusMask.mask(data) > 0 && !masked) {
++                masked = true
++                Log.i(TAG, "HDR10+ metadata in this video is masked before the decoder (the TV doesn't report HDR10+)")
++            }
++        }
++        super.onQueueInputBuffer(buffer)
++    }
++
+     private fun paced(releaseTimeNs: Long): Long = pacer.paced(releaseTimeNs, vsync.unaligned, vsync.tvPeriodNs, vsync.modes)
+ 
+     private companion object {
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index c643b64..6bf3c6d 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -236,6 +236,8 @@ object PlayerFactory {
+         pictureText: PictureText,
+         /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
+         vsync: VsyncFix,
++        /** Whether the TV takes HDR10+, which the film's video renderer keeps from the decoder when it doesn't. */
++        hdr10Plus: Hdr10PlusGate,
+         /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
+         displaySwitch: DisplaySwitch,
+         /** A copy of the sound for subtitle auto sync, taken only while it listens (see [SpeechTap]). */
+@@ -252,7 +254,7 @@ object PlayerFactory {
+         val extractors = DefaultExtractorsFactory()
+             .setConstantBitrateSeekingEnabled(true)
+ 
+-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap)
++        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, hdr10Plus, speechTap)
+             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+             .setEnableDecoderFallback(true)
+ 
+@@ -698,6 +700,7 @@ private class TvRenderersFactory(
+     private val passthrough: Boolean,
+     private val displaySwitch: DisplaySwitch,
+     private val vsync: VsyncFix,
++    private val hdr10Plus: Hdr10PlusGate,
+     private val speechTap: SpeechTap,
+ ) : DefaultRenderersFactory(context) {
+     /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
+@@ -727,6 +730,7 @@ private class TvRenderersFactory(
+                 .setEventListener(eventListener)
+                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
+             vsync,
++            hdr10Plus,
+         )
+     }
+ 
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/BarWatch.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/BarWatch.kt
+index eb42378..2d493b2 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/BarWatch.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/BarWatch.kt
+@@ -14,6 +14,7 @@ import app.fireplayer.player.BlackBars
+  * Looks at the film now and then while Fill screen or Stretch is chosen, to find black bars that are part of its file
+  * ([BlackBars]). A small copy of the picture about once a second until that's known, then every few seconds in case
+  * the film changes shape; none at all in the other display sizes, while paused, or once it's sure there are no bars.
++ * Half as often while a 4K HDR film plays on a TV short of memory ([heavyVideo]), as for the glass ([GlassLoad]).
+  * Android 7 and later (PixelCopy); older TVs keep the film's own shape.
+  */
+ class BarWatch(
+@@ -37,6 +38,9 @@ class BarWatch(
+     val vertical: Float get() = bars.vertical
+     val horizontal: Float get() = bars.horizontal
+ 
++    /** The film playing is 4K HDR on a TV short of memory ([GlassLoad.heavy]): looks come half as often. */
++    var heavyVideo = false
++
+     /** Fill screen or Stretch is chosen and a film is showing. */
+     var wanted = false
+         set(value) {
+@@ -67,7 +71,7 @@ class BarWatch(
+ 
+     private fun look() {
+         if (!wanted || released || bars.settled || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+-        main.postDelayed(tick, if (bars.found || looks > PATIENCE) KEEP_MS else SOON_MS)
++        main.postDelayed(tick, gapMs(known = bars.found || looks > PATIENCE, heavy = heavyVideo))
+         if (busy || !playing() || !surfaceView.isAttachedToWindow) return
+         val handler = worker ?: run {
+             val t = HandlerThread("bars", Process.THREAD_PRIORITY_BACKGROUND).also { it.start() }
+@@ -115,11 +119,20 @@ class BarWatch(
+         if (bars.see(seen)) onChanged()
+     }
+ 
+-    private companion object {
+-        const val WIDTH = 160
+-        const val HEIGHT = 180
+-        const val SOON_MS = 1_000L
+-        const val KEEP_MS = 4_000L
+-        const val PATIENCE = 90
++    companion object {
++        private const val WIDTH = 160
++        private const val HEIGHT = 180
++        private const val SOON_MS = 1_000L
++        private const val KEEP_MS = 4_000L
++        private const val PATIENCE = 90
++        /** How many times longer the gaps are with heavy video. */
++        private const val HEAVY_GAP_FACTOR = 2
++
++        /**
++         * The wait before the next look: about a second while the bars are looked for, a few seconds once they're
++         * [known] (found, or given up on); twice as long with [heavy] video.
++         */
++        fun gapMs(known: Boolean, heavy: Boolean): Long =
++            (if (known) KEEP_MS else SOON_MS) * (if (heavy) HEAVY_GAP_FACTOR else 1)
+     }
+ }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassBackdrop.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassBackdrop.kt
+index 1a49a72..6b27be3 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassBackdrop.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassBackdrop.kt
+@@ -36,6 +36,9 @@ import kotlin.math.sqrt
+  * look off nothing here runs. Everything happens on the main thread except the copy and the blur, which run on
+  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
+  * reaches the glass at once instead of at the next refresh.
++ *
++ * While a 4K HDR film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
++ * screen for a while, what only copies need is let go ([idleCheck]).
+  */
+ class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
+ 
+@@ -55,8 +58,22 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+     private val density = activity.resources.displayMetrics.density
+     private val prefs = Prefs(activity)
+ 
+-    /** Time between copies while the film plays, from Settings (Look, Glass refresh); read each time, so a change applies at once. */
+-    private val refreshMs: Long get() = 1_000L / prefs.glassRefreshPerSec.coerceIn(1, 8)
++    /**
++     * Time between copies while the film plays, from Settings (Look, Glass refresh), lowered for [heavyVideo]; read each
++     * time, so a change applies at once.
++     */
++    private val refreshMs: Long get() = 1_000L / GlassLoad.refreshPerSec(prefs.glassRefreshPerSec, heavyVideo)
++
++    /** Time between cut probes while the film plays: longer for [heavyVideo]. */
++    private val probeMs: Long get() = GlassLoad.probeMs(heavyVideo)
++
++    /**
++     * The film playing is 4K HDR on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
++     * (fewer if that's the setting) and probes for cuts every half second, as each copy of such a frame weighs on the
++     * TV's graphics chip and memory. Told by the player whenever the video's format or size changes; the saved setting
++     * stays as it is.
++     */
++    var heavyVideo = false
+ 
+     /**
+      * Each new copy fades in over nearly the whole gap to the next one, so the glass keeps drifting with the film
+@@ -132,7 +149,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+     private var copying = false
+     private var queued: Job? = null
+     private var probeBitmap: Bitmap? = null
+-    /** A PixelCopy.OnPixelCopyFinishedListener (Android 7), made once: probes come ten times a second. */
++    /** A PixelCopy.OnPixelCopyFinishedListener (Android 7), made once: probes come up to ten times a second. */
+     private var probeListener: Any? = null
+     private var probing = false
+     private var probeGen = 0
+@@ -267,6 +284,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+         main.removeCallbacks(probeWatchdog)
+         main.removeMessages(MSG_PROBED)
+         main.removeCallbacks(endNavigation)
++        main.removeCallbacks(idleCheck)
++        idlePending = false
+         navigating = false
+         ticking = false
+         inFlight = false
+@@ -276,6 +295,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+         blocked = false
+         dropFrames(fade = false, now = 0L)
+         capturedAt = 0L
++        // Nothing is copied until the activity starts again: the copies' working pictures can go meanwhile.
++        worker?.post { releaseBuffers() }
+     }
+ 
+     /** The activity's onDestroy. Everything after it does nothing. */
+@@ -317,8 +338,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+ 
+     /** Called by each glass shape as it draws: glass on screen is what asks for copies. */
+     override fun onGlassDrawn() {
+-        if (!started || !copiesPossible()) return
++        if (!started) return
+         val now = SystemClock.uptimeMillis()
++        glassDrawnAt = now
++        if (!idlePending) scheduleIdleCheck(now + IDLE_RELEASE_MS)
++        if (!copiesPossible()) return
+         if (playing) startTicking(now)
+         if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
+     }
+@@ -390,7 +414,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+     // ---- Cut probe (main thread) -----------------------------------------
+ 
+     /**
+-     * Beside [tick], under the same conditions: every PROBE_MS a tiny copy is compared with the picture the glass
++     * Beside [tick], under the same conditions: every [probeMs] a tiny copy is compared with the picture the glass
+      * shows. A camera cut or a big flash then gets a copy at once, rather than up to a whole refresh later.
+      */
+     private val probeTick = object : Runnable {
+@@ -400,14 +424,14 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+             val now = SystemClock.uptimeMillis()
+             requestProbe(now)
+             probeLooping = true
+-            main.postAtTime(this, now + PROBE_MS)
++            main.postAtTime(this, now + probeMs)
+         }
+     }
+ 
+     private fun startProbing(now: Long) {
+         if (probeLooping || probesOff || !started || !copiesPossible()) return
+         probeLooping = true
+-        main.postAtTime(probeTick, now + PROBE_MS)
++        main.postAtTime(probeTick, now + probeMs)
+     }
+ 
+     /** No probe while a copy is on its way or about due (that copy shows the cut anyway), or nothing is shown. */
+@@ -531,6 +555,77 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+         }
+     }
+ 
++    // ---- Letting go while no glass shows (main thread) ---------------------
++
++    /** When glass last drew ([onGlassDrawn]). */
++    private var glassDrawnAt = 0L
++    private var idlePending = false
++
++    private fun scheduleIdleCheck(at: Long) {
++        idlePending = true
++        main.postAtTime(idleCheck, at)
++    }
++
++    /**
++     * Glass that hasn't been on screen for [IDLE_RELEASE_MS] (the controls hidden, the windows closed) lets go of what
++     * only copies and glass need, so a film that needs the TV's memory gets it back. Glass on screen, drawn lately or
++     * still standing (a paused film under its controls), keeps everything; it's looked at again later.
++     */
++    private val idleCheck = Runnable {
++        idlePending = false
++        if (!started) return@Runnable
++        val now = SystemClock.uptimeMillis()
++        if (anyVisible()) {
++            scheduleIdleCheck(now + IDLE_RELEASE_MS)
++        } else if (now - glassDrawnAt < IDLE_RELEASE_MS) {
++            scheduleIdleCheck(glassDrawnAt + IDLE_RELEASE_MS)
++        } else {
++            releaseIdle()
++        }
++    }
++
++    /**
++     * What goes with no glass on screen. FirePlayer's own share of the graphics memory the glass look brings is small:
++     * the copy and its working pictures (about a megabyte), the blurred film (a few small pictures) and the baked glass
++     * ([GlassBakes], up to 12 MB). The rest (118 MB of graphics memory seen on a Fire TV Stick 4K Max, from when the
++     * glass Settings window opened over a 4K HDR film until after it closed) is most likely the TV's own drawing cache in
++     * FirePlayer's process: the pictures drawn, the layers windows slide in on, and the graphics work of each copy of the
++     * 4K frame. On Android 11 that cache may grow to the screen's size in pixels times 48 bytes, about 400 MB at a 4K
++     * screen mode, so nothing in it is pushed out by size; it's emptied only when Fire OS trims the app (in the
++     * background) or what's in it goes unused for a while. No public call lets an app empty it, but it lets go of a
++     * picture once the app has let go of it. So the app lets go of every picture the glass only needs while it shows,
++     * and copies 4K HDR film less often ([heavyVideo]): the baked glass is made again in a few milliseconds when glass
++     * next needs it, and the next copy brings the film back. A paused film's blurred picture is kept, so glass shown
++     * over it again is right at once.
++     */
++    private fun releaseIdle() {
++        // A fade is over by now (unless held still by the D-pad): what faded out, and the rows the blend worked in,
++        // aren't needed.
++        if (fadeFraction() >= 1f) for (i in fadingFrom.indices) fadingFrom[i] = null
++        blendA = IntArray(0)
++        blendB = IntArray(0)
++        // Each piece of glass off screen lets go of the pictures it last drew; on screen again, it takes the newest.
++        if (drawables.isNotEmpty()) {
++            visiting.addAll(drawables.keys)
++            for (drawable in visiting) if (!drawable.isOnScreen()) drawable.forgetFilm()
++            visiting.clear()
++        }
++        worker?.post { releaseBuffers() }
++        GlassBakes.trim()
++    }
++
++    /** On the worker: the copy's working pictures go, unless a copy or probe is under way (they're made again as needed). */
++    private fun releaseBuffers() {
++        if (copying || probing || queued != null) return
++        copyBitmap = null
++        composite = null
++        compositeCanvas = null
++        probeBitmap = null
++        pixels = IntArray(0)
++        work = IntArray(0)
++        temp = IntArray(0)
++    }
++
+     private fun surfaceReady() {
+         if (released) return
+         waitingForSurface = false
+@@ -1093,10 +1188,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
+         const val WATCHDOG_MS = 5_000L
+ 
+         /**
+-         * How often a probe looks for a cut while the film plays: soon enough that the glass changes with the new
+-         * shot, and cheap, as a probe is only PROBE_WIDTH x PROBE_HEIGHT pixels with no blur.
++         * How long no glass must have been on screen before what only the glass needs is let go ([releaseIdle]): long
++         * enough that moving between the controls and a window keeps it, short enough to hand the memory back to a
++         * film soon after the last window closes.
+          */
+-        const val PROBE_MS = 100L
++        const val IDLE_RELEASE_MS = 5_000L
+         /** No probe when a copy is due this soon: that copy shows the cut anyway. */
+         const val PROBE_LEAD_MS = 60L
+         /**
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassDrawable.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassDrawable.kt
+index 4a77e10..33363fe 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassDrawable.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassDrawable.kt
+@@ -263,6 +263,18 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
+         shader1?.setLocalMatrix(filmMatrix)
+     }
+ 
++    /**
++     * Off screen a while ([GlassBackdrop]'s idle release): lets go of the pictures of the film it drew last, so they and
++     * their copies in the TV's drawing cache can go. Drawn again, it takes the newest film.
++     */
++    internal fun forgetFilm() {
++        filmPaint.shader = null
++        film0 = null
++        shader0 = null
++        film1 = null
++        shader1 = null
++    }
++
+     private fun shaderFor(film: Bitmap): BitmapShader {
+         val s0 = shader0
+         if (film === film0 && s0 != null) return s0
+@@ -401,6 +413,12 @@ internal object GlassBakes {
+     /** About 12 MB, less on a small heap: the film's buffer takes most of it on older TVs. */
+     private fun cacheBytes(): Int = min(12L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 16).toInt()
+ 
++    /**
++     * With no glass on screen for a while ([GlassBackdrop]'s idle release), every bitmap kept here goes; glass that
++     * still exists keeps the ones it drew, and the rest are made again (a few milliseconds each) when next needed.
++     */
++    fun trim() = cache.evictAll()
++
+     fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float): Bitmap {
+         val key = Key(kind.ordinal, focused, w, h, 0, density)
+         cache.get(key)?.let { return it }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassLoad.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassLoad.kt
+new file mode 100644
+index 0000000..de3c871
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/GlassLoad.kt
+@@ -0,0 +1,98 @@
++package app.fireplayer.ui
++
++import android.app.ActivityManager
++import android.content.Context
++import androidx.annotation.OptIn
++import androidx.media3.common.C
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++import androidx.media3.common.util.UnstableApi
++
++/**
++ * How hard the Glass look may work on the film playing. Each copy of the film ([GlassBackdrop], and [BarWatch] in Fill
++ * screen or Stretch) makes the TV fetch the frame the decoder just made and convert it on the same graphics chip that
++ * puts the film on screen. For a 4K HDR film that's a 3840 x 2160 10-bit frame each time; on a Fire TV Stick 4K Max,
++ * with 1.7 GB of memory in all, such a film lost about one frame in six while the Stick was out of memory, with 118 MB
++ * of graphics memory in FirePlayer that appeared as the glass Settings window opened. So while such a film plays on a
++ * TV with that little memory ("heavy video"), the glass copies it at most [HEAVY_REFRESH_PER_SEC] times a second
++ * (fewer if that's the setting) and looks for camera cuts every [HEAVY_PROBE_MS] instead of every [PROBE_MS]. The look
++ * itself and the saved setting stay as they are.
++ */
++object GlassLoad {
++
++    /**
++     * How often a probe looks for a camera cut while the film plays: soon enough that the glass changes with the new
++     * shot, and cheap, as a probe is only 32 x 18 pixels with no blur.
++     */
++    const val PROBE_MS = 100L
++    /** The same with heavy video. */
++    const val HEAVY_PROBE_MS = 500L
++    /** The most copies a second with heavy video. */
++    const val HEAVY_REFRESH_PER_SEC = 2
++
++    /** 4K: 2000 lines or more (2160p), or 3000 dots across (a wide 4K film is kept as 3840 x 1600). */
++    const val UHD_MIN_HEIGHT = 2000
++    const val UHD_MIN_WIDTH = 3000
++
++    /** Under 1.8 GiB in all a TV is short of memory for this: the Fire TV Stick 4K Max has 1.7 GB. */
++    const val SMALL_RAM_BYTES = 1_932_735_283L // 1.8 * 2^30
++
++    /** The Glass refresh setting ([chosen], copies a second) as it applies now: at most 2 with [heavy] video. */
++    fun refreshPerSec(chosen: Int, heavy: Boolean): Int {
++        val rate = chosen.coerceIn(1, 8)
++        return if (heavy) minOf(rate, HEAVY_REFRESH_PER_SEC) else rate
++    }
++
++    fun probeMs(heavy: Boolean): Long = if (heavy) HEAVY_PROBE_MS else PROBE_MS
++
++    /**
++     * What the Glass refresh row shows while the setting is lowered for heavy video, such as "8 a second · 2 in 4K HDR";
++     * null when it isn't (the row then shows the setting's own name).
++     */
++    fun refreshLabel(chosen: Int, heavy: Boolean): String? {
++        val now = refreshPerSec(chosen, heavy)
++        return if (heavy && now < chosen) "$chosen a second · $now in 4K HDR" else null
++    }
++
++    /** A TV with [totalMemBytes] in all (0: not known) is short of memory; [lowRam] is Fire OS's isLowRamDevice. */
++    fun smallRam(totalMemBytes: Long, lowRam: Boolean): Boolean = lowRam || totalMemBytes in 1 until SMALL_RAM_BYTES
++
++    /**
++     * Whether the video is 4K HDR: [width] x [height] is 4K, and it's HDR10 or HDR10+ ([colorTransfer] PQ), HLG, or
++     * Dolby Vision ([sampleMime], or [codecs] dvhe, dvh1, dvav, dva1 or dav1).
++     */
++    fun uhdHdr(width: Int, height: Int, colorTransfer: Int, sampleMime: String?, codecs: String?): Boolean {
++        val uhd = height >= UHD_MIN_HEIGHT || width >= UHD_MIN_WIDTH
++        val dv = sampleMime == MimeTypes.VIDEO_DOLBY_VISION ||
++            codecs != null && DV_CODECS.any { codecs.startsWith(it) }
++        val hdr = dv || colorTransfer == C.COLOR_TRANSFER_ST2084 || colorTransfer == C.COLOR_TRANSFER_HLG
++        return uhd && hdr
++    }
++
++    /**
++     * Heavy video: the [video] track playing is 4K HDR on a TV that's [smallRam]. The size shown ([shownWidth] x
++     * [shownHeight], 0 while not known) counts when the track doesn't say.
++     */
++    @OptIn(UnstableApi::class)
++    fun heavy(video: Format?, shownWidth: Int, shownHeight: Int, smallRam: Boolean): Boolean {
++        if (!smallRam || video == null) return false
++        val w = maxOf(video.width, shownWidth)
++        val h = maxOf(video.height, shownHeight)
++        return uhdHdr(w, h, video.colorInfo?.colorTransfer ?: Format.NO_VALUE, video.sampleMimeType, video.codecs)
++    }
++
++    private val DV_CODECS = listOf("dvhe", "dvh1", "dvav", "dva1", "dav1")
++
++    @Volatile private var small: Boolean? = null
++
++    /** Whether this TV is short of memory ([smallRam]), read once: its memory doesn't change. */
++    fun smallRam(context: Context): Boolean = small ?: run {
++        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
++        val found = if (am == null) false else {
++            val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
++            smallRam(info.totalMem, am.isLowRamDevice)
++        }
++        small = found
++        found
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsPanels.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsPanels.kt
+index b31619a..6fa4873 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsPanels.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsPanels.kt
+@@ -265,7 +265,15 @@ class SettingsPanels(
+         if (prefs.glassLook) {
+             // How often the glass copies the film: faster follows it more closely, slower is lighter on older sticks.
+             val rates = listOf(2, 4, 8)
+-            choice("Glass refresh", rates.map { "$it times a second" }, rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it }) {
++            // Over a 4K HDR film on a TV short of memory the glass copies less often (GlassLoad): the row says so, as
++            // "8 a second · 2 in 4K HDR", while the setting itself stays as chosen.
++            val heavy = (activity as? GlassBackdrop.Host)?.glassBackdrop?.heavyVideo == true
++            choice(
++                "Glass refresh",
++                rates.map { "$it times a second" },
++                rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it },
++                valueText = GlassLoad.refreshLabel(prefs.glassRefreshPerSec, heavy),
++            ) {
+                 prefs.glassRefreshPerSec = rates[it]
+             }.asSubRow()
+         }
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/Hdr10PlusMaskTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/Hdr10PlusMaskTest.kt
+new file mode 100644
+index 0000000..cff94d8
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/Hdr10PlusMaskTest.kt
+@@ -0,0 +1,276 @@
++package app.fireplayer.player
++
++import androidx.media3.common.MimeTypes
++import java.io.ByteArrayOutputStream
++import java.nio.ByteBuffer
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** HDR10+ masked in HEVC access units as Media3 hands them to the decoder (Annex B), built here byte by byte. */
++class Hdr10PlusMaskTest {
++
++    private fun bytes(vararg b: Int) = ByteArray(b.size) { b[it].toByte() }
++
++    private val start4 = bytes(0, 0, 0, 1)
++    private val start3 = bytes(0, 0, 1)
++
++    // NAL unit types.
++    private val trailR = 1
++    private val idr = 19
++    private val vps = 32
++    private val sps = 33
++    private val pps = 34
++    private val aud = 35
++    private val prefixSei = 39
++    private val suffixSei = 40
++    private val dolbyVisionRpu = 62
++
++    /** A NAL unit: start code, two-byte header (layer 0, temporal id 0), then [payload] as it is in the stream. */
++    private fun nal(type: Int, payload: ByteArray, start: ByteArray = start4) = start + bytes(type shl 1, 1) + payload
++
++    /** A value as SEI writes it: 0xFF for each 255, then the rest. */
++    private fun sized(value: Int): ByteArray {
++        val out = ByteArrayOutputStream()
++        var left = value
++        while (left >= 255) {
++            out.write(0xFF)
++            left -= 255
++        }
++        out.write(left)
++        return out.toByteArray()
++    }
++
++    /** One SEI message: its type, its size, its payload (before emulation prevention). */
++    private fun message(type: Int, payload: ByteArray) = sized(type) + sized(payload.size) + payload
++
++    /** An encoder's emulation prevention: 03 after two zero bytes whenever the next byte is 00 to 03. */
++    private fun escape(rbsp: ByteArray): ByteArray {
++        val out = ByteArrayOutputStream()
++        var zeros = 0
++        for (b in rbsp) {
++            val v = b.toInt() and 0xFF
++            if (zeros >= 2 && v <= 3) {
++                out.write(3)
++                zeros = 0
++            }
++            out.write(v)
++            zeros = if (v == 0) zeros + 1 else 0
++        }
++        return out.toByteArray()
++    }
++
++    /** A prefix SEI NAL unit's payload: the messages, the closing bits, escaped. */
++    private fun sei(vararg messages: ByteArray): ByteArray =
++        escape(messages.fold(ByteArray(0)) { all, m -> all + m } + bytes(0x80))
++
++    /** An HDR10+ payload (ST 2094-40): its T.35 prefix, then data with zeros an encoder must escape. */
++    private val hdr10PlusPayload = bytes(
++        0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04, // country, provider, provider oriented code, application id
++        0x01, 0x40, 0x00, 0x00, 0x02, 0x7F, 0x10, 0x00, 0x00, 0x00, 0x33, 0x80, 0x55, 0x21, 0x00, 0x00, 0x01, 0x6C,
++    )
++
++    /** CEA-708 captions (ATSC A/53, "GA94"): T.35 too, from another provider, and must stay. */
++    private val captionsPayload = bytes(0xB5, 0x00, 0x31, 0x47, 0x41, 0x39, 0x34, 0x03, 0xC1, 0xFF, 0xFC, 0x80, 0x80)
++
++    /** Dolby's T.35 code (0x003B), as Dolby Vision uses in other codecs: must stay. */
++    private val dolbyPayload = bytes(0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08)
++
++    /** Mastering display colour volume (SEI 137), part of plain HDR10: must stay. */
++    private val masteringDisplay = message(137, ByteArray(24) { (it * 11 + 3).toByte() })
++    /** Content light level (SEI 144): must stay. */
++    private val lightLevel = message(144, bytes(0x03, 0xE8, 0x01, 0x90))
++
++    private val parameterSets = nal(vps, bytes(0x0C, 0x01, 0xFF, 0xFF)) + nal(sps, bytes(0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0xB0)) +
++        nal(pps, bytes(0xC1, 0x72, 0xB4, 0x62))
++    private val slice = bytes(0xAF, 0x12, 0x34, 0x00, 0x00, 0x03, 0x01, 0x99, 0x5A, 0x00, 0x00, 0x03, 0x00, 0x42)
++
++    /** An IDR access unit with [seiPayload] as its prefix SEI. */
++    private fun idrUnit(seiPayload: ByteArray, start: ByteArray = start4) =
++        nal(aud, bytes(0x10), start) + parameterSets + nal(prefixSei, seiPayload, start) + nal(idr, slice, start)
++
++    private fun masked(unit: ByteArray): Pair<Int, ByteArray> {
++        val copy = unit.copyOf()
++        val count = Hdr10PlusMask.mask(ByteBuffer.wrap(copy))
++        return count to copy
++    }
++
++    @Test fun hdr10PlusIsMaskedInPlace() {
++        val unit = idrUnit(sei(masteringDisplay, lightLevel, message(4, hdr10PlusPayload)))
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        // The same unit with type 254 instead of 4: escaped alike (both above 3), so only that byte differs.
++        assertArrayEquals(idrUnit(sei(masteringDisplay, lightLevel, message(Hdr10PlusMask.MASKED_TYPE, hdr10PlusPayload))), out)
++        assertEquals(unit.size, out.size)
++        assertEquals(1, unit.indices.count { unit[it] != out[it] })
++    }
++
++    @Test fun threeByteStartCodesToo() {
++        val unit = idrUnit(sei(message(4, hdr10PlusPayload)), start3)
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        assertArrayEquals(idrUnit(sei(message(Hdr10PlusMask.MASKED_TYPE, hdr10PlusPayload)), start3), out)
++    }
++
++    @Test fun otherT35PayloadsAndOtherMessagesStay() {
++        val unit = idrUnit(sei(message(4, captionsPayload), message(4, dolbyPayload), masteringDisplay, lightLevel))
++        val (count, out) = masked(unit)
++        assertEquals(0, count)
++        assertArrayEquals(unit, out)
++    }
++
++    @Test fun onlyTheHdr10PlusMessageAmongOthers() {
++        val unit = idrUnit(sei(message(4, captionsPayload), message(4, hdr10PlusPayload), message(4, dolbyPayload)))
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        assertArrayEquals(
++            idrUnit(sei(message(4, captionsPayload), message(Hdr10PlusMask.MASKED_TYPE, hdr10PlusPayload), message(4, dolbyPayload))),
++            out,
++        )
++    }
++
++    @Test fun everyPrefixSeiBeforeThePicture() {
++        val unit = nal(aud, bytes(0x50)) + nal(prefixSei, sei(message(4, hdr10PlusPayload))) +
++            nal(prefixSei, sei(lightLevel, message(4, hdr10PlusPayload))) + nal(trailR, slice)
++        val (count, out) = masked(unit)
++        assertEquals(2, count)
++        val expected = nal(aud, bytes(0x50)) + nal(prefixSei, sei(message(254, hdr10PlusPayload))) +
++            nal(prefixSei, sei(lightLevel, message(254, hdr10PlusPayload))) + nal(trailR, slice)
++        assertArrayEquals(expected, out)
++    }
++
++    @Test fun nothingAfterThePictureDataIsTouched() {
++        // A prefix SEI after a slice (which a decoder takes as the next frame's) and a suffix SEI are never read, nor is
++        // Dolby Vision's RPU, even holding bytes that look like an HDR10+ message.
++        val lookalike = bytes(0x01, 0x04, 0x18) + hdr10PlusPayload.copyOf(18)
++        val unit = nal(aud, bytes(0x50)) + nal(trailR, slice) + nal(prefixSei, sei(message(4, hdr10PlusPayload))) +
++            nal(suffixSei, sei(message(4, hdr10PlusPayload))) + nal(dolbyVisionRpu, lookalike)
++        val (count, out) = masked(unit)
++        assertEquals(0, count)
++        assertArrayEquals(unit, out)
++    }
++
++    @Test fun dolbyVisionRpuBeforeThePictureIsSkipped() {
++        val lookalike = bytes(0x01, 0x04, 0x18) + hdr10PlusPayload.copyOf(18)
++        val unit = nal(dolbyVisionRpu, lookalike) + nal(prefixSei, sei(message(4, hdr10PlusPayload))) + nal(idr, slice)
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        assertArrayEquals(nal(dolbyVisionRpu, lookalike) + nal(prefixSei, sei(message(254, hdr10PlusPayload))) + nal(idr, slice), out)
++    }
++
++    @Test fun emulationPreventionBytesAreSkippedWhileCounting() {
++        // A user-data message of zeros, escaped to more bytes than its size says: read without leaving out its 03s,
++        // the messages after it would be misread.
++        val zeros = message(5, ByteArray(40))
++        val rbspSize = zeros.size
++        val unit = idrUnit(sei(zeros, message(4, hdr10PlusPayload)))
++        assertTrue(sei(zeros).size > rbspSize + 1)
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        assertArrayEquals(idrUnit(sei(zeros, message(254, hdr10PlusPayload))), out)
++    }
++
++    @Test fun escapedTypeAndSizeBytesAreReadAsTheirValues() {
++        // A payload ending in 00, then a buffering period message (type 0, size 2): 00 00 02 is written 00 00 03 02,
++        // so the size byte comes after an emulation-prevention byte.
++        val endsInZero = message(5, bytes(0x11, 0x22, 0x00))
++        val bufferingPeriod = message(0, bytes(0xAA, 0xBB))
++        // A payload ending in 00 00, then a picture timing message (type 1): its type byte is escaped the same way.
++        val endsInZeros = message(5, bytes(0x11, 0x22, 0x00, 0x00))
++        val pictureTiming = message(1, bytes(0x00, 0x00, 0x00))
++        val before = arrayOf(endsInZero, bufferingPeriod, endsInZeros, pictureTiming)
++        val raw = before.fold(ByteArray(0)) { all, m -> all + m }
++        assertTrue(sei(*before).size >= raw.size + 1 + 3)
++        val unit = idrUnit(sei(*before, message(4, hdr10PlusPayload)))
++        val (count, out) = masked(unit)
++        assertEquals(1, count)
++        assertArrayEquals(idrUnit(sei(*before, message(254, hdr10PlusPayload))), out)
++    }
++
++    @Test fun notT35OrTooShortIsLeft() {
++        // Type 259 (FF 04) is not T.35, and a T.35 message shorter than the HDR10+ prefix can't be HDR10+.
++        val unit = idrUnit(sei(message(259, hdr10PlusPayload), message(4, hdr10PlusPayload.copyOf(5))))
++        val (count, out) = masked(unit)
++        assertEquals(0, count)
++        assertArrayEquals(unit, out)
++    }
++
++    @Test fun cutShortAnywhereNeverThrowsAndMasksOnlyAWholePrefix() {
++        val unit = idrUnit(sei(masteringDisplay, message(4, hdr10PlusPayload)))
++        val full = masked(unit).second
++        val typeAt = unit.indices.first { unit[it] != full[it] }
++        // The last byte of the HDR10+ prefix: from the type byte, past the size byte, six bytes on.
++        val prefixEnd = typeAt + 2 + 5
++        for (n in 0..unit.size) {
++            val cut = unit.copyOf(n)
++            val count = Hdr10PlusMask.mask(ByteBuffer.wrap(cut))
++            assertEquals("cut at $n", if (n > prefixEnd) 1 else 0, count)
++            for (i in 0 until n) assertEquals("cut at $n, byte $i", if (i == typeAt && count == 1) full[i] else unit[i], cut[i])
++        }
++    }
++
++    @Test fun junkAndEmptyBuffersAreHarmless() {
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.allocate(0)))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(bytes(0, 0, 1))))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(bytes(0, 0, 0, 1, prefixSei shl 1))))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(bytes(0, 0, 0, 1, prefixSei shl 1, 1))))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(bytes(0, 0, 0, 1, prefixSei shl 1, 1, 0x04))))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(bytes(0, 0, 0, 1, prefixSei shl 1, 1, 0xFF, 0xFF, 0xFF))))
++        val noise = ByteArray(4096) { ((it * 7919) xor (it shr 3)).toByte() }
++        Hdr10PlusMask.mask(ByteBuffer.wrap(noise.copyOf()))
++        // A read-only buffer can't be changed: left alone.
++        val unit = idrUnit(sei(message(4, hdr10PlusPayload)))
++        assertEquals(0, Hdr10PlusMask.mask(ByteBuffer.wrap(unit.copyOf()).asReadOnlyBuffer()))
++    }
++
++    @Test fun onlyBetweenPositionAndLimitWhichStayAsTheyWere() {
++        val unit = idrUnit(sei(message(4, hdr10PlusPayload)))
++        val before = bytes(0x00, 0x00, 0x00, 0x01, prefixSei shl 1, 0x01, 0x04, 0x18) + hdr10PlusPayload
++        val after = unit
++        val all = before + unit + after
++        // A direct buffer, as MediaCodec's input buffers are.
++        val buffer = ByteBuffer.allocateDirect(all.size)
++        buffer.put(all)
++        buffer.position(before.size)
++        buffer.limit(before.size + unit.size)
++        assertEquals(1, Hdr10PlusMask.mask(buffer))
++        assertEquals(before.size, buffer.position())
++        assertEquals(before.size + unit.size, buffer.limit())
++        buffer.clear()
++        val out = ByteArray(all.size).also { buffer.get(it) }
++        assertArrayEquals(before + masked(unit).second + after, out)
++    }
++
++    @Test fun hevcStreamsAreHevcAndDolbyVisionOnHevc() {
++        assertTrue(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_H265, "hvc1.2.4.L153.B0"))
++        assertTrue(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_H265, null))
++        assertTrue(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_DOLBY_VISION, "dvhe.08.06"))
++        assertTrue(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_DOLBY_VISION, "dvh1.05.06"))
++        assertFalse(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_DOLBY_VISION, "dvav.09.05"))
++        assertFalse(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_DOLBY_VISION, "dav1.10.06"))
++        assertFalse(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_DOLBY_VISION, null))
++        assertFalse(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_H264, "avc1.640028"))
++        assertFalse(Hdr10PlusMask.hevcStream(MimeTypes.VIDEO_AV1, null))
++        assertFalse(Hdr10PlusMask.hevcStream(null, null))
++    }
++
++    @Test fun maskedOnlyWhenTheTvLacksHdr10Plus() {
++        val hdr10 = 2
++        val hlg = 3
++        val dolbyVision = 1
++        val hdr10Plus = Hdr10PlusMask.HDR_TYPE_HDR10_PLUS
++        // Android 11 (Fire OS 8): the TV that reported no HDR, an HDR10-only TV, and an HDR10+ TV.
++        assertTrue(Hdr10PlusMask.shouldMask(30, intArrayOf()))
++        assertTrue(Hdr10PlusMask.shouldMask(30, intArrayOf(dolbyVision, hdr10, hlg)))
++        assertFalse(Hdr10PlusMask.shouldMask(30, intArrayOf(hdr10, hdr10Plus)))
++        // Android 7 to 9 can't report HDR10+: only a TV without any HDR.
++        assertTrue(Hdr10PlusMask.shouldMask(28, intArrayOf()))
++        assertFalse(Hdr10PlusMask.shouldMask(28, intArrayOf(hdr10, hlg)))
++        assertFalse(Hdr10PlusMask.shouldMask(24, intArrayOf(hdr10)))
++        // Unknown: as before.
++        assertFalse(Hdr10PlusMask.shouldMask(23, intArrayOf()))
++        assertFalse(Hdr10PlusMask.shouldMask(30, null))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/ui/BarWatchTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/ui/BarWatchTest.kt
+new file mode 100644
+index 0000000..1ed0458
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/ui/BarWatchTest.kt
+@@ -0,0 +1,15 @@
++package app.fireplayer.ui
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++/** How often the black-bar watch copies the film. */
++class BarWatchTest {
++
++    @Test fun looksComeHalfAsOftenWithHeavyVideo() {
++        assertEquals(1_000L, BarWatch.gapMs(known = false, heavy = false))
++        assertEquals(4_000L, BarWatch.gapMs(known = true, heavy = false))
++        assertEquals(2_000L, BarWatch.gapMs(known = false, heavy = true))
++        assertEquals(8_000L, BarWatch.gapMs(known = true, heavy = true))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/ui/GlassLoadTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/ui/GlassLoadTest.kt
+new file mode 100644
+index 0000000..51017a4
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/ui/GlassLoadTest.kt
+@@ -0,0 +1,94 @@
++package app.fireplayer.ui
++
++import androidx.media3.common.C
++import androidx.media3.common.ColorInfo
++import androidx.media3.common.Format
++import androidx.media3.common.MimeTypes
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** The glass's lighter load while a 4K HDR film plays on a TV short of memory. */
++class GlassLoadTest {
++
++    private fun video(
++        width: Int,
++        height: Int,
++        transfer: Int? = null,
++        mime: String = MimeTypes.VIDEO_H265,
++        codecs: String? = null,
++    ): Format {
++        val b = Format.Builder().setSampleMimeType(mime).setWidth(width).setHeight(height).setCodecs(codecs)
++        if (transfer != null) {
++            b.setColorInfo(
++                ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorRange(C.COLOR_RANGE_LIMITED)
++                    .setColorTransfer(transfer).build(),
++            )
++        }
++        return b.build()
++    }
++
++    @Test fun refreshIsCappedAtTwoWithHeavyVideo() {
++        assertEquals(8, GlassLoad.refreshPerSec(8, heavy = false))
++        assertEquals(4, GlassLoad.refreshPerSec(4, heavy = false))
++        assertEquals(2, GlassLoad.refreshPerSec(8, heavy = true))
++        assertEquals(2, GlassLoad.refreshPerSec(4, heavy = true))
++        // A lower setting stays lower.
++        assertEquals(2, GlassLoad.refreshPerSec(2, heavy = true))
++        assertEquals(1, GlassLoad.refreshPerSec(1, heavy = true))
++        // Out of range, as before: 1 to 8.
++        assertEquals(1, GlassLoad.refreshPerSec(0, heavy = false))
++        assertEquals(8, GlassLoad.refreshPerSec(20, heavy = false))
++    }
++
++    @Test fun probesEveryHalfSecondWithHeavyVideo() {
++        assertEquals(100L, GlassLoad.probeMs(heavy = false))
++        assertEquals(500L, GlassLoad.probeMs(heavy = true))
++    }
++
++    @Test fun theRowSaysWhenTheSettingIsLowered() {
++        assertEquals("8 a second · 2 in 4K HDR", GlassLoad.refreshLabel(8, heavy = true))
++        assertEquals("4 a second · 2 in 4K HDR", GlassLoad.refreshLabel(4, heavy = true))
++        // Not lowered: the row shows the setting's own name.
++        assertNull(GlassLoad.refreshLabel(2, heavy = true))
++        assertNull(GlassLoad.refreshLabel(8, heavy = false))
++    }
++
++    @Test fun smallRamIsUnder1point8GiB() {
++        // The Fire TV Stick 4K Max (AFTKRT): 1.7 GB in all.
++        assertTrue(GlassLoad.smallRam(1_710_000_000L, lowRam = false))
++        assertTrue(GlassLoad.smallRam(1L shl 30, lowRam = false))
++        assertFalse(GlassLoad.smallRam(1_932_735_284L, lowRam = false))
++        assertFalse(GlassLoad.smallRam(3L shl 30, lowRam = false))
++        // Fire OS's low-memory devices always count; an unknown total never does.
++        assertTrue(GlassLoad.smallRam(4L shl 30, lowRam = true))
++        assertFalse(GlassLoad.smallRam(0L, lowRam = false))
++    }
++
++    @Test fun uhdHdrIs4kWithPqHlgOrDolbyVision() {
++        assertTrue(GlassLoad.uhdHdr(3840, 2160, C.COLOR_TRANSFER_ST2084, MimeTypes.VIDEO_H265, null))
++        assertTrue(GlassLoad.uhdHdr(3840, 2160, C.COLOR_TRANSFER_HLG, MimeTypes.VIDEO_H265, null))
++        // A wide 4K film is kept as 3840 x 1600.
++        assertTrue(GlassLoad.uhdHdr(3840, 1600, C.COLOR_TRANSFER_ST2084, MimeTypes.VIDEO_H265, null))
++        assertTrue(GlassLoad.uhdHdr(3840, 2160, Format.NO_VALUE, MimeTypes.VIDEO_DOLBY_VISION, "dvhe.08.06"))
++        assertTrue(GlassLoad.uhdHdr(3840, 2160, Format.NO_VALUE, MimeTypes.VIDEO_H265, "dvh1.08.06"))
++        assertFalse(GlassLoad.uhdHdr(3840, 2160, C.COLOR_TRANSFER_SDR, MimeTypes.VIDEO_H265, null))
++        assertFalse(GlassLoad.uhdHdr(3840, 2160, Format.NO_VALUE, MimeTypes.VIDEO_H265, "hvc1.2.4.L153.B0"))
++        assertFalse(GlassLoad.uhdHdr(1920, 1080, C.COLOR_TRANSFER_ST2084, MimeTypes.VIDEO_H265, null))
++        assertFalse(GlassLoad.uhdHdr(1920, 1080, Format.NO_VALUE, MimeTypes.VIDEO_DOLBY_VISION, "dvhe.05.06"))
++    }
++
++    @Test fun heavyIs4kHdrOnASmallTv() {
++        val film = video(3840, 2160, C.COLOR_TRANSFER_ST2084)
++        assertTrue(GlassLoad.heavy(film, 0, 0, smallRam = true))
++        assertFalse(GlassLoad.heavy(film, 0, 0, smallRam = false))
++        assertFalse(GlassLoad.heavy(video(1920, 1080, C.COLOR_TRANSFER_ST2084), 1920, 1080, smallRam = true))
++        assertFalse(GlassLoad.heavy(video(3840, 2160, C.COLOR_TRANSFER_SDR), 3840, 2160, smallRam = true))
++        assertTrue(GlassLoad.heavy(video(3840, 2160, mime = MimeTypes.VIDEO_DOLBY_VISION, codecs = "dvhe.08.06"), 0, 0, true))
++        // A track that doesn't give its size: the size shown counts.
++        assertTrue(GlassLoad.heavy(video(Format.NO_VALUE, Format.NO_VALUE, C.COLOR_TRANSFER_HLG), 3840, 2160, true))
++        assertFalse(GlassLoad.heavy(null, 3840, 2160, smallRam = true))
++    }
++}
+-- 
+2.43.0
+
