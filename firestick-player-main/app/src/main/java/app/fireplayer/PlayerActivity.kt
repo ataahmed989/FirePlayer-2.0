@@ -3,6 +3,7 @@ package app.fireplayer
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.app.ActivityManager
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.graphics.Paint
 import android.media.AudioDeviceInfo
@@ -62,9 +63,12 @@ import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.ShowEpisodes
 import app.fireplayer.history.WatchHistory
+import app.fireplayer.player.AssOverlay
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
+import app.fireplayer.player.FilmMemory
+import app.fireplayer.player.MemoryPressure
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.JumpFrameCheck
@@ -244,6 +248,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var glassAfterSeek = false
     private var assHandler: AssHandler? = null
     private var bufferWait: () -> BufferWait? = { null }
+    /** The film's player as built, for squeezing its buffer and putting up libass's overlay; null without a player. */
+    private var builtPlayer: PlayerFactory.Built? = null
+    /** How far the film's buffer is squeezed for the TV's memory; kept across new players (see checkMemory). */
+    private val memoryPressure = MemoryPressure()
 
     // Views
     private lateinit var root: ViewGroup
@@ -1026,6 +1034,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         builtWithAss = prefs.keepAssStyling
         assHandler = built.assHandler
         bufferWait = built.bufferWait
+        builtPlayer = built
+        // A new player while the TV is still short of memory starts squeezed.
+        if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
@@ -1135,6 +1146,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.release()
         assHandler?.release()
         assHandler = null
+        builtPlayer = null
         player = null
         // The old player can't clear its last line any more, so do it here.
         lastTextCues = emptyList()
@@ -1534,6 +1546,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         updateChips()
         matchFrameRate()
         updatePictureReading()
+        // libass's overlay goes up the first time a styled track is chosen (see AssOverlay).
+        if (libassShowing()) builtPlayer?.assOverlay?.show()
         // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
         if (stylingNeedsRebuild()) {
             handler.removeCallbacks(rebuildForAss)
@@ -1680,9 +1694,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
     }
 
-    private fun libassShowing(): Boolean = assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
-        it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
-    } == true
+    private fun libassShowing(): Boolean = assHandler != null && AssOverlay.isStyled(selectedFormat(C.TRACK_TYPE_TEXT))
 
     override fun onPlayerError(error: PlaybackException) {
         val p = player ?: return
@@ -2069,6 +2081,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             },
             // Mid-skip the card shows the "+4:00"; the note waits for the jump.
             onFailed = { note -> if (seeking) pendingNotice = note else showNotice(note, NOTE_MS) },
+            // On a TV short of memory (under 2.6 GiB) the preview's player goes 3 s after skipping stops, and a video
+            // with only pictures bigger than 1080p gets no preview (see PlayerFactory.buildPreview).
+            holdMs = FilmMemory.tier(this).previewHoldMs,
+            upTo1080pOnly = FilmMemory.tier(this).short,
         )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
@@ -2307,8 +2323,43 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
             // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
             if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
+            if (chipTicks % MEMORY_CHECK_TICKS == 0) checkMemory()
             handler.postDelayed(this, 200)
         }
+    }
+
+    /**
+     * From [postPlayTick] every 10 s: Fire OS saying memory is low squeezes the film's buffer to three quarters, and to
+     * half when it's still low half a minute later; two minutes without it give a step back (see [MemoryPressure]).
+     * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
+     */
+    private fun checkMemory() {
+        if (player == null) return
+        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) squeezeFilmBuffer()
+    }
+
+    /** Gives the film's buffer the size [memoryPressure] calls for now. */
+    private fun squeezeFilmBuffer() {
+        val built = builtPlayer ?: return
+        val step = memoryPressure.step
+        val bytes = built.squeeze(step)
+        android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
+            ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
+    }
+
+    /**
+     * Fire OS asking the app in front to use less memory: the film's buffer gives a quarter back when memory is running
+     * low, and half when it's critical, until two minutes go by without it (see [checkMemory]).
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        @Suppress("DEPRECATION")
+        val step = when (level) {
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> 2
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1
+            else -> return
+        }
+        if (memoryPressure.trimAsked(step, SystemClock.elapsedRealtime())) squeezeFilmBuffer()
     }
 
     /**
@@ -5960,7 +6011,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val LOOKUP_WAIT_MS = 3 * 60_000L
         const val LOOKUP_BEFORE_END_MS = 4 * 60_000L
         // The least the film keeps behind where it is (on TVs with little memory); a jump back further loads again.
-        const val KEPT_BEHIND_MS = 5_000L
+        const val KEPT_BEHIND_MS = FilmMemory.LEAST_BACK_BUFFER_MS.toLong()
         // Two film drops just after the preview connected, this close together, mean the server cuts one off.
         const val CUT_OFF_PAIR_MS = 60_000L
         const val POST_PLAY_COUNT_MS = 10_000L
@@ -5991,6 +6042,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val CHIP_REFRESH_TICKS = 15
         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
         const val KEEP_QUALITY_TICKS = 150
+        /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
+        const val MEMORY_CHECK_TICKS = 50
         /** A wait to load this soon after a jump is the jump's. */
         const val JUMP_WAIT_MS = 3_000L
         // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
