@@ -66,8 +66,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
          */
         fun setFilmGlass(on: Boolean)
         fun openPlaylists()
-        /** The Live FirePlayer Settings window over this page (Menu, or the Settings button in full screen). */
-        fun openPlayerSettings()
+        /**
+         * The Live FirePlayer Settings window over this page (Menu, or the Settings button in full screen); [onClosed]
+         * runs after it closes (the Settings button: focus back to it, the controls' timer again).
+         */
+        fun openPlayerSettings(onClosed: (() -> Unit)? = null)
         /** The settings window on the right, where the full-screen extra row's windows open. */
         val sidePanel: SidePanel
         /** Display size or the screen dimmer changed: the full-screen picture is laid out and dimmed again. */
@@ -197,12 +200,17 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** Panels get the look's surface (glass over the blurred wallpaper, or the original dark panel). */
     fun applyLook() {
+        // The guide's glass blurs the wallpaper and is never dimmed: it's made with the film off, even when the look
+        // changes while the full-screen controls are up; the controls are then made again over the film.
+        val film = filmGlassOn
+        if (film) host.setFilmGlass(false)
         Glass.background(sidebarPanel, Glass.Kind.PANEL)
         Glass.background(details, Glass.Kind.PANEL)
         Glass.background(gridPanel, Glass.Kind.PANEL)
         Glass.background(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         guide.glass = Glass.on
+        if (film) host.setFilmGlass(true)
         controls.applyLook()
         if (placeholder == true) { placeholder = null; showSlotPlaceholder(true) }
     }
@@ -253,7 +261,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onPlayPause() = togglePause()
             override fun onGoLive() = goLive()
             override fun onMore(key: String, from: View) {
-                if (key == LiveControls.SETTINGS) host.openPlayerSettings() else more.open(key, from)
+                if (key == LiveControls.SETTINGS) host.openPlayerSettings { backFromWindow(from) } else more.open(key, from)
             }
         }
     }
@@ -422,6 +430,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun showEmpty(noPlaylists: Boolean) {
+        if (noPlaylists && fullScreen) {
+            // The last playlist went (deleted from Settings over full screen): leave full screen for the empty page.
+            fullScreen = false
+            revealKey = 0
+            controls.hideAll()
+            filmGlass(false)
+            host.setChromeVisible(true)
+            guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            guide.setChannels(emptyList(), null)
+        }
         empty.visibility = if (noPlaylists) View.VISIBLE else View.GONE
         guideLayer.visibility = if (noPlaylists || fullScreen) View.INVISIBLE else View.VISIBLE
         if (noPlaylists) {
@@ -673,14 +691,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         // It has closed since (focus is back on the button it came from): the controls get their full time again.
         if (waitedForOverlay) {
-            bumpControls()
-            return@Runnable
+            waitedForOverlay = false
+            if (controls.controlsShown) {
+                bumpControls()
+                return@Runnable
+            }
         }
         hideControlsNow()
     }
 
     private fun hideControlsNow() {
         main.removeCallbacks(hideControls)
+        waitedForOverlay = false
         val f = activity.currentFocus
         controls.hideAll()
         filmGlass(false)
@@ -745,7 +767,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post {
                 if (recent.isEmpty()) { showNotice("No other channels watched yet"); return@post }
                 FireDialog.choose(activity, "Channel History", recent.map { "${it.number}  ${it.name}" }, -1) { i ->
-                    recent.getOrNull(i)?.let { ch -> if (tune(ch)) { zappedInFull = true; refreshControls() } }
+                    recent.getOrNull(i)?.let { ch -> if (tune(ch)) { zappedInFull = true; refreshControls(); more.refreshValues() } }
                 }
             }
         }

@@ -46,13 +46,17 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 "last_status TEXT NOT NULL DEFAULT '', expires_at INTEGER NOT NULL DEFAULT 0, max_connections INTEGER NOT NULL DEFAULT 0, " +
                 "playlist_epg_url TEXT NOT NULL DEFAULT '', hide_new_groups INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
         )
-        // blocked: hidden by the viewer (Manage groups); user_position: the viewer's order (null: the provider's).
+        // blocked / user_position: no longer used (version 5 kept the viewer's choices here; now in group_pref).
         db.execSQL("CREATE TABLE channel_group(playlist_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, blocked INTEGER NOT NULL DEFAULT 0, user_position INTEGER, PRIMARY KEY(playlist_id, id)) WITHOUT ROWID")
         db.execSQL(
             "CREATE TABLE channel(playlist_id TEXT NOT NULL, id TEXT NOT NULL, number INTEGER NOT NULL, name TEXT NOT NULL, logo TEXT, " +
                 "group_id TEXT, url TEXT NOT NULL, epg_ref TEXT, archive_days INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL, " +
                 "blocked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(playlist_id, id)) WITHOUT ROWID",
         )
+        // The viewer's own choices for groups (Manage groups), kept apart from the provider's list like favorites:
+        // a group the provider drops for a while (or "Include TV channels" turned off) keeps them when it comes back.
+        // A row means the group has been seen before ("Hide new groups" hides groups without one).
+        db.execSQL("CREATE TABLE group_pref(playlist_id TEXT NOT NULL, group_id TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, user_position INTEGER, PRIMARY KEY(playlist_id, group_id)) WITHOUT ROWID")
         db.execSQL("CREATE INDEX channel_group_idx ON channel(playlist_id, group_id, position)")
         db.execSQL("CREATE INDEX channel_pos_idx ON channel(playlist_id, position)")
         db.execSQL("CREATE TABLE favorite(playlist_id TEXT NOT NULL, channel_id TEXT NOT NULL, added INTEGER NOT NULL, PRIMARY KEY(playlist_id, channel_id)) WITHOUT ROWID")
@@ -89,6 +93,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             db.execSQL("ALTER TABLE channel_group ADD COLUMN user_position INTEGER")
             db.execSQL("ALTER TABLE playlist ADD COLUMN hide_new_groups INTEGER NOT NULL DEFAULT 0")
         }
+        // Version 6: the viewer's group choices move to their own table (version 5 kept them on the provider's rows,
+        // which a sync deletes with the group). Every known group gets a row, with what was chosen so far.
+        if (oldVersion < 6) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS group_pref(playlist_id TEXT NOT NULL, group_id TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, user_position INTEGER, PRIMARY KEY(playlist_id, group_id)) WITHOUT ROWID")
+            db.execSQL("INSERT OR IGNORE INTO group_pref(playlist_id, group_id, hidden, user_position) SELECT playlist_id, id, blocked, user_position FROM channel_group")
+        }
     }
 
     // ---- Playlists --------------------------------------------------------------------------------------------
@@ -122,7 +132,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (t in listOf("channel", "channel_group", "favorite", "recent")) db.delete(t, "playlist_id = ?", arrayOf(id))
+            for (t in listOf("channel", "channel_group", "group_pref", "favorite", "recent")) db.delete(t, "playlist_id = ?", arrayOf(id))
             // Every generation of its listings (and an interrupted import's).
             db.delete("program", "source = ? OR source = ? OR (source >= ? AND source < ?)", arrayOf(id, id + STAGING, "$id@", "${id}A"))
             db.delete("epg_status", "source = ?", arrayOf(id))
@@ -175,10 +185,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             // UPDATE then INSERT OR IGNORE, not "ON CONFLICT DO UPDATE": that needs SQLite 3.24, and Fire OS 5
             // (API 22, still supported) ships 3.8.
             val setGroup = db.compileStatement("UPDATE channel_group SET name = ?, position = ? WHERE playlist_id = ? AND id = ?")
-            val addGroup = db.compileStatement("INSERT OR IGNORE INTO channel_group(playlist_id, id, name, position, blocked) VALUES (?, ?, ?, ?, ?)")
-            // "Hide new groups": groups a later update adds start hidden (on the first update every group is new).
+            val addGroup = db.compileStatement("INSERT OR IGNORE INTO channel_group(playlist_id, id, name, position) VALUES (?, ?, ?, ?)")
+            // "Hide new groups": a group never seen before starts hidden, unless this is the playlist's first update
+            // with groups (then every group is new). Groups already known keep what the viewer chose.
             val hideNew = db.rawQuery("SELECT hide_new_groups FROM playlist WHERE id = ?", arrayOf(playlistId)).use { it.moveToFirst() && it.getInt(0) != 0 } &&
-                db.rawQuery("SELECT 1 FROM channel_group WHERE playlist_id = ? LIMIT 1", arrayOf(playlistId)).use { it.moveToFirst() }
+                db.rawQuery("SELECT 1 FROM group_pref WHERE playlist_id = ? LIMIT 1", arrayOf(playlistId)).use { it.moveToFirst() }
+            val knowGroup = db.compileStatement("INSERT OR IGNORE INTO group_pref(playlist_id, group_id, hidden) VALUES (?, ?, ?)")
             val seenGroup = db.compileStatement("INSERT OR IGNORE INTO seen_group(id) VALUES (?)")
             for (g in parsed.groups) {
                 setGroup.clearBindings()
@@ -186,9 +198,11 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 if (setGroup.executeUpdateDelete() == 0) {
                     addGroup.clearBindings()
                     addGroup.bindString(1, playlistId); addGroup.bindString(2, g.id); addGroup.bindString(3, g.name); addGroup.bindLong(4, g.position.toLong())
-                    addGroup.bindLong(5, if (hideNew) 1 else 0)
                     addGroup.executeInsert()
                 }
+                knowGroup.clearBindings()
+                knowGroup.bindString(1, playlistId); knowGroup.bindString(2, g.id); knowGroup.bindLong(3, if (hideNew) 1 else 0)
+                knowGroup.executeInsert()
                 seenGroup.clearBindings(); seenGroup.bindString(1, g.id); seenGroup.executeInsert()
             }
 
@@ -363,27 +377,41 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     // ---- Guide reads ---------------------------------------------------------------------------------------------
 
     /** The groups the guide's column lists: shown ones, in the viewer's order (the provider's where none is set). */
-    fun groups(playlistId: String): List<ChannelGroup> = groupsWhere(playlistId, "AND blocked = 0")
+    fun groups(playlistId: String): List<ChannelGroup> = groupsWhere(playlistId, "AND COALESCE(gp.hidden, 0) = 0")
 
     /** Every group, hidden ones too (Manage groups). */
     fun allGroups(playlistId: String): List<ChannelGroup> = groupsWhere(playlistId, "")
 
     private fun groupsWhere(playlistId: String, filter: String): List<ChannelGroup> =
         readableDatabase.rawQuery(
-            "SELECT id, name, position, blocked FROM channel_group WHERE playlist_id = ? $filter ORDER BY user_position IS NULL, user_position, position",
+            "SELECT cg.id, cg.name, cg.position, COALESCE(gp.hidden, 0) FROM channel_group cg " +
+                "LEFT JOIN group_pref gp ON gp.playlist_id = cg.playlist_id AND gp.group_id = cg.id " +
+                "WHERE cg.playlist_id = ? $filter ORDER BY gp.user_position IS NULL, gp.user_position, cg.position",
             arrayOf(playlistId),
         ).use { c ->
             buildList { while (c.moveToNext()) add(ChannelGroup(playlistId, c.getString(0), c.getString(1), c.getInt(2), hidden = c.getInt(3) != 0)) }
         }
 
     fun setGroupHidden(playlistId: String, groupId: String, hidden: Boolean) {
-        val v = ContentValues().apply { put("blocked", if (hidden) 1 else 0) }
-        writableDatabase.update("channel_group", v, "playlist_id = ? AND id = ?", arrayOf(playlistId, groupId))
+        val db = writableDatabase
+        val v = ContentValues().apply { put("hidden", if (hidden) 1 else 0) }
+        if (db.update("group_pref", v, "playlist_id = ? AND group_id = ?", arrayOf(playlistId, groupId)) == 0) {
+            v.put("playlist_id", playlistId); v.put("group_id", groupId)
+            db.insertWithOnConflict("group_pref", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        }
     }
 
+    /** Hide all / Show all: every group of the playlist, including ones the provider isn't listing just now. */
     fun setAllGroupsHidden(playlistId: String, hidden: Boolean) {
-        val v = ContentValues().apply { put("blocked", if (hidden) 1 else 0) }
-        writableDatabase.update("channel_group", v, "playlist_id = ?", arrayOf(playlistId))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("INSERT OR IGNORE INTO group_pref(playlist_id, group_id) SELECT playlist_id, id FROM channel_group WHERE playlist_id = ?", arrayOf(playlistId))
+            db.update("group_pref", ContentValues().apply { put("hidden", if (hidden) 1 else 0) }, "playlist_id = ?", arrayOf(playlistId))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     /** The viewer's order for [groupIds] (the shown groups, top first); groups not listed keep theirs. */
@@ -391,9 +419,13 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val st = db.compileStatement("UPDATE channel_group SET user_position = ? WHERE playlist_id = ? AND id = ?")
+            val set = db.compileStatement("UPDATE group_pref SET user_position = ? WHERE playlist_id = ? AND group_id = ?")
+            val add = db.compileStatement("INSERT OR IGNORE INTO group_pref(playlist_id, group_id, user_position) VALUES (?, ?, ?)")
             groupIds.forEachIndexed { i, id ->
-                st.clearBindings(); st.bindLong(1, i.toLong()); st.bindString(2, playlistId); st.bindString(3, id); st.executeUpdateDelete()
+                set.clearBindings(); set.bindLong(1, i.toLong()); set.bindString(2, playlistId); set.bindString(3, id)
+                if (set.executeUpdateDelete() == 0) {
+                    add.clearBindings(); add.bindString(1, playlistId); add.bindString(2, id); add.bindLong(3, i.toLong()); add.executeInsert()
+                }
             }
             db.setTransactionSuccessful()
         } finally {
@@ -424,7 +456,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             is GuideScope.AllChannels ->
                 // Channels of hidden groups are left out (Manage groups).
                 (select + "WHERE c.playlist_id = ? AND c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
-                    "(SELECT id FROM channel_group WHERE playlist_id = ? AND blocked = 1)) ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
+                    "(SELECT group_id FROM group_pref WHERE playlist_id = ? AND hidden = 1)) ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
             is GuideScope.Favorites ->
                 (select + "WHERE c.playlist_id = ? AND f.channel_id IS NOT NULL AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
             is GuideScope.Group ->
@@ -536,7 +568,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     )
 
     companion object {
-        private const val VERSION = 5
+        private const val VERSION = 6
         private const val TAG = "FirePlayerLive"
         const val RECENT_KEEP = 10
         private const val STAGING = "#new"

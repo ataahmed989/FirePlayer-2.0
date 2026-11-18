@@ -50,6 +50,8 @@ class LiveMore(
     private var sleepAtProgrammeEnd = false
     /** What was left of the timer when the page stopped; it carries on from there when the page is back. */
     private var sleepRemainingMs = 0L
+    /** "End of this programme": when it ends, by the wall clock. */
+    private var sleepStopWall = 0L
 
     /** Opens the window for extra-row button [key] ([LiveControls.AUDIO], …) from [from]. */
     fun open(key: String, from: View) {
@@ -145,6 +147,8 @@ class LiveMore(
         val now = SystemClock.elapsedRealtime()
         sleepEndsAt = LiveSleep.endsAt(choice, now, System.currentTimeMillis(), callbacks.programmeEnd())
         sleepAtProgrammeEnd = choice == LiveSleep.END_OF_PROGRAMME && sleepEndsAt > 0
+        // The programme ends at a time of day, whatever happens meanwhile (the page away, a pause).
+        sleepStopWall = if (sleepAtProgrammeEnd) System.currentTimeMillis() + (sleepEndsAt - now) else 0L
         sleepRemainingMs = 0
         main.removeCallbacks(sleepTick)
         if (sleepEndsAt > 0) main.postDelayed(sleepTick, LiveSleep.nextCheckMs(sleepEndsAt, now))
@@ -177,8 +181,16 @@ class LiveMore(
         }
     }
 
-    /** The page is back: a timer that was waiting carries on. */
+    /**
+     * The page is back: a timer that was waiting carries on; "End of this programme" still ends when the programme
+     * does (and is over if it already has).
+     */
     fun resume() {
+        if (sleepRemainingMs > 0L && sleepAtProgrammeEnd) {
+            val left = sleepStopWall - System.currentTimeMillis()
+            sleepRemainingMs = if (left > 0) left else 0L
+            if (left <= 0) { sleepAtProgrammeEnd = false; sleepStopWall = 0L }
+        }
         if (sleepRemainingMs > 0L) {
             val now = SystemClock.elapsedRealtime()
             sleepEndsAt = now + sleepRemainingMs

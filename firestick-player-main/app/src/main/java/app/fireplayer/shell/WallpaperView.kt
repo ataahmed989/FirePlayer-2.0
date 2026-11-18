@@ -19,9 +19,10 @@ import app.fireplayer.ui.StillGlass
 import java.util.concurrent.Executors
 
 /**
- * The stationary background shared by every tab in both looks (design-layout: one blue fog background, independent of
- * the featured title). It is decoded and scaled once, off the main thread, and the same pass builds the blurred
- * pictures glass shows ([StillGlass]), so glass on these screens never copies or blurs anything per frame.
+ * The stationary background shared by every tab (independent of the featured title): the blue fog with the glass
+ * look, and the user's dark background with the classic look ([glassLook]). It is decoded and scaled once per look,
+ * off the main thread; with glass, the same pass builds the blurred pictures glass shows ([StillGlass]), so glass on
+ * these screens never copies or blurs anything per frame.
  *
  * Live video shows through a [hole]: the guide's miniature, or the whole screen in full screen. The live picture is a
  * SurfaceView behind the window, so everything drawn here stays outside the hole; its rounded corners are the
@@ -37,8 +38,19 @@ class WallpaperView(context: Context) : View(context) {
     private var fullHole = false
     private val dst = Rect()
 
-    /** Called once the wallpaper and its glass are ready (main thread). */
+    /** Called once the glass look's wallpaper and its glass are ready (main thread). */
     var onReady: ((StillGlass) -> Unit)? = null
+
+    /** Which background: the glass look's blue fog (true) or the classic look's own (false). */
+    var glassLook: Boolean = false
+        set(v) {
+            if (field == v) return
+            field = v
+            // The other picture loads; the one on screen stays until it's ready, so nothing flashes black.
+            if (width > 0 && height > 0) load(width, height)
+        }
+
+    private var loadSerial = 0
 
     init {
         // No background: a background ignores the hole and would cover the video.
@@ -65,8 +77,10 @@ class WallpaperView(context: Context) : View(context) {
     private fun load(w: Int, h: Int) {
         val res = resources
         val density = res.displayMetrics.density
+        val glassLook = glassLook
+        val serial = ++loadSerial
         worker.execute {
-            val decoded = BitmapFactory.decodeResource(res, R.drawable.wallpaper_blue_fog) ?: return@execute
+            val decoded = BitmapFactory.decodeResource(res, if (glassLook) R.drawable.wallpaper_blue_fog else R.drawable.wallpaper_classic) ?: return@execute
             // Centre-cropped to the screen once, so drawing is a plain copy.
             val scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val sx = w.toFloat() / decoded.width
@@ -76,11 +90,13 @@ class WallpaperView(context: Context) : View(context) {
             val dh = decoded.height * s
             Canvas(scaled).drawBitmap(decoded, null, RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), Paint(Paint.FILTER_BITMAP_FLAG))
             decoded.recycle()
-            val glass = StillGlass.from(scaled, w, h, density)
+            // Only the glass look shows blurred wallpaper.
+            val glass = if (glassLook) StillGlass.from(scaled, w, h, density) else null
             main.post {
+                if (serial != loadSerial) return@post
                 picture = scaled
                 invalidate()
-                onReady?.invoke(glass)
+                glass?.let { onReady?.invoke(it) }
             }
         }
     }

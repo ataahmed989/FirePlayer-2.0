@@ -53,9 +53,6 @@ class SettingsPanels(
     private var updateStatus: String? = null
     /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
     private val checks = CredentialChecks(prefs)
-    // Statuses ▾: open or not (closed each time the window opens).
-    private var statusesOpen = false
-    private var statusesSession = -1
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
     // what "Check playlists now" said.
@@ -65,9 +62,7 @@ class SettingsPanels(
     private var arrowTurned = false
     // The same for the playlists' note and for the skip buttons' details.
     private var playlistArrowTurned = false
-    private var skipDetailsShown = false
     private var skipArrowTurned = false
-    private var skipSession = -1
     private var checkValue: String? = null
     private var checkNote: String? = null
 
@@ -94,9 +89,6 @@ class SettingsPanels(
     var onLookChanged: () -> Unit = {}
     /** Which info pods show above the time bar was changed. */
     var onChipsChanged: () -> Unit = {}
-    // Whether the list of info pods is open (closed each time the window opens).
-    private var chipsOpen = false
-    private var chipsSession = -1
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
@@ -180,14 +172,11 @@ class SettingsPanels(
     fun lookSection(panel: SidePanel): Unit = with(panel) {
         header("Look")
         // A small list behind an arrow: which pods show above the time bar.
-        if (chipsSession != session) {
-            chipsSession = session
-            chipsOpen = false
-        }
+        val chipsOpen = isPartOpen("chips")
         val hidden = prefs.hiddenChips
         val shownCount = CHIPS.count { it.first !in hidden }
         dropdownRow("Info pods", "$shownCount of ${CHIPS.size}", Rows.Badge.INACTIVE, chipsOpen) {
-            chipsOpen = !chipsOpen
+            togglePart("chips")
             refresh()
         }
         if (chipsOpen) {
@@ -344,10 +333,7 @@ class SettingsPanels(
 
     fun skipIntroSection(panel: SidePanel): Unit = with(panel) {
         header("Skip intro and credits")
-        if (session != skipSession) {
-            skipSession = session
-            skipDetailsShown = false
-        }
+        val skipDetailsShown = isPartOpen("skipDetails")
         val skipTurned = skipArrowTurned
         skipArrowTurned = false
         rowWithArrow(
@@ -356,7 +342,7 @@ class SettingsPanels(
             expanded = skipDetailsShown,
             turned = skipTurned,
             onClick = { prefs.skipIntro = !prefs.skipIntro; refresh() },
-            onArrow = { skipDetailsShown = !skipDetailsShown; skipArrowTurned = true; refresh() },
+            onArrow = { togglePart("skipDetails"); skipArrowTurned = true; refresh() },
         )
         if (skipDetailsShown) {
             message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
@@ -374,10 +360,7 @@ class SettingsPanels(
      */
     fun statusesSection(panel: SidePanel): Unit = with(panel) {
         header("Statuses")
-        if (statusesSession != session) {
-            statusesSession = session
-            statusesOpen = false
-        }
+        val statusesOpen = isPartOpen("statuses")
         val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
         val tmdb = checks.status(CredentialChecks.Service.TMDB)
         val states = listOf(os.state, tmdb.state)
@@ -389,8 +372,8 @@ class SettingsPanels(
             else -> "${states.count { it == CredentialChecks.State.WORKING }} of 2 working" to Rows.Badge.LIGHT
         }
         dropdownRow("Services and font", summary, style, statusesOpen) {
-            statusesOpen = !statusesOpen
-            if (statusesOpen) checks.checkUnchecked { if (isOpen) refresh() }
+            togglePart("statuses")
+            if (isPartOpen("statuses")) checks.checkUnchecked { if (isOpen) refresh() }
             refresh()
         }
         if (statusesOpen) {

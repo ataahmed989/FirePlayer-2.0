@@ -66,7 +66,7 @@ class LiveSync private constructor(context: Context) {
         for (p in db.playlists()) { syncEpg(p); notify(p.id) }
     }
 
-    /** On app start: playlists not updated within their interval are updated now. */
+    /** On app start (and on coming back to it): playlists and EPGs not updated within their intervals are updated now. */
     fun updateDue(now: Long = System.currentTimeMillis()) = submit {
         val due = db.playlists().filter { now - it.lastSync >= it.updateHours.coerceAtLeast(1) * HOUR_MS }
         for (p in due) { syncChannels(p); notify(p.id) }
@@ -77,10 +77,18 @@ class LiveSync private constructor(context: Context) {
         val needFallback = all.any { it.id in dueIds && epgUrl(it) == null }
         val epgEvery = LivePrefs(app).epgUpdateHours.coerceAtLeast(1) * HOUR_MS
         val epgSeen = db.epgStatuses().associate { it.source to it.lastSync }
-        val sources = all.filter { epgUrl(it) != null && (it.id in dueIds || needFallback || now - (epgSeen[it.id] ?: 0L) >= epgEvery) }
-        db.pruneProgrammes(now - PAST_KEEP_MS)
+        // EPGs follow their own interval (Live FirePlayer Settings): one never loaded, or older than the interval, is
+        // read again; a due playlist without an EPG of its own still has the others read for it.
+        val sources = all.filter { epgUrl(it) != null && (needFallback || it.id !in epgSeen || now - (epgSeen[it.id] ?: 0L) >= epgEvery) }
+        // Past programmes are cleared at most every few hours (it scans every listing).
+        if (now - lastPrune >= PRUNE_EVERY_MS) {
+            db.pruneProgrammes(now - PAST_KEEP_MS)
+            lastPrune = now
+        }
         for (p in sources) { syncEpg(p); notify(p.id) }
     }
+
+    @Volatile private var lastPrune = 0L
 
     fun updateEpg(playlistId: String? = null) = submit {
         val list = if (playlistId == null) db.playlists() else listOfNotNull(db.playlist(playlistId))
@@ -153,6 +161,11 @@ class LiveSync private constructor(context: Context) {
                     return
                 }
                 PlaylistKind.M3U -> {
+                    if (!p.includeLive) {
+                        db.applySync(p.id, ParsedPlaylist(emptyList(), emptyList()))
+                        db.setPlaylistStatus(p.id, "Updated (TV channels turned off)", now)
+                        return
+                    }
                     val text = Http.text(p.url, MAX_PLAYLIST_CHARS)
                     if (text == null) {
                         db.setPlaylistStatus(p.id, "Couldn't load the playlist", syncedAt = null)
@@ -228,6 +241,7 @@ class LiveSync private constructor(context: Context) {
         /** How far ahead programmes are kept: provisional, the design leaves the future horizon open. */
         const val FUTURE_KEEP_MS = 3 * 24 * HOUR_MS
         private const val MAX_PLAYLIST_CHARS = 32 * 1024 * 1024
+        private const val PRUNE_EVERY_MS = 6 * HOUR_MS
 
         @Volatile private var instance: LiveSync? = null
         fun get(context: Context): LiveSync =

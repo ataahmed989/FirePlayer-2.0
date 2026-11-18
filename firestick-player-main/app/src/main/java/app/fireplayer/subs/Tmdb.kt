@@ -508,7 +508,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
 
     /** [check], telling a refusal (true: TMDB answered no) from not reaching TMDB (false); null when it works. */
     fun verify(): Pair<Boolean, String>? = runCatching { request("authentication", emptyList()) }.exceptionOrNull()
-        ?.let { (it is HttpError) to (it.message ?: "Couldn't reach TMDB") }
+        ?.let { (it is HttpError && (it.code == 401 || it.code == 403)) to (it.message ?: "Couldn't reach TMDB") }
 
     private fun search(path: String, query: String, extra: Pair<String, String>?): JSONArray {
         val params = listOfNotNull("query" to query, "include_adult" to "false", extra)

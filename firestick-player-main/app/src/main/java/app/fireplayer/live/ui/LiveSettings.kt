@@ -41,6 +41,9 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     private val sync = LiveSync.get(activity)
     private val prefs = LivePrefs(activity)
     private val io = Executors.newSingleThreadExecutor()
+    /** Questions to the provider (Active connections): never ahead of the settings' own reads and saves. */
+    private val net = Executors.newSingleThreadExecutor()
+    private val asking = HashSet<String>()
     private val main = Handler(Looper.getMainLooper())
     private var playlists: List<Playlist> = emptyList()
     private var epg: Map<String, LiveDb.EpgStatus> = emptyMap()
@@ -48,10 +51,6 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     private val groups = HashMap<String, List<ChannelGroup>>()
     /** "Active connections": the provider's count and allowance, asked when the playlist's window opens. */
     private val connections = HashMap<String, String>()
-
-    // Expandable parts (closed each time their window opens).
-    private var epgOpen = false
-    private var epgSession = -1
 
     /** The panel is told about every sync so statuses update while it's open. */
     private val listener = object : LiveSync.Listener {
@@ -77,18 +76,21 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     fun release() {
         sync.removeListener(listener)
         io.shutdown()
+        net.shutdownNow()
     }
 
     /** Reads the playlists and EPG statuses (and [groupsOf]'s groups) off the main thread, then [then]. */
     private fun reloadThen(groupsOf: String? = null, then: () -> Unit) {
+        // The groups already shown are read again too (an update may have added a playlist's groups meanwhile).
+        val ids = (groups.keys + listOfNotNull(groupsOf)).toSet()
         io.execute {
             val list = db.playlists()
             val statuses = db.epgStatuses().associateBy { it.source }
-            val g = groupsOf?.let { db.allGroups(it) }
+            val g = ids.associateWith { db.allGroups(it) }
             main.post {
                 playlists = list
                 epg = statuses
-                if (groupsOf != null && g != null) groups[groupsOf] = g
+                groups.putAll(g)
                 then()
             }
         }
@@ -172,17 +174,22 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         else -> p.lastStatus
     }
 
-    private fun openPlaylist(id: String) = reloadThen(groupsOf = id) {
-        val pl = playlists.firstOrNull { it.id == id } ?: return@reloadThen
-        panel.openSub(pl.name) { renderPlaylist(this, id) }
-        askConnections(pl)
+    private fun openPlaylist(id: String) {
+        val from = panel.session
+        reloadThen(groupsOf = id) {
+            // Only into the window it was asked from (it may have closed, or moved on, while the playlist was read).
+            if (!panel.isOpen || panel.session != from) return@reloadThen
+            val pl = playlists.firstOrNull { it.id == id } ?: return@reloadThen
+            panel.openSub(pl.name) { renderPlaylist(this, id) }
+            askConnections(pl, panel.session)
+        }
     }
 
     /** Asks the provider how many of the account's connections are in use (Xtream only), then shows it. */
-    private fun askConnections(pl: Playlist) {
-        if (pl.kind != PlaylistKind.XTREAM) return
+    private fun askConnections(pl: Playlist, window: Int) {
+        if (pl.kind != PlaylistKind.XTREAM || !asking.add(pl.id)) return
         connections[pl.id] = "Checking…"
-        io.execute {
+        net.execute {
             val account = runCatching { XtreamApi(pl).get(null)?.let { XtreamParser.account(it) } }.getOrNull()
             val text = when {
                 account == null -> "Couldn't ask the provider"
@@ -190,8 +197,10 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 else -> "${account.activeConnections} in use"
             }
             main.post {
+                asking -= pl.id
                 connections[pl.id] = text
-                if (panel.isOpen) panel.refresh()
+                // Only the playlist's own window shows it.
+                if (panel.isOpen && panel.session == window) panel.refresh()
             }
         }
     }
@@ -207,9 +216,14 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         // still to be decided: the automatic one stays provisional).
         header("EPG sources")
         val own = epg[pl.id]
-        row("Own EPG", pl.epgUrl.ifBlank { if (pl.kind == PlaylistKind.XTREAM) "The server's own" else "The playlist's own" }) {
-            edit("EPG link (blank: the playlist's own)", pl.epgUrl, uri = true) { v -> save(pl.copy(epgUrl = v.trim())) }
+        // A link of the viewer's own can carry a sign-in too: only where it points is shown, and its box starts empty.
+        row("Own EPG", if (pl.epgUrl.isBlank()) (if (pl.kind == PlaylistKind.XTREAM) "The server's own" else "The playlist's own") else hostName(pl.epgUrl)) {
+            SidePanel.prompt(activity, "EPG link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
+                hint = if (pl.epgUrl.isBlank()) "An XMLTV link (blank: the playlist's own)" else "Saved · type a new one to replace it") { v ->
+                if (v.isNotBlank()) save(pl.copy(epgUrl = normalized(v)))
+            }
         }
+        if (pl.epgUrl.isNotBlank()) row("Use the playlist's own EPG") { save(pl.copy(epgUrl = "")) }.asSubRow()
         row("Own EPG status", epgValue(own)) {}.asSubRow()
         val others = playlists.filter { it.id != pl.id && (epg[it.id]?.programmes ?: 0) > 0 }
         row("Fallback", if (others.isEmpty()) "None" else others.joinToString { it.name }, enabled = false) {}
@@ -239,7 +253,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             header("Account")
             row("Account expires", if (pl.expiresAt > 0) DateFormat.getMediumDateFormat(activity).format(Date(pl.expiresAt)) else "Not reported") {}
             row("Connection allowance", if (pl.maxConnections > 0) "${pl.maxConnections}" else "Not reported") {}
-            row("Active connections", connections[pl.id] ?: "—") { askConnections(pl); refresh() }
+            row("Active connections", connections[pl.id] ?: "—") { askConnections(pl, session); refresh() }
         } else {
             header("M3U playlist")
             // The link often carries the sign-in: only where it points is shown, and its box starts empty.
@@ -271,6 +285,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         row("Delete playlist") {
             FireDialog.ask(activity, "Delete \"${pl.name}\"? Its channels, favorites and guide go too.", listOf(
                 "Delete" to {
+                    val window = session
                     // Its channel stops if it's the one playing (or remembered), and isn't brought back later.
                     PlayerHost.peek()?.let { h -> if (ChannelKey.parse(h.currentKey)?.playlistId == pl.id) h.stop() }
                     if (prefs.lastChannel?.playlistId == pl.id) prefs.lastChannel = null
@@ -280,8 +295,9 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                         main.post {
                             playlists = list
                             sync.changed(pl.id)
-                            // Back to the list it was opened from (it no longer lists this one).
-                            if (panel.hasParent) panel.back() else panel.close()
+                            // Back to the list it was opened from (it no longer lists this one), if still on this window.
+                            if (panel.isOpen && panel.session == window) { if (panel.hasParent) panel.back() else panel.close() }
+                            else if (panel.isOpen) panel.refresh()
                         }
                     }
                 },
@@ -391,13 +407,15 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                     show(i)
                 },
                 onButton = {
+                    val was = r.moving
+                    r.moving = -1
                     if (i > 0) {
                         r.items.add(0, r.items.removeAt(i))
-                        r.moving = -1
                         r.save(r.items.toList())
                         for (k in 0..i) show(k)
-                        r.rows[0].requestFocus()
                     }
+                    if (was > i && was in r.rows.indices) show(was) else if (was == i) show(i)
+                    r.rows[0].requestFocus()
                 },
                 keys = { code, ev ->
                     val step = when (code) { KeyEvent.KEYCODE_DPAD_UP -> -1; KeyEvent.KEYCODE_DPAD_DOWN -> 1; else -> 0 }
@@ -449,8 +467,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         }
         header("Hide or show")
         row("Hide new groups", if (pl.hideNewGroups) "On" else "Off") { save(pl.copy(hideNewGroups = !pl.hideNewGroups)) }
-        row("Show all") { setGroups(playlistId) { db.setAllGroupsHidden(playlistId, false) } }
-        row("Hide all") { setGroups(playlistId) { db.setAllGroupsHidden(playlistId, true) } }
+        row("Show all") { setAllGroups(playlistId, hidden = false) }
+        row("Hide all") { setAllGroups(playlistId, hidden = true) }
         for (g in all) {
             lateinit var view: android.view.View
             view = row(g.name, if (g.hidden) "Off" else "On") {
@@ -468,16 +486,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         }
     }
 
-    /** Applies a change to every group (Show all, Hide all), reads them again, redraws, and lets the guide follow. */
-    private fun setGroups(playlistId: String, change: () -> Unit) {
+    /** Show all / Hide all: shown at once, stored behind (switches pressed after it are stored after it too). */
+    private fun setAllGroups(playlistId: String, hidden: Boolean) {
+        groups[playlistId] = groups[playlistId].orEmpty().map { it.copy(hidden = hidden) }
+        panel.refresh()
         io.execute {
-            change()
-            val g = db.allGroups(playlistId)
-            main.post {
-                groups[playlistId] = g
-                if (panel.isOpen) panel.refresh()
-                changed(playlistId)
-            }
+            db.setAllGroupsHidden(playlistId, hidden)
+            main.post { changed(playlistId) }
         }
     }
 
@@ -485,10 +500,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         val r = reorderState(p, "groups|$playlistId") {
             // Hidden groups aren't listed (user): only the ones the guide shows are put in order.
             Reorder(groups[playlistId].orEmpty().filter { !it.hidden }.toMutableList()) { order ->
+                // The groups in memory take the new order now (hidden ones after); the database follows.
+                val ids = order.map { it.id }
+                val all = groups[playlistId].orEmpty()
+                groups[playlistId] = ids.mapNotNull { id -> all.firstOrNull { it.id == id } } + all.filter { it.id !in ids }
                 io.execute {
-                    db.setGroupOrder(playlistId, order.map { it.id })
-                    val g = db.allGroups(playlistId)
-                    main.post { groups[playlistId] = g; changed(playlistId) }
+                    db.setGroupOrder(playlistId, ids)
+                    main.post { changed(playlistId) }
                 }
             }
         }
@@ -533,12 +551,12 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             header("EPG sources")
         }
         if (playlists.isEmpty()) { if (!expandable) message("No playlists yet."); return@with }
-        if (epgSession != session) { epgSession = session; epgOpen = false }
+        val epgOpen = isPartOpen("epgSources")
         val loaded = playlists.count { (epg[it.id]?.programmes ?: 0) > 0 }
         val failing = playlists.any { epg[it.id]?.let { s -> s.status != "OK" } == true }
         if (expandable) {
             dropdownRow("EPG sources", "$loaded of ${playlists.size} loaded", if (failing) Rows.Badge.PROBLEM else if (loaded == playlists.size) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE, epgOpen) {
-                epgOpen = !epgOpen
+                togglePart("epgSources")
                 refresh()
             }
         }

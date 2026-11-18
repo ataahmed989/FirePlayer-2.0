@@ -151,10 +151,11 @@ class OpenSubtitles(private val prefs: Prefs) {
                 request("GET", "$base/infos/formats", null)
             }
             null
-        } catch (e: java.io.IOException) {
-            false to "Couldn't reach OpenSubtitles"
+        } catch (e: HttpError) {
+            // Only a sign-in or key refusal is "not accepted"; a server error or a busy site is "couldn't check".
+            (e.code == 400 || e.code == 401 || e.code == 403) to (e.message ?: "OpenSubtitles didn't accept it")
         } catch (e: Exception) {
-            true to (e.message ?: "OpenSubtitles didn't accept it")
+            false to "Couldn't reach OpenSubtitles"
         }
     }
 
@@ -189,10 +190,13 @@ class OpenSubtitles(private val prefs: Prefs) {
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         if (code !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrNull()
-            error(message?.ifEmpty { null } ?: "OpenSubtitles error $code")
+            throw HttpError(code, message?.ifEmpty { null } ?: "OpenSubtitles error $code")
         }
         return text
     }
+
+    /** A refused request, with its HTTP code (an IllegalStateException, as the plain error() it replaces). */
+    class HttpError(val code: Int, message: String) : IllegalStateException(message)
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 }

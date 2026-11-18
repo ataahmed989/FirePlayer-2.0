@@ -52,8 +52,8 @@ import app.fireplayer.update.Updater
  * old home menu had — Open a link, Subtitle style and the same Settings windows as the player — beside the new
  * Playlists, EPG and Live TV settings.
  *
- * Both looks share this layout; glass shows the stationary wallpaper blurred ([GlassSource.Host]) and classic the
- * original dark surfaces over the same wallpaper.
+ * Both looks share this layout; glass shows the blue fog wallpaper blurred ([GlassSource.Host]) and classic the
+ * original dark surfaces over its own dark background (user's).
  */
 class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
@@ -107,7 +107,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         panel = SidePanel(this)
         liveSettings = LiveSettings(this, panel)
 
-        wallpaper = WallpaperView(this)
+        wallpaper = WallpaperView(this).apply { glassLook = Glass.on }
         findViewById<FrameLayout>(R.id.wallpaper_host).addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         wallpaper.onReady = { glass ->
             still = glass
@@ -145,8 +145,6 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         }
         // Normally running since the TV started; the first time after installing, from here.
         TitleService.start(this)
-        // Playlists not updated within their interval are updated in the background.
-        LiveSync.get(this).updateDue()
     }
 
     override fun onStart() {
@@ -156,6 +154,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (rail.selected == NavRail.Tab.LIVE) live.start()
         // The dimmer may have been changed in the VOD player meanwhile.
         applyLiveDim()
+        // Playlists and EPGs not updated within their intervals are updated in the background: at start, and each
+        // time the app comes back (it can stay alive for days on a TV).
+        LiveSync.get(this).updateDue()
     }
 
     override fun onStop() {
@@ -299,13 +300,13 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     }
 
     /** Live FirePlayer Settings over the Live TV tab; focus returns where it was when it closes. */
-    override fun openPlayerSettings() {
+    override fun openPlayerSettings(onClosed: (() -> Unit)?) {
         val back = currentFocus
         // The guide steps back while the window is open (the classic window is see-through), as the Settings tab does.
         live.root.animate().alpha(0.35f).setDuration(160).start()
         liveSettings.openPlayerSettings(settingsPanels, onClose = {
             live.root.animate().alpha(1f).setDuration(160).start()
-            if (back != null && back.isShown) back.requestFocus() else focusPage()
+            if (onClosed != null) onClosed() else if (back != null && back.isShown) back.requestFocus() else focusPage()
         })
     }
 
@@ -370,8 +371,15 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     /** Gives the shell the look Settings now has (the settings window redraws its own). */
     private fun applyLook() {
         lookOn = Glass.on
+        // Classic has its own dark background; glass blurs the blue fog.
+        wallpaper.glassLook = Glass.on
+        // The rail's and Settings tab's glass blur the wallpaper (never the film, never dimmed), even when the look
+        // changes over full screen; the live page re-makes its controls over the film itself.
+        val film = filmOn
+        filmOn = false
         for (i in 0 until settingsList.childCount) Glass.background(settingsList.getChildAt(i), Glass.Kind.ROW)
         rail.applyLook()
+        filmOn = film && Glass.on
         live.applyLook()
         root.jumpDrawablesToCurrentState()
         clipForLook()

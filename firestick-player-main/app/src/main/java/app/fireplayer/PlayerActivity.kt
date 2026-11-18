@@ -5566,8 +5566,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         openPanel("Find subtitles", from) {
             if (!openSubtitles.isConfigured) {
-                message("Add your free OpenSubtitles API key in Settings to search for subtitles.")
-                row("Open Settings") { panel.close(); openSettingsPanel(from) }
+                message("Add your free OpenSubtitles API key to search for subtitles.")
+                // Straight to where the key is entered (App settings' section; the player's Settings has the status).
+                row("Add the key") {
+                    panel.close()
+                    openPanel("Online subtitles and TMDB API", from) { settingsPanels.credentialsSection(this) }
+                }
                 return@openPanel
             }
             row("Search for", findQuery) {

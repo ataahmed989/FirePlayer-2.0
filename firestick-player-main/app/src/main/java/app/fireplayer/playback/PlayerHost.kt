@@ -230,8 +230,13 @@ class PlayerHost private constructor(context: Context) {
         if (!captionsOn) return
         val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
         if (text.isEmpty() || text.any { it.isSelected }) return
+        val language = Prefs(app).subtitleLanguage
         val pick = text.flatMap { g -> (0 until g.length).filter { g.isTrackSupported(it) }.map { g to it } }
-            .let { all -> all.firstOrNull { (g, i) -> g.getTrackFormat(i).sampleMimeType == captionsMime } ?: all.firstOrNull() } ?: return
+            .let { all ->
+                // The same kind as before; among those, the default subtitle language first.
+                val kind = all.filter { (g, i) -> g.getTrackFormat(i).sampleMimeType == captionsMime }.ifEmpty { all }
+                kind.firstOrNull { (g, i) -> language.isNotEmpty() && g.getTrackFormat(i).language?.startsWith(language) == true } ?: kind.firstOrNull()
+            } ?: return
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
             .setOverrideForType(TrackSelectionOverride(pick.first.mediaTrackGroup, pick.second))
@@ -266,6 +271,13 @@ class PlayerHost private constructor(context: Context) {
             delays.audioUs = 0L
         }
         val p = playerFor(source.headers)
+        // The shared Defaults (Settings › Defaults, the same values films use): the sound in the chosen language when
+        // the channel has it, and that language's captions first once captions are on.
+        val prefs = Prefs(app)
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setPreferredAudioLanguage(prefs.audioLanguage.ifEmpty { null })
+            .setPreferredTextLanguage(prefs.subtitleLanguage.ifEmpty { null })
+            .build()
         setCues(emptyList())
         p.setMediaItem(mediaItem(source))
         p.prepare()

@@ -78,8 +78,9 @@ class SidePanel(private val activity: Activity) {
      * to this window as it was, on that row. Closing ([close]) closes them all.
      */
     fun openSub(titleText: String, render: SidePanel.() -> Unit) {
+        // Only from an open window (a late answer mustn't bring a closed one back without its close callback).
         val current = renderer
-        if (!isOpen || current == null) return open(titleText, null, render)
+        if (!isOpen || current == null) return
         val rows = focusables()
         val i = rows.indexOfFirst { it.hasFocus() }
         parents += Parent(title.text.toString(), current, onClose, session, if (i >= 0) rowKey(rows, i) else lastKey)
@@ -89,6 +90,19 @@ class SidePanel(private val activity: Activity) {
         title.text = titleText
         scroll.scrollTo(0, 0)
         rebuild(focusIndex = 0)
+    }
+
+    // Which parts of which window are open (Info pods ▾, Statuses ▾…), by the window's session: each opening starts
+    // closed, and coming Back to a window finds its parts as they were.
+    private val openParts = HashMap<String, MutableSet<Int>>()
+
+    /** Whether [part] of this window is open. */
+    fun isPartOpen(part: String): Boolean = openParts[part]?.contains(session) == true
+
+    /** Opens or closes [part] of this window. */
+    fun togglePart(part: String) {
+        val set = openParts.getOrPut(part) { HashSet() }
+        if (!set.remove(session)) set += session
     }
 
     /** Whether Back returns to a window under this one rather than closing. */
@@ -107,6 +121,8 @@ class SidePanel(private val activity: Activity) {
 
     fun close() {
         if (!isOpen) return
+        // Closed from a sub-window: what the first window was opened with still runs (its page, its focus).
+        parents.firstOrNull()?.let { onClose = it.onClose }
         parents.clear()
         root.animate().cancel()
         root.visibility = View.GONE
