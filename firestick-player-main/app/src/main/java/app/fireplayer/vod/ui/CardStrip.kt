@@ -1,0 +1,74 @@
+package app.fireplayer.vod.ui
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Rect
+import android.view.View
+import android.view.ViewGroup
+import app.fireplayer.shell.Tokens
+import app.fireplayer.vod.RowStyle
+import kotlin.math.roundToInt
+
+/**
+ * A row's items at fixed places, laid out once (and again only when the row's length changes): item i at i x the
+ * row's pitch, or, for genre chips, one after another at their own widths. It's wider than the screen and never
+ * scrolls itself (no scrolling view moves it when an item takes focus): the row's [app.fireplayer.ui.RowMotion] moves
+ * it with translationX alone. It doesn't clip, so the white ring round the chosen card shows.
+ */
+@SuppressLint("ViewConstructor")
+class CardStrip(context: Context, private val t: Tokens, private val style: RowStyle) : ViewGroup(context) {
+
+    private val pitch = t.dpf(VodSizes.pitch(style))
+    private val itemW = t.dp(VodSizes.itemW(style))
+    private val cardH = t.dp(VodSizes.cardH(style))
+    private val cardTop = t.dp(VodSizes.cardTop(style))
+    private val chipGap = t.dp(VodSizes.CHIP_GAP)
+
+    init {
+        clipChildren = false
+        clipToPadding = false
+    }
+
+    /** Item [i]'s left edge, px: known without a layout pass (genre chips: once laid out). */
+    fun itemLeft(i: Int): Float {
+        if (style == RowStyle.GENRES) return getChildAt(i)?.left?.toFloat() ?: 0f
+        return (i * pitch).roundToInt().toFloat()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val h = t.dp(VodSizes.stripH(style))
+        var w = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (style == RowStyle.GENRES) {
+                c.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), MeasureSpec.makeMeasureSpec(cardH, MeasureSpec.EXACTLY))
+                w += c.measuredWidth + if (i > 0) chipGap else 0
+            } else {
+                c.measure(MeasureSpec.makeMeasureSpec(itemW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(cardH, MeasureSpec.EXACTLY))
+                w = itemLeft(i).toInt() + itemW
+            }
+        }
+        // Wider than the screen: the parent's limit doesn't apply.
+        setMeasuredDimension(w + t.dp(VodSizes.extra(style)), h)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, top: Int, r: Int, b: Int) {
+        var x = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            val left = if (style == RowStyle.GENRES) x else itemLeft(i).toInt()
+            c.layout(left, cardTop, left + c.measuredWidth, cardTop + c.measuredHeight)
+            x = left + c.measuredWidth + chipGap
+            // Grows from its left edge, about its middle (the Episodes sheet's pivot).
+            if (c !is RankedItem) {
+                c.pivotX = 0f
+                c.pivotY = c.measuredHeight / 2f
+            }
+        }
+    }
+
+    // Nothing above this strip scrolls to show a focused item: the row's motion places it.
+    override fun requestChildRectangleOnScreen(child: View, rectangle: Rect, immediate: Boolean): Boolean = true
+
+    override fun shouldDelayChildPressedState(): Boolean = false
+}
