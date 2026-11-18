@@ -388,6 +388,25 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   the TV reporting no HDR (Samsung Input Signal Plus was off; now on). User approved eight player fixes
   (design-brief.md §6.6), keeping the Glass look with an automatic lower refresh in 4K HDR.
 
+- 2026-11-18 · Films & Shows step 1, pages (Home, Movies, TV Shows on the rail; the app still opens on Live TV).
+  Assumptions, all reversible:
+  - From the sizing page: a 3 dp white ring hugging the chosen card; 10 dp between a row's title and its cards and
+    18 dp under each row. Scrolled down, the "half row" is the next row's title (two full rows of posters show).
+  - Header: text only (no logo) and no buttons yet; Up from the first row does nothing. Its backdrop is a box at most
+    2.6 header heights wide at the card's right, fading to clear over its left 45% and bottom 35% (baked once).
+  - The hold window says "Mark unwatched" for a title already watched; holding OK on See all or a genre does nothing.
+  - Top 10 rows have no See all card; the library's rows (My List, Continue Watching, Next Episodes) show it only past
+    15 titles; Cinemeta rows always do.
+  - See all opens in place of the rows (Back returns to the card it came from) and closes on a tab switch. Its grid
+    is 6 posters across, the chosen one grows about its middle; at most 1,000 titles.
+  - Genre chips and See all cards are flat fills in both looks (glass in a moving row would show the wrong part of
+    the wallpaper). The header and Home's window are glass panels; their frosted picture slides with them while the
+    page glides (accepted, to check on the TV).
+  - Home's top-right window shows the last three channels watched on Live TV with what's on now (read-only) until
+    the live picture can follow the viewer there.
+  - Top 10 numbers use Inter ExtraBold on Android 8 and later (bundled with its OFL licence); older Android has
+    Figtree Bold.
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

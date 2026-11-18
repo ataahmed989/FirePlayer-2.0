@@ -42,22 +42,26 @@ import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.GlassSource
+import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.update.Updater
+import app.fireplayer.vod.ui.VodPage
+import app.fireplayer.vod.ui.VodPages
 
 /**
  * What opens from the Fire TV home screen: the app shell. A tab rail (one FirePlayer mark; only tabs that work are
- * shown) and its pages: Live TV (guide, miniature and full-screen player) and Settings: every setting in its category
- * (Playlists & EPG, Live TV, Playback, Remote & skipping, Subtitles & audio, …), each category its own window, and
- * Open a link, as the old home menu had.
+ * shown) and its pages: Home, Movies and TV Shows (films and shows, [VodPages]), Live TV (guide, miniature and
+ * full-screen player) and Settings: every setting in its category (Playlists & EPG, Live TV, Playback, Remote &
+ * skipping, Subtitles & audio, …), each category its own window, and Open a link, as the old home menu had. It still
+ * opens on Live TV.
  *
  * Both looks share this layout, each over its own background (the user's): glass shows the blurred beach wallpaper,
  * blurred again behind glass shapes ([GlassSource.Host]); classic the original dark surfaces over the dark fog.
  */
-class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
+class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPage.Host {
 
     private var still: GlassSource? = null
     /** The live picture, blurred, for the full-screen controls' glass (Android 7+); made when first needed. */
@@ -78,6 +82,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private lateinit var pages: FrameLayout
     private lateinit var rail: NavRail
     private lateinit var live: LivePage
+    /** Home, Movies and TV Shows. */
+    private lateinit var vodPages: VodPages
     private lateinit var settingsPage: LinearLayout
     private var consumeBackUp = false
     private var lookOn = false
@@ -97,6 +103,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
         shellTokens = Tokens(this)
+        // Pictures keep on disk across runs (posters, backdrops).
+        ImageLoader.init(applicationContext)
         setContentView(R.layout.activity_home)
         root = findViewById(R.id.home_root)
         surface = findViewById(R.id.live_surface)
@@ -125,6 +133,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
         live = LivePage(this, this)
         pages.addView(live.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Each film page is made the first time its tab opens.
+        vodPages = VodPages(this, this, pages)
         settingsPage = buildSettingsPage()
         pages.addView(settingsPage, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL).apply { leftMargin = tokens.dp(40) })
 
@@ -154,6 +164,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
+        vodPages.start()
         // The dimmer may have been changed in the VOD player meanwhile.
         applyLiveDim()
         // Playlists and EPGs not updated within their intervals are updated in the background: at start, and each
@@ -163,9 +174,20 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     override fun onStop() {
         live.stop()
+        // The film pages' pictures go, and half the decoded ones kept in memory: a film may be starting in the player.
+        vodPages.stop()
+        ImageLoader.trim(ImageLoader.TRIM_HALF)
         film?.stop()
         root.keepScreenOn = false
         super.onStop()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && ::vodPages.isInitialized) {
+            vodPages.trimImages()
+            ImageLoader.trim()
+        }
     }
 
     override val videoOwner: Any get() = surface
@@ -199,6 +221,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         player.removeListener(videoSizeListener)
         player.detach(surface)
         live.release()
+        vodPages.release()
         liveSettings.release()
         film?.release()
         super.onDestroy()
@@ -223,7 +246,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (tab != NavRail.Tab.LIVE) setRailShown(true, 0L)
         val isLive = tab == NavRail.Tab.LIVE
         live.root.visibility = if (isLive) View.VISIBLE else View.GONE
-        settingsPage.visibility = if (isLive) View.GONE else View.VISIBLE
+        settingsPage.visibility = if (tab == NavRail.Tab.SETTINGS) View.VISIBLE else View.GONE
+        // Home, Movies or TV Shows (the others hidden, their pictures let go).
+        vodPages.show(tab)
         if (isLive) {
             live.start()
         } else {
@@ -235,6 +260,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     private fun focusPage() {
         when (rail.selected) {
+            NavRail.Tab.HOME, NavRail.Tab.MOVIES, NavRail.Tab.SHOWS -> vodPages.current?.takeFocus()
             NavRail.Tab.LIVE -> live.takeFocus()
             NavRail.Tab.SETTINGS -> settingsRows.firstOrNull()?.requestFocus()
         }
@@ -448,6 +474,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         rail.applyLook()
         filmOn = film && Glass.on
         live.applyLook()
+        vodPages.applyLook()
         root.jumpDrawablesToCurrentState()
         clipForLook()
     }
@@ -754,6 +781,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
+        // A film page's own Back (its small window, See all) before the shell's.
+        if (!panel.isOpen && vodPages.isVodTab(rail.selected) && !rail.hasFocus() && vodPages.dispatchKey(event)) return true
         // Play/Pause still pauses the channel with a window, a small window or the rail in front, as the VOD player does.
         if (rail.selected == NavRail.Tab.LIVE && live.mediaKey(event)) return true
         // Media buttons this screen didn't use stay here. Left to Android, they go to the last app that played
