@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -21,13 +22,14 @@ import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.GuideScope
 import app.fireplayer.live.Playlist
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.ListMath
 
 /**
  * The playlist and group column (design-layout): "All playlists", then each playlist, which expands to Favorites,
  * All channels and its own groups. Playlist scope stays visible: a group is always shown under its playlist.
- * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid. Center held on a
- * group opens its small window ([Callbacks.onHold]: Move to top, Hide category), whose edits show here at once
- * ([moveGroupToTop], [hideGroup]).
+ * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid. Down from the last
+ * row goes round to the first, Up from the first to the last ([wrapTo]). Center held on a group opens its small window
+ * ([Callbacks.onHold]: Move to top, Hide category), whose edits show here at once ([moveGroupToTop], [hideGroup]).
  */
 class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(context) {
 
@@ -56,9 +58,12 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private val showPending = Runnable { pendingScope?.let { if (it != current) pick(it, enter = false) } }
     /** Set while focus is put on a row for the viewer (back from a small window): that row isn't previewed. */
     private var quietFocus = false
+    private val manager = Manager(context)
+    /** The row a wrap's jump puts focus on once it's laid out ([wrapTo]); -1 when none is on its way. */
+    private var landing = -1
 
     init {
-        layoutManager = LinearLayoutManager(context)
+        layoutManager = manager
         adapter = Adapter()
         itemAnimator = null
         isFocusable = false
@@ -118,6 +123,17 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         // further away is scrolled to.
         if (!hasPendingAdapterUpdates()) (layoutManager as LinearLayoutManager).scrollToPositionWithOffset(i, height / 3)
         post { findViewHolderForAdapterPosition(i)?.itemView?.let { focusQuietly(it) } ?: focusCurrent() }
+    }
+
+    /**
+     * [scope] is what the guide shows now, chosen there (TV Guide in full screen went to the playing channel's group):
+     * its entry is marked as the current one, for focus to come back to; nothing is previewed or picked.
+     */
+    fun select(scope: GuideScope) {
+        main.removeCallbacks(showPending)
+        if (scope == current) return
+        current = scope
+        adapter?.notifyItemRangeChanged(0, items.size)
     }
 
     private fun focusQuietly(v: View) {
@@ -238,9 +254,89 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         post { if (!hasFocus()) findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus() }
     }
 
+    /**
+     * Down from the last row ([down]) or Up from the first: focus goes round to [target], the first or last row. On
+     * screen (a short list) focus just moves there; the list glides it fully into view if need be, as for any row.
+     *
+     * Further away, the list doesn't glide past every row between: it jumps to [WRAP_ROWS] rows short of that end, with
+     * [target] laid out just past the edge, and focus goes onto it in the same frame; the list then glides it into
+     * place, the highlight on it all the way. For that one layout focus waits on the list itself: the row it was on
+     * goes with the jump, and focus mustn't fall out of the column meanwhile (into the guide, which would close it).
+     */
+    private fun wrapTo(target: Int, down: Boolean) {
+        if (landing >= 0 || target !in items.indices) return
+        val near = findViewHolderForAdapterPosition(target)?.itemView
+        if (near != null && !hasPendingAdapterUpdates()) {
+            near.requestFocus()
+            return
+        }
+        val row = (focusedChild?.height ?: t.dp(34)) + t.dp(1)
+        val run = row * WRAP_ROWS
+        // Focus can't be kept through the jump: it stays at the end rather than fall out of the column.
+        if (!holdFocus()) { releaseFocus(); return }
+        // Laid out past the edge only during this jump: rows beyond the edges aren't laid out otherwise.
+        manager.extra = run + row
+        val inner = height - paddingTop - paddingBottom
+        manager.scrollToPositionWithOffset(target, if (down) -run else inner - row + run)
+        landing = target
+        viewTreeObserver.addOnPreDrawListener(land)
+    }
+
+    /** After the jump's layout, before it's drawn: focus onto the row it was for, and the list no longer holds it. */
+    private val land = object : ViewTreeObserver.OnPreDrawListener {
+        override fun onPreDraw(): Boolean {
+            if (viewTreeObserver.isAlive) viewTreeObserver.removeOnPreDrawListener(this)
+            val i = landing
+            landing = -1
+            manager.extra = 0
+            // A row first, then the list lets go of focus (the other way round, focus would leave the column).
+            (findViewHolderForAdapterPosition(i)?.itemView ?: getChildAt(0))?.requestFocus()
+            releaseFocus()
+            return true
+        }
+    }
+
+    /** Focus on the list itself, not one of its rows: where a wrap's jump keeps it while the rows change. */
+    private fun holdFocus(): Boolean {
+        descendantFocusability = FOCUS_BEFORE_DESCENDANTS
+        isFocusableInTouchMode = true
+        isFocusable = true
+        return requestFocus()
+    }
+
+    private fun releaseFocus() {
+        descendantFocusability = FOCUS_AFTER_DESCENDANTS
+        isFocusable = false
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // A wrap's jump is landing (one frame): its keys wait rather than move focus off the list.
+        if (landing >= 0) return true
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDetachedFromWindow() {
         main.removeCallbacks(showPending)
+        if (landing >= 0) {
+            viewTreeObserver.removeOnPreDrawListener(land)
+            landing = -1
+            manager.extra = 0
+            releaseFocus()
+        }
         super.onDetachedFromWindow()
+    }
+
+    /** The column's layout manager; while a wrap's jump is laid out it also lays out [extra] pixels past each edge. */
+    private class Manager(context: Context) : LinearLayoutManager(context) {
+        var extra = 0
+
+        override fun calculateExtraLayoutSpace(state: State, extraLayoutSpace: IntArray) {
+            super.calculateExtraLayoutSpace(state, extraLayoutSpace)
+            if (extra > 0) {
+                extraLayoutSpace[0] = maxOf(extraLayoutSpace[0], extra)
+                extraLayoutSpace[1] = maxOf(extraLayoutSpace[1], extra)
+            }
+        }
     }
 
     private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row)
@@ -352,9 +448,27 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         if (item is Item.Head && item.expanded) { toggle(item); true } else false
                     }
+                    // Past the last row to the first and back (a fresh press; held, it stops at the end).
+                    KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
+                        val down = keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                        val pos = h.bindingAdapterPosition
+                        val to = if (pos == RecyclerView.NO_POSITION) -1 else ListMath.step(pos, items.size, down, event.repeatCount > 0) { true }
+                        when {
+                            pos == RecyclerView.NO_POSITION -> false
+                            // Within the list: the usual move to the row beside it.
+                            to == pos + (if (down) 1 else -1) -> false
+                            // At the end: round to the other end, or (held, or a one-row list) stay.
+                            else -> { if (to >= 0) wrapTo(to, down); true }
+                        }
+                    }
                     else -> false
                 }
             }
         }
+    }
+
+    private companion object {
+        /** A wrap to a row far away glides only this many rows (the rest is a jump). */
+        const val WRAP_ROWS = 3
     }
 }

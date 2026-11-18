@@ -12,45 +12,45 @@ import java.util.concurrent.Executors
 
 /**
  * Channel logos for the guide and live controls: fetched and decoded on two background threads, downsampled to the
- * size they're drawn at, kept in a bounded memory cache (6 MB). A logo that fails isn't asked for again this run.
- * [get] never blocks: it returns what's cached and starts a fetch; [onLoaded] runs on the main thread when one lands.
+ * size they're drawn at, kept in a bounded memory cache (6 MB). Each one's plate ([LogoPlate]) is chosen there too,
+ * once, never while drawing. A logo that fails isn't asked for again this run. [get] never blocks: it returns what's
+ * cached and starts a fetch; [onChange] runs on the main thread when one lands (loaded) or fails.
  */
-class LogoCache(private val targetPx: Int, var onLoaded: (() -> Unit)? = null) {
+class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: Boolean) -> Unit)? = null) {
 
-    private val cache = object : LruCache<String, Bitmap>(6 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    private val cache = object : LruCache<String, Logo>(6 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Logo) = value.bitmap.byteCount
     }
     private val pending = HashSet<String>()
     private val failed = HashSet<String>()
     private val main = Handler(Looper.getMainLooper())
 
     /** Main thread only. */
-    fun get(url: String): Bitmap? {
+    fun get(url: String): Logo? {
         cache.get(url)?.let { return it }
         if (url in pending || url in failed) return null
         if (pending.size > 24) return null // a burst of new rows: the rest wait for the next draw
         pending += url
         pool.execute {
-            val bmp = runCatching { fetch(url) }.getOrNull()
+            val logo = runCatching { fetch(url) }.getOrNull()
             main.post {
                 pending -= url
-                if (bmp != null) {
-                    cache.put(url, bmp)
-                    onLoaded?.invoke()
-                } else {
-                    failed += url
-                }
+                if (logo != null) cache.put(url, logo) else failed += url
+                onChange?.invoke(url, logo != null)
             }
         }
         return null
     }
+
+    /** True when [url] gives no logo (it failed this run, or isn't a web address). Main thread only. */
+    fun missing(url: String): Boolean = url in failed || !url.startsWith("http")
 
     fun clear() {
         cache.evictAll()
         failed.clear()
     }
 
-    private fun fetch(url: String): Bitmap? {
+    private fun fetch(url: String): Logo? {
         if (!url.startsWith("http")) return null
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 6_000
@@ -76,10 +76,28 @@ class LogoCache(private val targetPx: Int, var onLoaded: (() -> Unit)? = null) {
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
             var sample = 1
             while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx / 2) sample *= 2
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            return Logo(bmp, lightPlate(bmp))
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** The logo's plate ([LogoPlate.light]), from a grid of at most about 64 x 64 of its pixels. */
+    private fun lightPlate(bmp: Bitmap): Boolean {
+        if (bmp.width <= 0 || bmp.height <= 0) return false
+        val step = maxOf(1, maxOf(bmp.width, bmp.height) / 64)
+        val cols = (bmp.width + step - 1) / step
+        val rows = (bmp.height + step - 1) / step
+        val px = IntArray(cols * rows)
+        val line = IntArray(bmp.width)
+        var n = 0
+        for (r in 0 until rows) {
+            bmp.getPixels(line, 0, bmp.width, 0, r * step, bmp.width, 1)
+            var x = 0
+            while (x < bmp.width) { px[n++] = line[x]; x += step }
+        }
+        return LogoPlate.light(px, n)
     }
 
     private companion object {
