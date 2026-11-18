@@ -42,15 +42,16 @@ import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.GlassSource
 import app.fireplayer.ui.Rows
+import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.update.Updater
 
 /**
  * What opens from the Fire TV home screen: the app shell. A tab rail (one FirePlayer mark; only tabs that work are
- * shown) and its pages: Live TV (guide, miniature and full-screen player) and Settings, which keeps everything the
- * old home menu had — Open a link, Subtitle style and the same Settings windows as the player — beside the new
- * Playlists, EPG and Live TV settings.
+ * shown) and its pages: Live TV (guide, miniature and full-screen player) and Settings: every setting in its category
+ * (Playlists & EPG, Live TV, Playback, Remote & skipping, Subtitles & audio, …), each category its own window, and
+ * Open a link, as the old home menu had.
  *
  * Both looks share this layout, each over its own background (the user's): glass shows the blurred beach wallpaper,
  * blurred again behind glass shapes ([GlassSource.Host]); classic the original dark surfaces over the dark fog.
@@ -77,8 +78,6 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private lateinit var rail: NavRail
     private lateinit var live: LivePage
     private lateinit var settingsPage: LinearLayout
-    private lateinit var styleRow: View
-    private lateinit var settingsRow: View
     private var consumeBackUp = false
     private var lookOn = false
     private var videoTarget: RectF? = null
@@ -106,6 +105,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
         liveSettings = LiveSettings(this, panel)
+        // App settings' list opens Playlists & EPG and Live TV from here.
+        settingsPanels.liveWindows = { liveSettings.openCategory(it) }
 
         wallpaper = WallpaperView(this).apply { glassLook = Glass.on }
         findViewById<FrameLayout>(R.id.wallpaper_host).addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -124,7 +125,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         live = LivePage(this, this)
         pages.addView(live.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         settingsPage = buildSettingsPage()
-        pages.addView(settingsPage, FrameLayout.LayoutParams(tokens.dp(380), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL).apply { leftMargin = tokens.dp(40) })
+        pages.addView(settingsPage, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL).apply { leftMargin = tokens.dp(40) })
 
         player.attach(surface)
         player.addListener(videoSizeListener)
@@ -234,7 +235,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     private fun focusPage() {
         when (rail.selected) {
             NavRail.Tab.LIVE -> live.takeFocus()
-            NavRail.Tab.SETTINGS -> (settingsPage.getChildAt(1) as? ViewGroup)?.getChildAt(0)?.requestFocus()
+            NavRail.Tab.SETTINGS -> settingsRows.firstOrNull()?.requestFocus()
         }
     }
 
@@ -254,38 +255,80 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     // ---- Settings tab ---------------------------------------------------------------------------------------------
 
-    private lateinit var settingsList: LinearLayout
+    /** The Settings tab's rows, column by column: App settings' categories, then Open a link. */
+    private val settingsRows = ArrayList<View>()
 
+    /**
+     * The Settings tab: a row for each category of App settings ([SettingsCategory]), each opening its own window,
+     * and Open a link last. Rows that don't fit one column under the title go on in a second ([settingsColumns]).
+     */
     private fun buildSettingsPage(): LinearLayout {
-        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(TextView(this).apply {
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(TextView(this).apply {
             text = "Settings"
             typeface = tokens.bold
             setTextColor(tokens.text)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = tokens.dp(16) })
-        settingsList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(settingsList)
-        addRow("Playlists", R.drawable.ic_playlist_add) { from -> liveSettings.openPlaylists(onClose = { restore(from) }).also { dim() } }
-        addRow("EPG", R.drawable.ic_epg) { from -> liveSettings.openEpg(onClose = { restore(from) }).also { dim() } }
-        addRow("Live TV", R.drawable.ic_live) { from -> liveSettings.openLiveOptions(onClose = { restore(from) }).also { dim() } }
-        addRow("Open a link", R.drawable.ic_link) { openLink() }
-        styleRow = addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
-            openPanel("Subtitle style", from) {
-                settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
-            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = tokens.dp(TITLE_GAP_DP) })
+        val rows = SettingsCategory.entries.map { category ->
+            SettingsRow(category.title, categoryIcon(category)) { from -> openCategory(category, from) }
+        } + SettingsRow(SettingsCategory.OPEN_A_LINK, R.drawable.ic_link) { openLink() }
+        val columns = SettingsCategory.inColumns(rows, settingsColumns(rows.size))
+        val side = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        page.addView(side)
+        // Narrower in two columns, so the second stays clear of the settings window (its left edge is about 644 dp in).
+        val width = tokens.dp(if (columns.size > 1) COLUMN_DP else ONE_COLUMN_DP)
+        columns.forEachIndexed { i, column ->
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            side.addView(list, LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (i > 0) marginStart = tokens.dp(COLUMN_GAP_DP)
+            })
+            for (row in column) settingsRows += addRow(list, row.label, row.icon, row.onClick)
         }
-        // App settings: every setting (OpenSubtitles and TMDB keys are managed here; the player windows link to it).
-        settingsRow = addRow("App settings", R.drawable.ic_settings) { from ->
-            openPanel("App settings", from) { settingsPanels.renderSettings(this) }
-        }
-        return column
+        return page
     }
 
-    private fun dim() = settingsPage.animate().alpha(0.35f).setDuration(160).start()
+    private class SettingsRow(val label: String, val icon: Int, val onClick: (View) -> Unit)
+
+    /**
+     * Columns for the Settings tab's [rows], from addRow's sizes: each row 44 dp and 8 dp under it, the title (26 sp,
+     * about 34 dp) and its 16 dp gap, and 27 dp kept clear above and below (the 5% a TV may cut off). On the Fire TV's
+     * 960 x 540 dp screen ten rows need 50 + 520 dp, more than its 540: two columns of five, so nothing has to scroll.
+     */
+    private fun settingsColumns(rows: Int): Int {
+        val metrics = resources.displayMetrics
+        return SettingsCategory.columnsFor(
+            rows, screenDp = (metrics.heightPixels / metrics.density).toInt(), rowDp = ROW_DP, gapDp = ROW_GAP_DP,
+            titleDp = TITLE_DP + TITLE_GAP_DP, edgeDp = SAFE_EDGE_DP,
+        )
+    }
+
+    private fun categoryIcon(category: SettingsCategory): Int = when (category) {
+        SettingsCategory.PLAYLISTS_EPG -> R.drawable.ic_playlist_add
+        SettingsCategory.LIVE_TV -> R.drawable.ic_live
+        SettingsCategory.PLAYBACK -> R.drawable.ic_head_play
+        SettingsCategory.REMOTE -> R.drawable.ic_head_remote
+        SettingsCategory.SUBTITLES_AUDIO -> R.drawable.ic_subtitles
+        SettingsCategory.LOOK -> R.drawable.ic_head_look
+        SettingsCategory.ACCOUNTS -> R.drawable.ic_key
+        SettingsCategory.TITLES -> R.drawable.ic_head_tv
+        SettingsCategory.APP -> R.drawable.ic_head_app
+    }
+
+    /** A category's own window; the page dims while it's open and focus comes back to [from] when it closes. */
+    private fun openCategory(category: SettingsCategory, from: View) {
+        when (category) {
+            SettingsCategory.PLAYLISTS_EPG -> liveSettings.openPlaylistsAndEpg(onClose = { restore(from) }).also { dim() }
+            SettingsCategory.LIVE_TV -> liveSettings.openLiveOptions(onClose = { restore(from) }).also { dim() }
+            else -> openPanel(category.title, from) { settingsPanels.renderCategory(this, category) }
+        }
+    }
+
+    // Faded as one layer, drawn once rather than each frame, and dropped when the fade ends.
+    private fun dim() = settingsPage.animate().alpha(0.35f).setDuration(160).withLayer().start()
 
     private fun restore(from: View) {
-        settingsPage.animate().alpha(1f).setDuration(160).start()
+        settingsPage.animate().alpha(1f).setDuration(160).withLayer().start()
         // The row it was opened from, if it's on screen (Menu can open Settings over the Live TV tab).
         if (from.isShown) from.requestFocus() else focusPage()
     }
@@ -330,7 +373,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         }
     }
 
-    private fun addRow(label: String, icon: Int, onClick: (View) -> Unit): View {
+    private fun addRow(list: LinearLayout, label: String, icon: Int, onClick: (View) -> Unit): View {
         val density = resources.displayMetrics.density
         val colors = ContextCompat.getColorStateList(this, R.color.sel_text_row)
         val row = LinearLayout(this).apply {
@@ -339,7 +382,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             isFocusable = true
             isClickable = true
             Glass.background(this, Glass.Kind.ROW)
-            minimumHeight = (44 * density).toInt()
+            minimumHeight = (ROW_DP * density).toInt()
             val h = (14 * density).toInt()
             setPadding(h, 0, h, 0)
         }
@@ -356,14 +399,17 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             setTextColor(colors)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             isDuplicateParentStateEnabled = true
-        })
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.setOnClickListener { onClick(it) }
-        // Up from the top row goes to the bottom one and the other way round, like the settings lists.
-        row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(settingsList, v, keyCode, event) }
-        settingsList.addView(
+        // Up from the top row of a column goes to its bottom one and the other way round, like the settings lists;
+        // left and right go across, to the row beside it (or the rail).
+        row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(list, v, keyCode, event) }
+        list.addView(
             row,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { bottomMargin = (8 * density).toInt() },
+                .apply { bottomMargin = (ROW_GAP_DP * density).toInt() },
         )
         return row
     }
@@ -379,7 +425,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         // changes over full screen; the live page re-makes its controls over the film itself.
         val film = filmOn
         filmOn = false
-        for (i in 0 until settingsList.childCount) Glass.background(settingsList.getChildAt(i), Glass.Kind.ROW)
+        for (row in settingsRows) Glass.background(row, Glass.Kind.ROW)
         rail.applyLook()
         filmOn = film && Glass.on
         live.applyLook()
@@ -690,7 +736,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
         // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
         // pressed again, it closes the window.
-        if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {
+        if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsPage.isInitialized) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
                 if (panel.isOpen) panel.close() else openMenuWindow()
             }
@@ -720,25 +766,36 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     }
 
     /**
-     * Menu: Settings (or Subtitle style, as chosen) over whichever tab shows. From the Settings tab it opens from its
-     * row; elsewhere focus returns to where it was when the window closes.
+     * Menu: Settings (App settings' categories; Live FirePlayer Settings over Live TV) or Subtitle style, as chosen,
+     * over whichever tab shows. Focus returns to where it was when the window closes; over the Settings tab the page
+     * dims behind it, as when a row opens a window.
      */
     private fun openMenuWindow() {
         val style = Prefs(this).menuOpensStyle
-        if (rail.selected == NavRail.Tab.SETTINGS) {
-            (if (style) styleRow else settingsRow).performClick()
-            return
-        }
         // On the Live TV tab, Settings means Live FirePlayer Settings (user spec).
         if (!style && rail.selected == NavRail.Tab.LIVE) return openPlayerSettings()
+        val title = if (style) "Subtitle style" else SettingsCategory.LIST_TITLE
+        val render: SidePanel.() -> Unit = {
+            if (style) settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
+            else settingsPanels.renderCategories(this)
+        }
         val back = currentFocus
-        val onClose: () -> Unit = { if (back != null && back.isShown) back.requestFocus() else focusPage() }
-        if (style) panel.open("Subtitle style", onClose) { settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {}) }
-        else panel.open("App settings", onClose) { settingsPanels.renderSettings(this) }
+        if (rail.selected == NavRail.Tab.SETTINGS) return openPanel(title, back ?: settingsRows.first(), render)
+        panel.open(title, { if (back != null && back.isShown) back.requestFocus() else focusPage() }, render)
     }
 
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+
+        // The Settings tab's sizes, in dp (see settingsColumns).
+        private const val ROW_DP = 44
+        private const val ROW_GAP_DP = 8
+        private const val TITLE_DP = 34
+        private const val TITLE_GAP_DP = 16
+        private const val SAFE_EDGE_DP = 27
+        private const val COLUMN_DP = 240
+        private const val ONE_COLUMN_DP = 380
+        private const val COLUMN_GAP_DP = 16
     }
 }

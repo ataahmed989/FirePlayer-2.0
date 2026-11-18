@@ -199,6 +199,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private lateinit var pictureText: PictureText
     private lateinit var settingsPanels: SettingsPanels
     private lateinit var panel: SidePanel
+    /** Live TV's Playlists & EPG and Live TV windows, for App settings' list: made the first time one opens. */
+    private var liveSettings: app.fireplayer.live.ui.LiveSettings? = null
     private lateinit var frameRateMatcher: FrameRateMatcher
     private lateinit var openSubtitles: OpenSubtitles
     private lateinit var tmdb: Tmdb
@@ -605,6 +607,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
         settingsPanels.onChipsChanged = { updateChips() }
+        // Subtitle style opened from App settings (Subtitles & audio): the subtitles follow, as in the player's own.
+        settingsPanels.onSubtitleStyleChanged = { applySubtitleStyle(); refreshLabels() }
+        settingsPanels.onAssStylingChanged = { applySubtitleStyle(); if (stylingNeedsRebuild()) rebuildPlayer() }
+        settingsPanels.liveWindows = { category ->
+            val live = liveSettings ?: app.fireplayer.live.ui.LiveSettings(this, panel).also { liveSettings = it }
+            live.openCategory(category)
+        }
         displayMode = prefs.displayMode
         applyDim()
 
@@ -770,6 +779,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onDestroy() {
         super.onDestroy()
         barWatch?.release()
+        liveSettings?.release()
         if (stale) return
         io.execute { titleBook?.close() }
         // One replaced by a newer player leaves the screen's mode to that one.
@@ -5567,10 +5577,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openPanel("Find subtitles", from) {
             if (!openSubtitles.isConfigured) {
                 message("Add your free OpenSubtitles API key to search for subtitles.")
-                // Straight to where the key is entered (App settings' section; the player's Settings has the status).
+                // Straight to where the key is entered (Accounts & services; the player's Settings has the status).
                 row("Add the key") {
                     panel.close()
-                    openPanel("Online subtitles and TMDB API", from) { settingsPanels.credentialsSection(this) }
+                    openPanel(app.fireplayer.ui.SettingsCategory.ACCOUNTS.title, from) { settingsPanels.credentialsSection(this) }
                 }
                 return@openPanel
             }

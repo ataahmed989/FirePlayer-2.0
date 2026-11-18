@@ -19,6 +19,7 @@ import app.fireplayer.live.XtreamParser
 import app.fireplayer.playback.PlayerHost
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Rows
+import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.ui.asSubRow
@@ -125,7 +126,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     // ---- Playlists ------------------------------------------------------------------------------------------------
 
-    /** The Settings tab's Playlists window. */
+    /** The Playlists window, from Live TV while it has no playlists. */
     fun openPlaylists(onClose: (() -> Unit)? = null) = reloadThen {
         panel.open("Playlists", onClose) { playlistRows(this) }
     }
@@ -530,9 +531,30 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     // ---- EPG ------------------------------------------------------------------------------------------------------
 
-    /** The Settings tab's EPG window. */
-    fun openEpg(onClose: (() -> Unit)? = null) = reloadThen {
-        panel.open("EPG", onClose) { epgRows(this, expandable = false) }
+    /**
+     * Playlists & EPG, a category of App settings: the playlists, then the EPG. Its own window from the Settings tab
+     * ([onClose]); [sub]: over the window that's open (App settings' list), Back returns to it.
+     */
+    fun openPlaylistsAndEpg(onClose: (() -> Unit)? = null, sub: Boolean = false) = reloadThen {
+        show(SettingsCategory.PLAYLISTS_EPG.title, onClose, sub) {
+            header("Playlists")
+            playlistRows(this)
+            header("EPG")
+            epgRows(this, expandable = false)
+        }
+    }
+
+    /** Live TV's categories of App settings (Playlists & EPG, Live TV) over the window that's open. */
+    fun openCategory(category: SettingsCategory) {
+        when (category) {
+            SettingsCategory.PLAYLISTS_EPG -> openPlaylistsAndEpg(sub = true)
+            SettingsCategory.LIVE_TV -> openLiveOptions(sub = true)
+            else -> Unit
+        }
+    }
+
+    private fun show(title: String, onClose: (() -> Unit)?, sub: Boolean, render: SidePanel.() -> Unit) {
+        if (sub) panel.openSub(title, render) else panel.open(title, onClose, render)
     }
 
     private fun epgValue(s: LiveDb.EpgStatus?): String = when {
@@ -593,10 +615,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         else "$name: ${last.status.removeSuffix(".")} (${whenText(last.lastSync)})."
     }
 
-    // ---- Live TV (the Settings tab's window: options kept beside the contextual one) ---------------------------------
+    // ---- Live TV (a category of App settings: options kept beside the contextual window) ----------------------------
 
-    fun openLiveOptions(onClose: (() -> Unit)? = null) {
-        panel.open("Live TV", onClose) {
+    /** Its own window from the Settings tab ([onClose]); [sub]: over the window that's open (App settings' list). */
+    fun openLiveOptions(onClose: (() -> Unit)? = null, sub: Boolean = false) {
+        show(SettingsCategory.LIVE_TV.title, onClose, sub) {
             header("Remote")
             channelButtons(this)
             header("Full screen")
