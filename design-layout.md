@@ -397,6 +397,9 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   enough.
 - 2026-11-18 · User: the channel up/down buttons change channel only within the group of the channel that's playing
   (down that group's list), not the group the guide happens to show. Later (PROGRESS.md §6).
+- 2026-11-18 · User: the title page uses the same UI parts as Home, Movies and TV Shows (rows, cards, header parts,
+  buttons, hold and ⋯ windows, Details, notices), and every look value (colours, radii, glass, focus growth, type sizes,
+  spacing) comes from one shared place, so a later look change to windows and glass applies to every page at once.
 - 2026-11-18 · User (second playback check): no shrinking film buffer under memory pressure; FirePlayer 2.0 frees memory
   before VOD playback (Live TV, page images, caches) while keeping returns instant (snapshot); background release only
   after a delay; no Glass Home changes until integration; test a second download connection before building it.
