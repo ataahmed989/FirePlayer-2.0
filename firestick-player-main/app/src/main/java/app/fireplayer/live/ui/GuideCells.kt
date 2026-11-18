@@ -1,6 +1,7 @@
 package app.fireplayer.live.ui
 
 import app.fireplayer.live.Programme
+import kotlin.math.abs
 
 /**
  * One cell of a guide row: a programme, or a gap with no listing ("No information"). A row's cells cover its whole
@@ -90,6 +91,42 @@ object GuideCells {
     /** The right edge of a cell ending at [stop] as drawn: clipped to [right], inset by half the gap. */
     fun cellRight(stop: Long, windowStart: Long, gridLeft: Float, right: Float, pxPerMin: Float, gap: Float): Float =
         minOf(xOf(stop, windowStart, gridLeft, pxPerMin), right) - gap / 2
+
+    // ---- Rows -----------------------------------------------------------------------------------------------------
+
+    /**
+     * The whole channel rows that fit under the time header in a guide [height] tall: what focus and scrolling count
+     * with. The rows run on to the bottom edge, where the next one shows cut (a hint that the list goes on); that one
+     * is never focused.
+     */
+    fun wholeRows(height: Float, headerH: Float, rowH: Float): Int = ((height - headerH) / rowH).toInt().coerceAtLeast(1)
+
+    /**
+     * The first row shown with [row] focused: [top] (the first shown now) while the focus is at least a row inside the
+     * [visible] whole rows' edges, else moved just enough, never past either end of the [count] rows. The focused row
+     * is always one of the whole rows.
+     */
+    fun topFor(row: Int, top: Int, visible: Int, count: Int): Int {
+        // One row of room each side shows where the focus is heading; too few rows for that: none.
+        val room = if (visible >= 3) 1 else 0
+        val maxTop = (count - visible).coerceAtLeast(0)
+        return when {
+            row < top + room -> row - room
+            row > top + visible - 1 - room -> row - visible + 1 + room
+            else -> top
+        }.coerceIn(0, maxTop)
+    }
+
+    /**
+     * Where the rows scroll from to reach [to] (pixels) from [from]: from where they are, unless that's further than
+     * [longest] (round from the last channel to the first in a long list); then from [glide] short of [to]. The rows
+     * jump there and glide the rest, rather than every row between flicking past (and asking for its logo).
+     */
+    fun scrollStart(from: Float, to: Float, longest: Float, glide: Float): Float = when {
+        abs(to - from) <= longest -> from
+        to < from -> to + glide
+        else -> to - glide
+    }
 }
 
 /**
@@ -141,6 +178,12 @@ class FocusGlide {
     fun shiftX(dx: Float) {
         fromLeft += dx
         fromRight += dx
+    }
+
+    /** The rows jumped by [dy] pixels of content (a long move): the start moves with them, so it stays put on screen. */
+    fun shiftY(dy: Float) {
+        fromTop += dy
+        fromBottom += dy
     }
 
     /** Works out the highlight for this frame, gliding towards the focused cell's rect. */

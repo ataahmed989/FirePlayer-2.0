@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import app.fireplayer.R
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.ListMath
 
 /**
  * The left tab rail: the one FirePlayer brand mark, then the tabs. It sits collapsed (icons only) while the page has
@@ -103,8 +104,8 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
                 if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener isRailKey(keyCode)
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_RIGHT -> { open(tab); true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { step(tab, +1); true }
-                    KeyEvent.KEYCODE_DPAD_UP -> { step(tab, -1); true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { step(tab, down = true, held = event.repeatCount > 0); true }
+                    KeyEvent.KEYCODE_DPAD_UP -> { step(tab, down = false, held = event.repeatCount > 0); true }
                     KeyEvent.KEYCODE_DPAD_LEFT -> true // nothing to the left of the rail
                     else -> false
                 }
@@ -121,10 +122,14 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         onEnterPage?.invoke()
     }
 
-    /** Up/Down: the previous or next tab; at the first or last tab focus stays where it is. */
-    private fun step(from: Tab, by: Int) {
+    /**
+     * Up/Down: the previous or next tab. Down from the last tab goes round to the first and Up from the first to the
+     * last; [held], it stops there instead (holding the D-pad doesn't go round and round).
+     */
+    private fun step(from: Tab, down: Boolean, held: Boolean) {
         val tabs = items.keys.toList()
-        tabs.getOrNull(tabs.indexOf(from) + by)?.let { items[it]?.requestFocus() }
+        val to = ListMath.step(tabs.indexOf(from), tabs.size, down, held) { true }
+        if (to >= 0) items[tabs[to]]?.requestFocus()
     }
 
     /**

@@ -3,7 +3,6 @@ package app.fireplayer.live.ui
 import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
@@ -22,6 +21,7 @@ import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.Programme
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.ListMath
 import java.util.Date
 import java.util.Locale
 import kotlin.math.ceil
@@ -36,12 +36,13 @@ import kotlin.math.roundToInt
  * It draws no panel of its own: the rows, cells and header sit straight on the page's wallpaper (classic: dark rounded
  * cells; glass: light tints with a rim).
  *
- * The D-pad moves a focus cell: up/down keep the same time column, left/right step programme by programme, and the
- * time window scrolls in half-hour steps. The white highlight glides from cell to cell, in step with the rows and the
- * time window sliding (one animator drives all three, so they never drift apart). Left from the programme on air
- * leaves the grid ([Callbacks.onLeaveLeft]), which shows the playlist/group column again. Nothing here starts
- * playback: [Callbacks.onPick] (Center, on release) decides; Center held opens the channel's small window instead
- * ([Callbacks.onHold]).
+ * The D-pad moves a focus cell: up/down keep the same time column (and go round from the last channel to the first and
+ * back on a fresh press), left/right step programme by programme, and the time window scrolls in half-hour steps. The
+ * rows run down to the bottom edge, the last one cut there. The white highlight glides from cell to cell, in step
+ * with the rows and the time window sliding (one animator drives all three, so they never drift apart). Left from the
+ * programme on air leaves the grid ([Callbacks.onLeaveLeft]), which shows the playlist/group column again. Nothing
+ * here starts playback: [Callbacks.onPick] (Center, on release) decides; Center held opens the channel's small window
+ * instead ([Callbacks.onHold]).
  */
 class GuideView(context: Context, private val t: Tokens) : View(context) {
 
@@ -52,7 +53,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         fun onHold(channel: Channel)
         fun onLeaveLeft()
         fun needProgrammes(channels: List<Channel>, from: Long, to: Long)
-        fun logo(url: String): Bitmap?
+        /** [url]'s logo with its plate, if it has loaded (never waits for it). */
+        fun logo(url: String): Logo?
     }
 
     var callbacks: Callbacks? = null
@@ -110,9 +112,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     val channelColumnWidth: Int get() = channelTo.roundToInt()
 
     /**
-     * The height in pixels that shows the time header and exactly [rows] channel rows (29 dp each): sized to it, the
-     * guide never shows a cut row at the bottom. Any other height works too; the rows below the last whole one are
-     * not drawn at rest.
+     * The height in pixels that shows the time header and exactly [rows] channel rows (29 dp each). Any other height
+     * works too: the rows run on to the bottom edge, the one under the last whole row cut there (never focused: focus
+     * and scrolling count whole rows only, [GuideCells.wholeRows]).
      */
     fun heightFor(rows: Int): Int = ceil(headerH + rows.coerceAtLeast(1) * rowH).toInt()
 
@@ -174,7 +176,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(1f) }
     private val nowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent; strokeWidth = t.dpf(2f) }
-    private val logoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    /** Channel logos on their plates (paints made once). */
+    private val plates = PlateDrawer(t.density)
     private val marker = Path()
     private val rect = RectF()
     private val focusRect = RectF()
@@ -362,8 +365,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         // A held key repeats every ~50 ms: each move is a short glide, so the highlight keeps up without jumping.
         val d = if (event.repeatCount > 0) REPEAT_MS else MOVE_MS
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> { if (focusRow > 0) moveTo(focusRow - 1, d) else return true }
-            KeyEvent.KEYCODE_DPAD_DOWN -> { if (focusRow < channels.size - 1) moveTo(focusRow + 1, d) }
+            // Down from the last channel goes round to the first, Up from the first to the last; held, they stop at
+            // the end (holding Down doesn't go round and round).
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                val to = ListMath.step(focusRow, channels.size, keyCode == KeyEvent.KEYCODE_DPAD_DOWN, event.repeatCount > 0) { true }
+                if (to >= 0) moveTo(to, d)
+            }
             KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_CHANNEL_UP -> moveTo((focusRow - visibleRows()).coerceAtLeast(0), d)
             KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> moveTo((focusRow + visibleRows()).coerceAtMost(channels.size - 1), d)
             KeyEvent.KEYCODE_DPAD_RIGHT -> step(+1, d)
@@ -446,23 +453,25 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val animate = duration > 0L && height > 0
         if (animate) beginGlide()
         focusRow = row
-        startMotion(targetScroll(row) * rowH, windowX, if (animate) duration else 0L)
+        val to = targetScroll(row) * rowH
+        if (animate) {
+            // Further than a screen (round from the last channel to the first): the rows jump to a few rows short and
+            // glide the rest. The highlight's start moves with the jump, so it glides on from where it is on screen.
+            val from = GuideCells.scrollStart(scrollY, to, visibleRows() * rowH, LONG_GLIDE_ROWS * rowH)
+            if (from != scrollY) {
+                glide.shiftY(from - scrollY)
+                scrollY = from
+            }
+        }
+        startMotion(to, windowX, if (animate) duration else 0L)
         ensureLoaded()
         notifyFocus()
         invalidate()
     }
 
-    /** First visible row that keeps the focus row one row inside the edges where it can. */
-    private fun targetScroll(row: Int): Int {
-        val visible = visibleRows()
-        val top = (scrollTarget / rowH).roundToInt()
-        val maxTop = (channels.size - visible).coerceAtLeast(0)
-        return when {
-            row < top + 1 -> row - 1
-            row > top + visible - 2 -> row - visible + 2
-            else -> top
-        }.coerceIn(0, maxTop)
-    }
+    /** First visible row that keeps the focus row one row inside the edges where it can ([GuideCells.topFor]). */
+    private fun targetScroll(row: Int): Int =
+        GuideCells.topFor(row, (scrollTarget / rowH).roundToInt(), visibleRows(), channels.size)
 
     /** The highlight starts gliding from where it's drawn now (called before the focus changes). */
     private fun beginGlide() {
@@ -510,7 +519,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         scrollTarget = y
     }
 
-    private fun visibleRows(): Int = ((height - headerH) / rowH).toInt().coerceAtLeast(1)
+    /** Whole rows on screen (the cut one under them doesn't count). */
+    private fun visibleRows(): Int = GuideCells.wholeRows(height.toFloat(), headerH, rowH)
 
     /** The time window's length once the channel column has settled (what loading and stepping plan for). */
     private fun windowMs(): Long = (((width - channelTo) / pxPerMin) * 60_000).toLong().coerceAtLeast(GuideCells.SLOT_MS)
@@ -614,8 +624,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val w = width.toFloat()
         drawWs = windowStart - (windowX / pxPerMin * 60_000).toLong()
         val wEnd = drawWs + ((w - channelW) / pxPerMin * 60_000).toLong()
-        // Whole rows only at rest (a row cut at the bottom shows only while the rows slide).
-        rowsBottom = minOf(height.toFloat(), headerH + visibleRows() * rowH)
+        // The rows run down to the bottom edge, the last one cut there: the list goes on. Focus stays on whole rows.
+        rowsBottom = height.toFloat()
 
         drawHeader(canvas, now, wEnd)
 
@@ -689,13 +699,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         canvas.drawText(numbers[r], numberRight, baseline(cy, numberPaint), numberPaint)
 
         val lx = numberRight + logoGap
-        val bmp = ch.logo?.let { callbacks?.logo(it) }
-        if (bmp != null && bmp.width > 0 && bmp.height > 0) {
-            val s = minOf(logoW / bmp.width, logoH / bmp.height)
-            val bw = bmp.width * s
-            val bh = bmp.height * s
-            rect.set(lx + (logoW - bw) / 2, cy - bh / 2, lx + (logoW + bw) / 2, cy + bh / 2)
-            canvas.drawBitmap(bmp, null, rect, logoPaint)
+        val url = ch.logo
+        val logo = if (url != null) callbacks?.logo(url) else null
+        if (logo != null) {
+            // On its plate, so dark logos show on the dark wallpaper too (the same plate as the details' and full screen's).
+            plates.draw(canvas, logo, lx, cy - logoH / 2, lx + logoW, cy + logoH / 2)
         } else {
             fill.color = LOGO_EMPTY
             rect.set(lx, cy - logoH / 2, lx + logoW, cy + logoH / 2)
@@ -882,6 +890,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         const val MOVE_MS = 150L
         /** A move while a key is held (repeats): short, so the highlight keeps up with the focus. */
         const val REPEAT_MS = 80L
+        /** A move further than a screen glides only this many rows (the rest is a jump). */
+        const val LONG_GLIDE_ROWS = 3
         /** The width is taken as settled once it hasn't changed for this long. */
         const val WIDTH_SETTLE_MS = 120L
 

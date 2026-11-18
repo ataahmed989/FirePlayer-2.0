@@ -1,7 +1,6 @@
 package app.fireplayer.live.ui
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -69,7 +68,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     private val bottom: View = findViewById(R.id.live_bottom)
     private val scrimTop: View = findViewById(R.id.live_scrim_top)
     private val scrimBottom: View = findViewById(R.id.live_scrim_bottom)
-    private val logo: ImageView = findViewById(R.id.live_logo)
+    private val logo: LogoView = findViewById(R.id.live_logo)
     private val logoDivider: View = findViewById(R.id.live_logo_divider)
     private val channelName: TextView = findViewById(R.id.live_channel)
     private val title: TextView = findViewById(R.id.live_title)
@@ -210,11 +209,12 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
 
     // ---- Content --------------------------------------------------------------------------------------------------
 
-    fun setChannel(channel: Channel, now: Programme?, nextUp: Programme?, playlistName: String, logoBitmap: Bitmap?, clockNow: Long) {
+    fun setChannel(channel: Channel, now: Programme?, nextUp: Programme?, playlistName: String, channelLogo: Logo?, clockNow: Long) {
         val tf = DateFormat.getTimeFormat(context)
         channelName.text = channel.name
-        if (logoBitmap != null) logo.setImageBitmap(logoBitmap)
-        logo.visibility = if (logoBitmap != null) VISIBLE else GONE
+        // On its plate, as in the guide (a dark logo shows on the dark picture's scrim too).
+        logo.set(channelLogo)
+        logo.visibility = if (channelLogo != null) VISIBLE else GONE
         logoDivider.visibility = logo.visibility
         title.text = now?.title?.takeIf { it.isNotBlank() } ?: channel.name
         schedule.text = if (now != null) "${tf.format(Date(now.start))} – ${tf.format(Date(now.stop))}" else ""

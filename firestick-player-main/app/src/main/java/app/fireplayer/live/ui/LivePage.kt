@@ -2,7 +2,6 @@ package app.fireplayer.live.ui
 
 import android.app.Activity
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
@@ -43,8 +42,10 @@ import java.util.concurrent.Executors
  * ([HoldPopup]): a channel's star and Assign favorites, a group's Move to top and Hide category.
  *
  * Full screen: with the controls hidden, Up/Down and Channel +/- change channel (or only Channel +/- when
- * "Channel buttons only" is set, and then Up/Down show the controls); Center shows the controls; Back returns to
- * the guide with its group, channel and time as they were. With the controls shown, the D-pad moves round them and
+ * "Channel buttons only" is set, and then Up/Down show the controls): Up and Channel + to the next channel down the
+ * guide's list, Down and Channel - to the one before. Center shows the controls; Back returns to the guide with its
+ * group, channel and time as they were; TV Guide (the button or the remote's Guide key) returns to it on the channel
+ * playing, on what's on now ([focusPlaying]). With the controls shown, the D-pad moves round them and
  * Back hides them first; Down swaps the buttons for the extra row ([LiveMore]: audio, display size, dimmer, sleep
  * timer, settings) and Up brings them back, as in the VOD player.
  */
@@ -118,6 +119,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** Back from full screen while the content moves: the shrink waits for the layout that puts the slot in place. */
     private var shrinkPending = false
     private val details = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+    /** The channel's logo on its plate, before its name on the details' top line (as in the guide's rows). */
+    private val detailLogo = LogoView(ctx)
     private val detailChannel = t.label(ctx, 15f, t.regular, t.text)
     private val detailStar = android.widget.ImageView(ctx)
     private val detailTitle = t.label(ctx, 25f, t.bold)
@@ -147,7 +150,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** Where the selection goes when the small window closes: the held cell, or the group's row (or the one in its place). */
     private var popupFocusBack: (() -> Unit)? = null
 
-    private val logos = LogoCache(t.dp(76)) { guide.invalidate(); refreshControls() }
+    private val logos = LogoCache(t.dp(76)) { url, loaded ->
+        if (loaded) {
+            guide.invalidate()
+            refreshControls()
+        }
+        // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
+        detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
+    }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
     /** The viewer's own changes (favorites) are stored here, not queued behind the guide's reads. */
     private val writes = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuideWrites") }
@@ -174,6 +184,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val miniW = t.dp(368)
     private val miniH = t.dp(207)
     private val gap = t.dp(12)
+    /** The details' logo: the guide rows' logo box, and the room before the name when there's one. */
+    private val detailLogoW = t.dp(46)
+    private val detailLogoH = t.dp(26)
+    private val detailNameInset = detailLogoW + t.dp(10)
     private val openInset = railSpace + columnW + gap
     private val closedInset = gap
 
@@ -205,11 +219,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Content: the miniature and its details on top, the guide under them.
         val topRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         topRow.addView(videoSlot, LinearLayout.LayoutParams(miniW, miniH))
+        // The top line: [logo] Channel name … star. Its height is the logo's, logo or not, so the lines under it never
+        // move; a channel without a logo has its name moved over to the start by a transform ([showDetailLogo]).
         val head = FrameLayout(ctx)
-        head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = t.dp(34) })
+        head.addView(detailLogo, FrameLayout.LayoutParams(detailLogoW, detailLogoH, Gravity.LEFT or Gravity.CENTER_VERTICAL))
+        head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL).apply {
+            leftMargin = detailNameInset; rightMargin = t.dp(34)
+        })
         detailStar.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
         head.addView(detailStar, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
-        details.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        details.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, detailLogoH))
         // Full width, one line each: a new channel's text only redraws them (nothing is laid out again as focus moves).
         detailTitle.maxLines = 1
         detailTitle.ellipsize = android.text.TextUtils.TruncateAt.END
@@ -232,8 +251,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
         topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(18) })
         content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
         content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
+        // Down to the screen's bottom edge: the guide's rows run on to it, the last one cut there (the list goes on).
         guideLayer.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            leftMargin = closedInset; topMargin = t.dp(14); rightMargin = gap; bottomMargin = t.dp(4)
+            leftMargin = closedInset; topMargin = t.dp(14); rightMargin = gap
         })
         content.translationX = shift.toFloat()
         root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -409,7 +429,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onHold(channel: Channel) = openChannelPopup(channel)
             override fun onLeaveLeft() = openSidebar(focus = true)
             override fun needProgrammes(channels: List<Channel>, from: Long, to: Long) = loadProgrammes(channels, from, to)
-            override fun logo(url: String): Bitmap? = logos.get(url)
+            override fun logo(url: String): Logo? = logos.get(url)
         }
         guide.setOnFocusChangeListener { _, has -> if (has) closeSidebar() }
         sidebar.callbacks = object : GuideSidebar.Callbacks {
@@ -433,7 +453,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onHold(scope: GuideScope.Group, name: String, row: View) = openGroupPopup(scope, name, row)
         }
         controls.actions = object : LiveControls.Actions {
-            override fun onGuide() = toGuide()
+            override fun onGuide() = toGuide(toPlaying = true)
             override fun onHistory() = showHistory()
             override fun onCaptions() = chooseCaptions()
             override fun onFavorite() { toggleFavorite() }
@@ -596,18 +616,23 @@ class LivePage(private val activity: Activity, private val host: Host) {
             val list = db.channels(s)
             main.post {
                 if (serial != loadSerial || released) return@post
-                shownScope = s
-                loadingScope = null
-                guide.clearProgrammes()
-                guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
-                if (list.isEmpty()) {
-                    showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
-                        if (sync.busy) "Updating the playlist…" else "No channels here.")
-                }
-                if ((enterGrid || pendingEnter) && list.isNotEmpty()) guide.requestFocus()
-                pendingEnter = false
+                showChannels(s, list, focus, enterGrid)
             }
         }
+    }
+
+    /** [s]'s [list] arrived: the guide shows it, focus on [focus] (else the channel playing, else the last focused). */
+    private fun showChannels(s: GuideScope, list: List<Channel>, focus: ChannelKey?, enterGrid: Boolean) {
+        shownScope = s
+        loadingScope = null
+        guide.clearProgrammes()
+        guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
+        if (list.isEmpty()) {
+            showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
+                if (sync.busy) "Updating the playlist…" else "No channels here.")
+        }
+        if ((enterGrid || pendingEnter) && list.isNotEmpty()) guide.requestFocus()
+        pendingEnter = false
     }
 
     private fun loadProgrammes(channels: List<Channel>, from: Long, to: Long) {
@@ -656,7 +681,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         prefs.focus = channel.key
         val p = cell?.programme
         val tf = DateFormat.getTimeFormat(ctx)
-        // Channel, then its title; under it where the channel is: "Playlist • Group" (the concepts).
+        // Channel (its logo first), then its title; under it where the channel is: "Playlist • Group" (the concepts).
+        showDetailLogo(channel)
         detailChannel.text = channel.name
         detailStar.setImageResource(if (channel.favorite) app.fireplayer.R.drawable.ic_star_filled else app.fireplayer.R.drawable.ic_star)
         detailStar.alpha = if (channel.favorite) 1f else 0.7f
@@ -695,6 +721,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Nothing focused: the clock's refresh mustn't bring back the previous scope's channel.
         detailChannelObj = null
         detailCell = null
+        showDetailLogo(null)
         detailChannel.text = ""
         detailStar.visibility = View.INVISIBLE
         detailMeta.text = ""
@@ -704,6 +731,19 @@ class LivePage(private val activity: Activity, private val host: Host) {
         detailLeft.text = ""
         detailDesc.text = ""
         detailNext.text = ""
+    }
+
+    /**
+     * [channel]'s logo before its name on the details' top line: the guide's, on the same plate; a logo still on its
+     * way shows its plate already, so the name doesn't move when it lands. No logo: the name alone at the line's
+     * start, moved there by a transform (the line keeps its height and nothing is laid out again as focus moves).
+     */
+    private fun showDetailLogo(channel: Channel?) {
+        val url = channel?.logo
+        val logo = url?.let { logos.get(it) }
+        val plate = logo != null || (url != null && !logos.missing(url))
+        detailLogo.set(logo, plate)
+        detailChannel.translationX = if (plate) 0f else -detailNameInset.toFloat()
     }
 
     private fun formatDelay(ms: Long): String {
@@ -837,7 +877,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         main.postDelayed(hideControls, INFO_MS)
     }
 
-    fun toGuide() {
+    /**
+     * Back to the guide from full screen. [toPlaying] (TV Guide): focus on the channel playing, on what's on now
+     * ([focusPlaying]); otherwise (Back) where the guide was, unless the channel changed in full screen.
+     */
+    fun toGuide(toPlaying: Boolean = false) {
         if (!fullScreen) return
         fullScreen = false
         revealKey = 0
@@ -860,12 +904,50 @@ class LivePage(private val activity: Activity, private val host: Host) {
             guideLayer.animate().alpha(1f).setDuration(SHRINK_MS).setInterpolator(EASE).withLayer().start()
             if (rectOf(videoSlot) == null) shrinkPending = true else placeMini(SHRINK_MS)
         }
-        // Back to where the guide was, unless the channel changed in full screen: then to that channel.
-        val playing = ChannelKey.parse(player.currentKey)
-        if (zappedInFull && playing != null) guide.focusChannel(playing)
-        else focusBeforeFull?.let { k -> if (guide.focusedChannel()?.key != k) guide.focusChannel(k) }
+        // TV Guide: on the channel playing. Back (or the playing channel is in another list, which takes a moment to
+        // read): where the guide was, unless the channel changed in full screen: then to that channel.
+        if (!(toPlaying && focusPlaying())) {
+            val playing = ChannelKey.parse(player.currentKey)
+            if (zappedInFull && playing != null) guide.focusChannel(playing)
+            else focusBeforeFull?.let { k -> if (guide.focusedChannel()?.key != k) guide.focusChannel(k) }
+        }
         guide.requestFocus()
         scheduleIdle()
+    }
+
+    /**
+     * The guide's focus on the channel playing, on the programme on air (TV Guide in full screen); true when it's
+     * there now. When the list the guide shows hasn't got it (a channel from Channel History, say), the guide shows its
+     * group instead, else its playlist's All channels, with it focused there, once read; the groups column marks that
+     * entry and stays as it was. A list the viewer asks for meanwhile wins (one asked for before this doesn't).
+     */
+    private fun focusPlaying(): Boolean {
+        val key = ChannelKey.parse(player.currentKey) ?: return false
+        if (guide.channelList().any { it.key == key }) { guide.focusChannel(key); return true }
+        val known = playingChannel?.takeIf { it.key == key }
+        // The groups the column lists (a hidden group isn't one to show).
+        val shown = groupNames.keys
+        val serial = loadSerial
+        bg {
+            val ch = known ?: db.channel(key) ?: return@bg
+            val group = ch.groupId?.takeIf { (ch.playlistId to it) in shown }?.let { GuideScope.Group(ch.playlistId, it) }
+            for (s in listOfNotNull(group, GuideScope.AllChannels(ch.playlistId))) {
+                val list = db.channels(s)
+                if (list.none { it.key == key }) continue
+                main.post {
+                    if (serial != loadSerial || released || fullScreen || player.currentKey != key.toString()) return@post
+                    // Any list still on its way is older than this: it's dropped.
+                    ++loadSerial
+                    scope = s
+                    prefs.scope = s
+                    sidebar.select(s)
+                    showChannels(s, list, key, enterGrid = false)
+                    guide.focusChannel(key)
+                }
+                return@bg
+            }
+        }
+        return false
     }
 
     private fun refreshControls() {
@@ -1071,7 +1153,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         popupFocusBack = { if (!guide.requestFocus()) takeFocus() }
         // Beside the channel's name, over its programmes, inside the guide.
         val area = inRoot(guide, RectF(0f, 0f, guide.width.toFloat(), guide.height.toFloat()))
-        area.intersect(0f, 0f, root.width.toFloat(), root.height.toFloat())
+        // The guide runs down to the screen's edge: the window keeps a margin from it.
+        area.intersect(0f, 0f, root.width.toFloat(), root.height - gap.toFloat())
         popup.open(channel.name, listOf(starButton(channel.favorite), HoldPopup.Button("Assign favorites") { popupAssign() }), inRoot(guide, row), area)
     }
 
@@ -1271,6 +1354,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
             return true
         }
 
+        // The remote's Guide key: back to the guide on the channel playing, as the TV Guide button (controls up or not).
+        if (code == KeyEvent.KEYCODE_GUIDE) {
+            if (down && event.repeatCount == 0) toGuide(toPlaying = true)
+            return true
+        }
+
         if (controls.controlsShown) {
             // The key that showed the controls doesn't also act on them while it's held (design-layout).
             if (code == revealKey) {
@@ -1300,13 +1389,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (!down) return code in HANDLED_UP
         val channelButtonsOnly = prefs.channelButtonsOnly
         when (code) {
-            KeyEvent.KEYCODE_CHANNEL_UP -> zap(-1)
-            KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(+1)
-            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(-1)
-            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(+1)
+            // Up (and Channel +) goes on down the guide's list to the next channel, Down (Channel -) back to the one
+            // before (the user's choice), round at the ends.
+            KeyEvent.KEYCODE_CHANNEL_UP -> zap(+1)
+            KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(-1)
+            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(+1)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(-1)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> reveal(code, event)
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
-            KeyEvent.KEYCODE_GUIDE -> toGuide()
             else -> return false
         }
         return true

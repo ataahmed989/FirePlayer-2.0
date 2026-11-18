@@ -48,12 +48,11 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <ImageView
+                <!-- The channel's logo on its plate (LogoPlate), as in the guide and the details beside the miniature. -->
+                <app.fireplayer.live.ui.LogoView
                     android:id="@+id/live_logo"
-                    android:layout_width="36dp"
-                    android:layout_height="22dp"
-                    android:scaleType="fitCenter"
-                    android:importantForAccessibility="no" />
+                    android:layout_width="42dp"
+                    android:layout_height="24dp" />
 
                 <View
                     android:id="@+id/live_logo_divider"

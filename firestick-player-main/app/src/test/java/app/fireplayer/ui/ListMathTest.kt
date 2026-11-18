@@ -37,6 +37,21 @@ class ListMathTest {
         assertEquals(4, ListMath.step(1, 5, down = false, held = false, isRow = reorder))
     }
 
+    @Test fun listsOfRowsOnlyGoRoundToo() {
+        // The tab rail (Live TV, Settings), the groups column and the guide's channels: every entry is a row.
+        val all: (Int) -> Boolean = { true }
+        assertEquals(0, ListMath.step(1, 2, down = true, held = false, isRow = all))
+        assertEquals(1, ListMath.step(0, 2, down = false, held = false, isRow = all))
+        assertEquals(1, ListMath.step(0, 2, down = true, held = false, isRow = all))
+        assertEquals(0, ListMath.step(299, 300, down = true, held = false, isRow = all))
+        assertEquals(299, ListMath.step(0, 300, down = false, held = false, isRow = all))
+        // Held, the ends stop it; in between it moves on as usual.
+        assertEquals(-1, ListMath.step(299, 300, down = true, held = true, isRow = all))
+        assertEquals(-1, ListMath.step(0, 300, down = false, held = true, isRow = all))
+        assertEquals(151, ListMath.step(150, 300, down = true, held = true, isRow = all))
+        assertEquals(149, ListMath.step(150, 300, down = false, held = true, isRow = all))
+    }
+
     @Test fun aSingleRowStaysPut() {
         assertEquals(-1, ListMath.step(0, 1, down = true, held = false) { true })
         assertEquals(-1, ListMath.step(1, 2, down = false, held = false) { it == 1 })
