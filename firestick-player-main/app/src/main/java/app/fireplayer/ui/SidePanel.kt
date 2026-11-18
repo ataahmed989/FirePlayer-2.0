@@ -890,6 +890,7 @@ class SidePanel(private val activity: Activity) {
             "Xtream Codes parameters" to R.drawable.ic_head_tv,
             "M3U playlist" to R.drawable.ic_head_tv,
             "EPG sources" to R.drawable.ic_head_list,
+            "EPG" to R.drawable.ic_epg,
             "Groups" to R.drawable.ic_head_list,
             "Hide or show" to R.drawable.ic_head_look,
             "Order" to R.drawable.ic_head_list,
