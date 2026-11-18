@@ -388,6 +388,13 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   now sends a warmer grey (about RGB 33,27,22 at the top to 18,18,11 at the edge) that lands on the concept's teal-slate
   on this TV. On an accurate screen it looks brownish-grey; a per-TV choice (tuned for this TV / accurate) belongs on
   the This TV page later. Awaiting the user's side-by-side photo to refine.
+- 2026-11-18 · User: the TV-tuned grey looked clearly brown on the TV; drop TV tuning and the photo calibration. The
+  glass background is now the user's own 4K blurred beach with the spiral, "matched to the concept" (the less blue of
+  their two; `Wallpapers/Foggy-Blue-Beach-Light-Spiral-Tint-4K.png`, about RGB 19,30,41 at the top to 11,18,22 at the
+  bottom). Shipped as `wallpaper_glass.png` at the screen's 1920 × 1080 (an exact 2:1 average, with fine grain like the
+  original's so dark gradients don't band), lossless: JPEG, even at quality 100, moved pixels up to 4 levels and
+  nudged the average red. Their bluer "TV look" version (`…-TV-Look-4K.png`) is the next to try if this one isn't blue
+  enough.
 - 2026-11-18 · User (second playback check): no shrinking film buffer under memory pressure; FirePlayer 2.0 frees memory
   before VOD playback (Live TV, page images, caches) while keeping returns instant (snapshot); background release only
   after a delay; no Glass Home changes until integration; test a second download connection before building it.
