@@ -35,6 +35,27 @@ Local Windows environment verified: JAVA_HOME=C:/Program Files/Microsoft/jdk-17.
 
 BUILD_NUMBER controls version code/name; unset defaults to code 1. Before producing an update for installed devices, choose a code greater than installed/released builds rather than guessing. EXTRA_ABIS is optional for emulator architecture, not required for ARM releases. Preserve existing package, signing identity and ContinueProvider authority `app.fireplayer.continue`. Do not publish a release or overwrite user installations as part of initial verification.
 
+## November 18, 2026 update: films and shows
+
+Supersedes the line below that says "Addon integration is not agreed scope" and "Independent catalogs must load from
+configured playlists" for films and shows. Full decisions: design-brief.md §6; reasoning and history: design-layout.md
+decisions log (2026-11-18 VOD entries).
+
+- Films and shows come from Stremio add-ons the user already uses: Cinemeta (rows, details, episodes; IMDb ids) and
+  TMDB (Top 10, extras; the user's key) for browsing; Torrentio (Real-Debrid) and MediaFusion (ElfHosted,
+  Real-Debrid) for playback only. IPTV playlist films and shows are excluded. Local Files, YouTube and Public Domain
+  are not used.
+- Add-on URLs contain the user's Real-Debrid key or config. Never request them in chat, never log, print, commit or
+  store them in plain text, and never store resolved links. The user enters them on the TV.
+- No syncing of any kind. Glass Home shows FirePlayer 2.0's Continue Watching once 2.0 replaces 1.0.
+- Posters open a title page (layout A); Continue rows and Glass Home go straight to playback on the same file.
+- Playback keeps FirePlayer 1.0's player design and capabilities, plus the four-stage start/switch rules, the
+  not-on-Real-Debrid "ask once" rule and the per-TV best-source plan (This TV page).
+- Eight player fixes were approved after a playback test on the user's 4K Max (design-brief.md §6.6).
+- Card and header sizes are not designed yet: do that with the user before building the pages.
+- The user's main TV is a Samsung TU7000 (HDR10/HDR10+/HLG, no Dolby Vision); a second Fire TV Stick sits on a better
+  TV. HDR only works with Input Signal Plus on for the Stick's HDMI input (now on).
+
 ## Product requirements that must survive implementation
 
 - One app combines Home, Movies, TV Shows, Live TV, My List, Search, Settings. Independent catalogs must load from configured playlists; do not depend on TiviMate filling TitleBook. No Trakt. Addon integration is not agreed scope.

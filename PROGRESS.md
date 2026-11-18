@@ -146,10 +146,20 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - [x] Wrap-around (channel list), TV Guide on the playing channel, Channel + down the list, Playlists & EPG, Live TV
       buffer, darker glass — on the Max.
 
-## 4. Catalogs, Home, navigation (handoff step 4) — not started
+## 3f. Playback check on the Max (November 18)
 
-- [ ] Independent VOD catalogs from playlists; Home rail/hero/shelves (Home becomes the launcher destination when it
-      works); title details; Smart Play; Continue Watching in-process (ContinueProvider untouched).
+- [x] Choppy 4K Dolby Vision + HDR10+ film measured (SurfaceFlinger frame timing, memory, CPU, decoder log): about 1
+      frame in 6 lost in the user's session; smooth in a 10-minute replay; smooth after HDR was enabled on the TV
+      (Samsung Input Signal Plus). Causes and the eight approved fixes: design-brief.md §6.6.
+- [ ] Player fixes 1–8 in FirePlayer 2.0.
+
+## 4. Films, shows, Home, navigation (handoff step 4) — planned, not built
+
+- [x] Plan agreed with the user (design-brief.md §6): add-on sources, title page, Continue rows, playback stages,
+      Sources panel, no sync, best source per TV.
+- [ ] Card and header sizes, with the user.
+- [ ] Build: Cinemeta/TMDB catalogs, Home/Movies/TV Shows rows, title page, add-on source finder, Sources panel,
+      Continue Watching in-process (ContinueProvider untouched); Home becomes the launcher destination when it works.
 
 ## 5. Across-tab live window, PiP, Multiview, settings (handoff step 5) — not started
 

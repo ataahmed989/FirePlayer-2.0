@@ -136,10 +136,13 @@ Source checked: app/src/main/java/app/fireplayer/ui/SettingsPanels.kt.
 - Accessibility: text size, contrast/transparency, motion and long-press discoverability.
 - Settings change scope, reset behavior, destructive-action handling and credential validation status.
 - Generated images cannot prove timing, motion or remote behavior; those need an interactive review later.
+- Films and shows: card and header sizes for Home, Movies, TV Shows and the title page (to set with the user from the
+  approved Home concept).
 
 ## Architecture questions carried forward
 
-- Define independent VOD catalog import/refresh; do not rely on TiviMate warming TitleBook. Addon scope is unresolved.
+- Resolved 2026-11-18: films and shows come from Stremio add-ons (Cinemeta, TMDB for browsing; Torrentio and
+  MediaFusion for playback); see design-brief.md §6. IPTV films and shows are excluded.
 - Define correct-title/episode verification, startup fallback and failure-during-playback rules.
 - Provider-wide playback/probe coordination is needed in addition to per-tile serialization.
 - Resolve shared persistence ownership across titles.db and live.db and the separate title-service process.
@@ -354,6 +357,29 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-18 · Settings consistency pass (user: headers with icons everywhere, consistent option layouts) and a review of
   the round: 15 confirmed bugs fixed (e.g. a paused live channel no longer goes full screen on a frozen frame; a hidden
   group can't come back through TV Guide; Play/Pause reaches live while a window has focus).
+
+- 2026-11-18 · User (films and shows, after three proposal rounds): titles from Cinemeta + TMDB; playback from the
+  user's Torrentio and MediaFusion add-ons only when needed; one poster per IMDb id; IPTV films and shows excluded;
+  Local Files not used. Full list in design-brief.md §6.
+- 2026-11-18 · User: wait for both add-ons before starting; at the first-loading limit ask "Keep waiting / Try next
+  source"; switching numbers approved (30 s settling; 3 stalls in 2 min, one over 20 s or 25% of 2 min; 3 tries,
+  2 switches, 3 min apart); sources not on Real-Debrid yet never automatic, ask once.
+- 2026-11-18 · User: no syncing of any kind (Stremio sync judged too fragile: private API, a bad write can empty a
+  Stremio library). FirePlayer keeps its own history; Glass Home shows it.
+- 2026-11-18 · User: posters open a title page with Play, Play from beginning (once started; restarts the current
+  episode on shows), Episodes, More Like This, Sources; layout A (rows on the page). Continue rows go straight to
+  playback on the same file (Continue Watching on Home mixes films and series; Movies has films only; TV Shows has
+  Continue Series), like Glass Home. Sources are looked up when a title page opens.
+- 2026-11-18 · User: Movies/TV Shows header rotates the page's Top 10 while idle and shows the focused title only
+  along the Continue row (same on Home). 15 posters per row; hold OK: My List, Mark watched; MediaFusion rows off.
+- 2026-11-18 · User: title rows scroll like the Episodes sheet (chosen tile at the left edge, grows, one per press,
+  held D-pad glides).
+- 2026-11-18 · User: best source depends on each TV (a This TV page in Settings); no file-size limit for now.
+- 2026-11-18 · Playback test on the Max (Spider-Man: Brand New Day, 4K DV + HDR10+, 26 Mb/s, MediaFusion): about
+  1 frame in 6 lost in the user's session, smooth in a replay and after HDR was enabled. Contributors: the Stick out
+  of memory, FirePlayer's ~230 MB film buffer and ~100 MB graphics held after the menu opened with Glass look on,
+  the TV reporting no HDR (Samsung Input Signal Plus was off; now on). User approved eight player fixes
+  (design-brief.md §6.6), keeping the Glass look with an automatic lower refresh in 4K HDR.
 
 ## Concept references (local preview artifacts)
 
