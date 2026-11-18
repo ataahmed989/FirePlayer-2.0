@@ -188,6 +188,10 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
   - the concept's premium glass windows and tab-window glass, icons and logo; on pages other than Live TV the rail
     animates into an edged glass "bubble" window (Live TV keeps its slim strip);
   - responsive navigation tweaks in the TV guide and in the Movies and TV Shows title rows.
+- [ ] **Channel up/down stays in the playing channel's group** (user, 2026-11-18). Today `LivePage.zap` steps through
+      the guide's current list (`guide.channelList()`), so after browsing another group in the guide it jumps into that
+      group, and to its first channel when the playing one isn't in it. Change: step (and wrap) within the group the
+      playing channel was started from, whichever group the guide shows.
 - [ ] Glass Home integration (small changes; shows FirePlayer 2.0's Continue Watching); FirePlayer 2.0 replaces 1.0.
 
 ## Contracts that must keep working (checked at every increment)
