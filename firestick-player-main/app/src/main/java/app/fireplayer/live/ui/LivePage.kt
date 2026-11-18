@@ -1253,6 +1253,21 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
         if (code == KeyEvent.KEYCODE_BACK) return back(event)
 
+        // Play/Pause in the guide: the miniature's channel pauses or carries on, as in full screen, with a word to say so.
+        // Never left unused: Android would hand it to the last app that played something (a paused Stremio film,
+        // seen on the Fire TV), which would start playing behind this page.
+        if (!fullScreen && code in PLAY_PAUSE_KEYS) {
+            if (down && event.repeatCount == 0 && player.playingKey != null && player.status().error == null) {
+                val wantsPause = code == KeyEvent.KEYCODE_MEDIA_PAUSE
+                val wantsPlay = code == KeyEvent.KEYCODE_MEDIA_PLAY
+                if ((wantsPause && !player.paused) || (wantsPlay && player.paused) || (!wantsPause && !wantsPlay)) {
+                    player.togglePause()
+                    showNotice(if (player.paused) "Paused" else "Playing")
+                }
+            }
+            return true
+        }
+
         // Menu over a small window: it closes first (the selection back where it was), then Settings opens as usual.
         if (code == KeyEvent.KEYCODE_MENU && down && popup.isOpen) popup.close(fade = false)
 

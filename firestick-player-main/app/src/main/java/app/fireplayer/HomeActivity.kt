@@ -752,6 +752,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
+        // Media buttons this screen didn't use stay here. Left to Android, they go to the last app that played
+        // something: on the Fire TV, Play/Pause over this screen started a paused Stremio film playing behind it.
+        if (event.keyCode in MEDIA_KEYS) return true
         // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
         // pressed again, it closes the window.
         if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsPage.isInitialized) {
@@ -805,6 +808,12 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+        /** The remote's (and Alexa's) media buttons. */
+        private val MEDIA_KEYS = setOf(
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_STOP, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND,
+            KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+        )
 
         // The Settings tab's sizes, in dp (see settingsColumns).
         private const val ROW_DP = 44
