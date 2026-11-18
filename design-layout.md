@@ -382,6 +382,12 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   concept's background (deep teal-navy, lighter at the top, darker towards the bottom: about RGB 18,36,49 at the top to
   8,14,21 at the bottom, with almost no red). Made from Wallpapers/Foggy-Blue-Beach-Light-Spiral-Blurred.png by mapping
   each row's brightness and tint to the concept's page edges while keeping the image's own detail.
+- 2026-11-18 · User: keep the Samsung TU7000's picture settings (Standard colour tone, gamma BT.1886 +3, Color 27, Contrast
+  35, Brightness 50) and tune the background on FirePlayer's side to look like the concept on the iPad. Measured from a
+  photo with both in the same shot, the TV roughly doubles blue and crushes red in dark tones, so the glass background
+  now sends a warmer grey (about RGB 33,27,22 at the top to 18,18,11 at the edge) that lands on the concept's teal-slate
+  on this TV. On an accurate screen it looks brownish-grey; a per-TV choice (tuned for this TV / accurate) belongs on
+  the This TV page later. Awaiting the user's side-by-side photo to refine.
 - 2026-11-18 · User (second playback check): no shrinking film buffer under memory pressure; FirePlayer 2.0 frees memory
   before VOD playback (Live TV, page images, caches) while keeping returns instant (snapshot); background release only
   after a delay; no Glass Home changes until integration; test a second download connection before building it.
