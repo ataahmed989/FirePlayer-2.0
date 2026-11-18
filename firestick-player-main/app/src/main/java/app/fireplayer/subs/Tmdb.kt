@@ -267,6 +267,20 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         return imdb?.let { Ids(it, runtime) }
     }
 
+    /** This week's trending films or shows (page 1, 20 titles) as TMDB sends them, for Top 10 rows. Blocks. */
+    fun trendingThisWeek(show: Boolean): String =
+        request("trending/${if (show) "tv" else "movie"}/week", listOf("language" to "en-US"))
+
+    /**
+     * A film's or show's external ids (IMDb's among them) as TMDB sends them; null when TMDB has no such title. Not
+     * remembered here: Top 10 keeps what it finds itself, letting a missing IMDb id be asked again days later. Blocks.
+     */
+    fun externalIds(id: Int, show: Boolean): String? = try {
+        request("${if (show) "tv" else "movie"}/$id/external_ids", emptyList())
+    } catch (e: HttpError) {
+        if (e.code == 404) null else throw e
+    }
+
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
     class TvEpisode(
         val id: Int,
