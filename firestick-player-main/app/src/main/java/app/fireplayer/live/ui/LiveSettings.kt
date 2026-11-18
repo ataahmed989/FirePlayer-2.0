@@ -34,13 +34,16 @@ import java.util.concurrent.Executors
 
 /**
  * Live TV's settings windows, in the shared SidePanel:
- * - Live FirePlayer Settings ([openPlayerSettings], over Live TV: Menu or the Settings button): Playlists and EPG, then
- *   the shared Remote / Look / Defaults / Statuses / App sections ([SettingsPanels.renderPlayerLive]).
+ * - Live FirePlayer Settings ([openPlayerSettings], over Live TV: Menu or the Settings button): Playlists and EPG
+ *   ([playlistsAndEpg]), then the shared Remote / Look / Defaults / Playback / Statuses / App sections
+ *   ([SettingsPanels.renderPlayerLive]).
+ * - Manage playlists (Add playlist, Reorder playlists) and Manage EPG sources (each playlist's EPG, Days to keep EPG,
+ *   Update interval, Update EPG, Clear EPG): wide windows under Playlists and EPG.
  * - Individual playlist settings (name, EPG sources, Xtream parameters or M3U link, account, Manage groups, updates).
  * - Manage groups (hide or show each group, all, new ones; reorder the shown ones; Assign favorites) and Reorder
  *   playlists: wide windows, long lists ([SidePanel.longList]) so 350 groups open at once.
  * - Assign favorites (a playlist's groups, then a group's channels: OK stars one), also opened from the guide.
- * - The Settings tab's Playlists, EPG and Live TV windows, built from the same pieces.
+ * - The Settings tab's Playlists & EPG and Live TV windows, built from the same pieces.
  * Saved passwords are never shown, nor an M3U link (it often carries the sign-in): only that one is saved.
  */
 class LiveSettings(private val activity: Activity, private val panel: SidePanel) {
@@ -132,14 +135,26 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     // ---- Live FirePlayer Settings (the contextual window over Live TV) ---------------------------------------------
 
-    /** Live FirePlayer Settings: Playlists and EPG, Remote, Look, Defaults, Statuses, App (user spec). */
+    /** Live FirePlayer Settings: Playlists and EPG, Remote, Look, Defaults, Playback, Statuses, App (user spec). */
     fun openPlayerSettings(shared: SettingsPanels, onClose: (() -> Unit)? = null) = reloadThen {
         panel.open("Settings", onClose) {
             header("Playlists and EPG")
-            playlistRows(this)
-            epgRows(this, expandable = true)
+            playlistsAndEpg(this, headings = false)
             shared.renderPlayerLive(this) { channelButtons(this) }
         }
+    }
+
+    /**
+     * Playlists and EPG as Live FirePlayer Settings and the Settings tab's Playlists & EPG both show them (user
+     * outline): each playlist, Manage playlists, Update playlists; then EPG sources ▾, closed each time the window
+     * opens, with Manage EPG sources under it. [headings]: Playlists and EPG under headings of their own, in the window
+     * that holds only them.
+     */
+    private fun playlistsAndEpg(p: SidePanel, headings: Boolean): Unit = with(p) {
+        if (headings) header("Playlists")
+        playlistRows(this)
+        if (headings) header("EPG")
+        epgRows(this, saysIfNone = headings)
     }
 
     /**
@@ -164,21 +179,33 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         panel.open("Playlists", onClose) { playlistRows(this) }
     }
 
-    /** The playlists (each opens its settings), Reorder playlists under them, Add playlist, Update all playlists. */
+    /**
+     * The playlists (each opens its settings), Manage playlists, and Update playlists with when they last updated.
+     * With none yet, how to start and Add playlist come first.
+     */
     private fun playlistRows(p: SidePanel): Unit = with(p) {
         if (playlists.isEmpty()) {
             message("Add an Xtream Codes account or an M3U playlist link. Channels and the TV guide load from it.")
-            // With nothing to put in order, what's wanted first is first.
+            // The viewer's first step, right here rather than a window away.
             row("Add playlist") { addPlaylist() }
-            reorderPlaylistsRow(this)
+            managePlaylistsRow(this)
             return@with
         }
         for (pl in playlists) {
             row(pl.name, shortStatus(pl), twoLines = false) { openPlaylist(pl.id) }
         }
-        reorderPlaylistsRow(this)
+        managePlaylistsRow(this)
+        updateRow(this, "Update playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
+    }
+
+    private fun managePlaylistsRow(p: SidePanel) {
+        p.row("Manage playlists") { p.openSub("Manage playlists", wide = true) { managePlaylists(this) } }
+    }
+
+    /** Manage playlists (user outline): Add playlist and Reorder playlists. */
+    private fun managePlaylists(p: SidePanel): Unit = with(p) {
         row("Add playlist") { addPlaylist() }
-        updateRow(this, "Update all playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
+        reorderPlaylistsRow(this)
     }
 
     /**
@@ -199,10 +226,17 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
      */
     private fun updateRow(p: SidePanel, label: String, lastSync: Long, start: () -> Unit) {
         val busy = sync.busy
-        val row = p.row(label, if (busy) "Updating…" else if (lastSync > 0) "Updated ${whenText(lastSync, short = true)}" else "Never updated") {
+        val row = p.row(label, updatedText(lastSync)) {
             if (!sync.busy) { start(); p.refresh() }
         }
         if (busy) row.alpha = 0.45f
+    }
+
+    /** "Updating…" while anything updates, else "Updated 5:04 PM" (or "yesterday", "Nov 15"), or "Never updated". */
+    private fun updatedText(lastSync: Long): String = when {
+        sync.busy -> "Updating…"
+        lastSync > 0 -> "Updated ${whenText(lastSync, short = true)}"
+        else -> "Never updated"
     }
 
     /** "5:04 PM" today, "yesterday 5:04 PM", else "Nov 15, 5:04 PM" ([short]: "yesterday", "Nov 15"). */
@@ -752,16 +786,12 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     // ---- EPG ------------------------------------------------------------------------------------------------------
 
     /**
-     * Playlists & EPG, a category of App settings: the playlists, then the EPG. Its own window from the Settings tab
-     * ([onClose]); [sub]: over the window that's open (App settings' list), Back returns to it.
+     * Playlists & EPG, a category of App settings: the playlists, then the EPG, as in Live FirePlayer Settings. Its own
+     * window from the Settings tab ([onClose]); [sub]: over the window that's open (App settings' list), Back returns
+     * to it.
      */
     fun openPlaylistsAndEpg(onClose: (() -> Unit)? = null, sub: Boolean = false) = reloadThen {
-        show(SettingsCategory.PLAYLISTS_EPG.title, onClose, sub) {
-            header("Playlists")
-            playlistRows(this)
-            header("EPG")
-            epgRows(this, expandable = false)
-        }
+        show(SettingsCategory.PLAYLISTS_EPG.title, onClose, sub) { playlistsAndEpg(this, headings = true) }
     }
 
     /** Live TV's categories of App settings (Playlists & EPG, Live TV) over the window that's open. */
@@ -784,39 +814,45 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     /**
-     * EPG sources ([expandable]: behind an arrow, as in Live FirePlayer Settings), Past days to keep EPG, Update
-     * interval, Update EPG, Clear EPG and the last status.
+     * EPG sources ▾ (closed each time the window opens): how many playlists' EPGs are loaded, its badge marked as a
+     * problem when one failed. Open, Manage EPG sources, with when the EPG last updated. Without playlists there's
+     * nothing to show ([saysIfNone]: a note says so).
      */
-    private fun epgRows(p: SidePanel, expandable: Boolean) = with(p) {
-        if (!expandable) {
-            message("Each playlist's guide comes from its own EPG. A playlist without one borrows another playlist's listings only for channels with the exact same EPG id.")
-            header("EPG sources")
-        }
-        if (playlists.isEmpty()) { if (!expandable) message("No playlists yet."); return@with }
+    private fun epgRows(p: SidePanel, saysIfNone: Boolean): Unit = with(p) {
+        if (playlists.isEmpty()) { if (saysIfNone) message("No playlists yet."); return@with }
         val epgOpen = isPartOpen("epgSources")
         val loaded = playlists.count { (epg[it.id]?.programmes ?: 0) > 0 }
         val failing = playlists.any { epg[it.id]?.let { s -> s.status != "OK" } == true }
-        if (expandable) {
-            dropdownRow("EPG sources", "$loaded of ${playlists.size} loaded", if (failing) Rows.Badge.PROBLEM else if (loaded == playlists.size) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE, epgOpen) {
-                togglePart("epgSources")
-                refresh()
-            }
+        dropdownRow("EPG sources", "$loaded of ${playlists.size} loaded", if (failing) Rows.Badge.PROBLEM else if (loaded == playlists.size) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE, epgOpen) {
+            togglePart("epgSources")
+            refresh()
         }
-        if (!expandable || epgOpen) {
-            for (pl in playlists) {
-                val r = row(pl.name, epgValue(epg[pl.id])) { openPlaylist(pl.id) }
-                if (expandable) r.asSubRow()
-            }
+        if (epgOpen) {
+            row("Manage EPG sources", updatedText(lastEpgUpdate())) {
+                openSub("Manage EPG sources", wide = true) { manageEpg(this) }
+            }.asSubRow()
         }
-        if (!expandable) header("Storage")
+    }
+
+    /**
+     * Manage EPG sources (user outline): each playlist's EPG with its number of programmes or its status (OK opens that
+     * playlist's window), then Days to keep EPG, Update interval, Update EPG and Clear EPG; the last status and where
+     * listings come from at the bottom.
+     */
+    private fun manageEpg(p: SidePanel): Unit = with(p) {
+        header("EPG sources")
+        if (playlists.isEmpty()) message("No playlists yet.")
+        for (pl in playlists) {
+            row(pl.name, epgValue(epg[pl.id])) { openPlaylist(pl.id) }
+        }
+        header("Updates")
         // Provisional: the outline fixes one day of past programmes; whether it's adjustable is still open.
-        row("Past days to keep EPG", "1 day", enabled = false) {}
+        row("Days to keep EPG", "1 day", enabled = false) {}
         val hours = listOf(6, 12, 24, 48)
         choice("Update interval", hours.map { "Every $it hours" }, hours.indexOf(prefs.epgUpdateHours).let { if (it < 0) 2 else it }) { i ->
             prefs.epgUpdateHours = hours[i]
         }
-        // The last import that worked (a failed one also records its time).
-        updateRow(this, "Update EPG", epg.values.filter { it.status == "OK" }.maxOfOrNull { it.lastSync } ?: 0L) { sync.updateEpg() }
+        updateRow(this, "Update EPG", lastEpgUpdate()) { sync.updateEpg() }
         row("Clear EPG") {
             FireDialog.ask(activity, "Clear all programme listings? They load again at the next update.", listOf(
                 "Clear" to { sync.clearEpg() },
@@ -824,7 +860,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             ))
         }
         message("Last status: " + lastEpgStatus())
+        message("Each playlist's guide comes from its own EPG. A playlist without one borrows another playlist's listings only for channels with the exact same EPG id.")
     }
+
+    /** When the EPG last loaded: the last import that worked (a failed one also records its time); 0 if never. */
+    private fun lastEpgUpdate(): Long = epg.values.filter { it.status == "OK" }.maxOfOrNull { it.lastSync } ?: 0L
 
     /** The most recent EPG result, in words. */
     private fun lastEpgStatus(): String {
@@ -853,6 +893,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             choice("Full screen after no key presses", labels, secs.indexOf(prefs.fullScreenAfterSec).let { if (it < 0) 1 else it }) { i ->
                 prefs.fullScreenAfterSec = secs[i]
             }
+            header("Playback")
+            liveBufferRow(this, activity)
         }
     }
 

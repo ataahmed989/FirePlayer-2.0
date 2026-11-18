@@ -20,6 +20,7 @@ import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ui.liveBufferRow
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.ShadowStrength
@@ -154,6 +155,8 @@ class SettingsPanels(
                 resumeRow(this)
                 matchFrameRateRow(this)
                 passthroughRow(this)
+                // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
+                liveBufferRow(this, activity)
                 skipIntroSection(this)
             }
             SettingsCategory.REMOTE -> {
@@ -198,12 +201,15 @@ class SettingsPanels(
 
     /**
      * The shared part of Live FirePlayer Settings, after its Playlists and EPG (user spec): Remote ([remoteMore]: the
-     * channel changing buttons), Look, Defaults (no auto sync: live channels don't support it), Statuses, App.
+     * channel changing buttons), Look, Defaults (no auto sync: live channels don't support it), Playback (Live TV
+     * buffer; where the VOD window has its Playback), Statuses, App.
      */
     fun renderPlayerLive(panel: SidePanel, remoteMore: SidePanel.() -> Unit): Unit = with(panel) {
         remoteSection(this, remoteMore)
         lookSection(this)
         defaultsSection(this, autoSync = false, resume = false)
+        header("Playback")
+        liveBufferRow(this, activity)
         statusesSection(this)
         appSection(this, allSettings = true)
     }

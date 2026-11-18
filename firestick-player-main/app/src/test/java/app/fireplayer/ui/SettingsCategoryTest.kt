@@ -43,9 +43,13 @@ class SettingsCategoryTest {
             "Update interval", "Update EPG", "Clear EPG", "Channel changing buttons", "Hide controls after",
             "Full screen after no key presses", "Subtitle style",
         )
+        // Renamed since by the user's outline for Playlists and EPG, and rows added since.
+        val renamed = mapOf("Update all playlists" to "Update playlists", "Past days to keep EPG" to "Days to keep EPG")
+        val added = listOf("Manage playlists", "Manage EPG sources", "Live TV buffer")
+        val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
-        assertEquals(emptyList<String>(), before.filter { it !in now })
-        assertEquals(emptyList<String>(), now.filter { it !in before })
+        assertEquals(emptyList<String>(), kept.filter { it !in now })
+        assertEquals(emptyList<String>(), now.filter { it !in kept && it !in added })
     }
 
     @Test fun settingsSitWhereTheUserPutThem() {
@@ -57,6 +61,8 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.REMOTE, where("Hold to speed up"))
         assertEquals(SettingsCategory.ACCOUNTS, where("TMDB API key"))
         assertEquals(SettingsCategory.LOOK, where("Info pods"))
+        assertEquals(SettingsCategory.LIVE_TV, where("Live TV buffer"))
+        assertEquals(SettingsCategory.PLAYLISTS_EPG, where("Manage EPG sources"))
     }
 
     /** The Settings tab's sizes: rows 44 dp + 8 dp, the title 34 + 16 dp, 27 dp kept clear above and below. */

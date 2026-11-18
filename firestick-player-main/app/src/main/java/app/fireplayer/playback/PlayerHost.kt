@@ -21,7 +21,9 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ui.LivePrefs
 import app.fireplayer.player.Delays
+import app.fireplayer.player.LiveBuffer
 import app.fireplayer.player.PlayerFactory
 
 /**
@@ -67,6 +69,8 @@ class PlayerHost private constructor(context: Context) {
     private val listeners = LinkedHashSet<Listener>()
     private var player: ExoPlayer? = null
     private var builtHeaders: Map<String, String>? = null
+    /** The Live TV buffer [player] was built with. */
+    private var builtBuffer: LiveBuffer? = null
     private var surface: SurfaceView? = null
     private var retries = 0
     private var error: String? = null
@@ -198,6 +202,20 @@ class PlayerHost private constructor(context: Context) {
         publish()
     }
 
+    /**
+     * Live TV buffer was changed (Settings): the channel playing opens again with the new size, one short reload that
+     * keeps its captions, audio delay and connection. A paused channel keeps its place; like a stopped one, it takes
+     * the new size the next time it's opened.
+     */
+    fun bufferChanged() {
+        val source = session.source ?: return
+        if (session.playingKey == null || paused || player == null) return
+        if (builtBuffer == LivePrefs(app).liveBuffer) return
+        // Straight to the stream, not through the session: the channel's connection is already counted.
+        openStream(source)
+        publish()
+    }
+
     /** Whether playback is still behind live: a seekable live window says by its offset; a plain stream until reopened. */
     private fun stillBehind(p: ExoPlayer): Boolean {
         if (!behind) return false
@@ -294,23 +312,32 @@ class PlayerHost private constructor(context: Context) {
         }
         player = null
         builtHeaders = null
+        builtBuffer = null
         error = null
         paused = false
         behind = false
         setCues(emptyList())
     }
 
+    /** The live player, built again when a channel needs other headers or the Live TV buffer was changed. */
     private fun playerFor(headers: Map<String, String>): ExoPlayer {
+        val buffer = LivePrefs(app).liveBuffer
         val existing = player
-        if (existing != null && builtHeaders == headers) return existing
-        existing?.let { it.removeListener(playerListener); it.release() }
-        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough, delays)
+        if (existing != null && builtHeaders == headers && builtBuffer == buffer) return existing
+        existing?.let { old ->
+            // Lets go of the picture first, as closeStream does, so the new player takes the same surface cleanly.
+            surface?.let { old.clearVideoSurfaceView(it) }
+            old.removeListener(playerListener)
+            old.release()
+        }
+        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough, delays, buffer)
         // Captions start off; the viewer turns them on from the Captions button (and they then stay on).
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)
         surface?.let { p.setVideoSurfaceView(it) }
         player = p
         builtHeaders = headers
+        builtBuffer = buffer
         return p
     }
 

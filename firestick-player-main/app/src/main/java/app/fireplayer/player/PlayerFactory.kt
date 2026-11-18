@@ -165,9 +165,16 @@ object PlayerFactory {
      * vsync machinery here: those belong to the full-screen film player.
      *
      * [delays]: the audio delay (Audio delay in full screen) works as the film player's does, by giving the video
-     * renderer a shifted clock ([OffsetRenderer]); subtitle delays don't apply to live captions.
+     * renderer a shifted clock ([OffsetRenderer]); subtitle delays don't apply to live captions. [buffer]: how much is
+     * loaded ahead (Live TV buffer).
      */
-    fun buildLive(context: Context, headers: Map<String, String>, passthrough: Boolean, delays: Delays? = null): ExoPlayer {
+    fun buildLive(
+        context: Context,
+        headers: Map<String, String>,
+        passthrough: Boolean,
+        delays: Delays? = null,
+        buffer: LiveBuffer = LiveBuffer.MEDIUM,
+    ): ExoPlayer {
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent ?: "FirePlayer/2.0 (Linux; Android) ExoPlayer")
@@ -182,8 +189,8 @@ object PlayerFactory {
         val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
         val loadControl = DefaultLoadControl.Builder()
-            // Starts after 1.5 s of picture (3 s after a stall), keeps up to 30 s ahead.
-            .setBufferDurationsMs(15_000, 30_000, 1_500, 3_000)
+            // Medium starts after 1.5 s of picture (3 s after a stall) and keeps up to 30 s ahead.
+            .setBufferDurationsMs(buffer.minMs, buffer.maxMs, buffer.startMs, buffer.afterStallMs)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val renderers = LiveRenderersFactory(context, passthrough)
