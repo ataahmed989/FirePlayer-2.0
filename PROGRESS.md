@@ -179,6 +179,8 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
   - fluid motion instead of jumps: e.g. from the channel groups window to the tab window, the groups window should shift
     across (as it does when pressing Left from the channels window) instead of the tab window opening as a layer on top;
     a buffering animation on the Live TV player;
+  - the concept's premium glass windows and tab-window glass, icons and logo; on pages other than Live TV the rail
+    animates into an edged glass "bubble" window (Live TV keeps its slim strip);
   - responsive navigation tweaks in the TV guide and in the Movies and TV Shows title rows.
 - [ ] Glass Home integration (small changes; shows FirePlayer 2.0's Continue Watching); FirePlayer 2.0 replaces 1.0.
 

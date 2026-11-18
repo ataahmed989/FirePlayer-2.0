@@ -139,6 +139,8 @@ Source checked: app/src/main/java/app/fireplayer/ui/SettingsPanels.kt.
 - Later app pass with Fable (PROGRESS.md §6): glass windows and small/hold windows, colours, larger FirePlayer 2.0
   logo in the rail, larger and better channel logos, faster loading, fluid motion (groups window shifts when the rail
   opens instead of a layer on top; Live TV buffering animation), navigation tweaks in the guide and title rows.
+  Also from the concept: its premium glass windows, the tab window's glass (not too glazed), its icons and logo; keep
+  the slim rail strip on Live TV but let the rail become an edged glass "bubble" window on the other pages.
 
 ## Architecture questions carried forward
 
@@ -376,6 +378,10 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-18 · User (sizing page): posters 6.5 across at 3:4 (121 × 162 dp), Continue Watching wide cards 4.5 across
   (182 × 102 dp), header 195 dp, medium text, chosen card grows 16%, and Home's header slides away once you scroll
   past Continue Watching. Details in design-brief.md §6.3.
+- 2026-11-18 · User: glass look background keeps the blurred foggy beach with the spiral, recoloured to the approved Home
+  concept's background (deep teal-navy, lighter at the top, darker towards the bottom: about RGB 18,36,49 at the top to
+  8,14,21 at the bottom, with almost no red). Made from Wallpapers/Foggy-Blue-Beach-Light-Spiral-Blurred.png by mapping
+  each row's brightness and tint to the concept's page edges while keeping the image's own detail.
 - 2026-11-18 · User (second playback check): no shrinking film buffer under memory pressure; FirePlayer 2.0 frees memory
   before VOD playback (Live TV, page images, caches) while keeping returns instant (snapshot); background release only
   after a delay; no Glass Home changes until integration; test a second download connection before building it.
