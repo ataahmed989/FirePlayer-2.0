@@ -167,6 +167,16 @@ object PlayerFactory {
      * [delays]: the audio delay (Audio delay in full screen) works as the film player's does, by giving the video
      * renderer a shifted clock ([OffsetRenderer]); subtitle delays don't apply to live captions.
      */
+    /**
+     * Films and live channels claim the sound while they play (Android's audio focus), so another app's film or music
+     * (Stremio, Netflix, Spotify) pauses instead of carrying on underneath, and Alexa answering pauses or lowers them for
+     * a moment. Seen on the Fire TV: a Stremio film went on playing behind the live miniature, which never claimed it.
+     */
+    private val MEDIA_AUDIO = androidx.media3.common.AudioAttributes.Builder()
+        .setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+        .build()
+
     fun buildLive(context: Context, headers: Map<String, String>, passthrough: Boolean, delays: Delays? = null): ExoPlayer {
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val http = DefaultHttpDataSource.Factory()
@@ -193,6 +203,7 @@ object PlayerFactory {
             .setMediaSourceFactory(mediaSources)
             .setRenderersFactory(if (delays == null) renderers else LiveDelayRenderersFactory(renderers, delays))
             .setLoadControl(loadControl)
+            .setAudioAttributes(MEDIA_AUDIO, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -276,6 +287,7 @@ object PlayerFactory {
             .setLoadControl(loadControl)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
+            .setAudioAttributes(MEDIA_AUDIO, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.

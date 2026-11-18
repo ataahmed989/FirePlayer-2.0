@@ -345,6 +345,16 @@ class PlayerHost private constructor(context: Context) {
 
         override fun onCues(cueGroup: CueGroup) = setCues(if (captionsOn) cueGroup.cues else emptyList())
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // Another app took the sound for good (its film or music started): the channel paused itself, and shows as
+            // paused, as if the viewer had paused it. (A moment's loss, Alexa answering, doesn't come here: the player
+            // waits and carries on by itself.)
+            if (reason != Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) return
+            paused = !playWhenReady
+            if (paused) behind = true
+            publish()
+        }
+
         override fun onPlayerError(e: PlaybackException) {
             val p = player ?: return
             if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
