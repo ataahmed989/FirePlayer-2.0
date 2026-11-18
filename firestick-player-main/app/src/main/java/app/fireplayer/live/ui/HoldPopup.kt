@@ -22,8 +22,10 @@ import app.fireplayer.ui.Rows
 /**
  * The small window a held OK opens in Live TV: a channel's in the guide (Favorite, Assign favorites) and a group's in
  * the groups column (Move to top, Hide category). One look and one behaviour for both: the full name (up to two lines)
- * over a row of buttons, beside what was held, with the first button selected. Left from the first button, Right from
- * the last, Up, Down and Back close it (LivePage passes Back on), and the selection goes back where it was.
+ * over a row of buttons, beside what was held, with the first button selected, and optionally one more button under
+ * that row (a group's Manage groups), reached with Down and left with Up. Left from the first button, Right from the
+ * last, Up from the row, Down from the bottom and Back close it (LivePage passes Back on), and the selection goes back
+ * where it was.
  *
  * Light, for a slow TV: its few views are made once and reused; it's laid out once as it opens (its words and place),
  * then only faded and grown in or out, drawn as one layer while that lasts. It sits in its parent, a FrameLayout over
@@ -50,6 +52,11 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
     private val bar = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     private val slots = ArrayList<Slot>()
     private var shown = 0
+    /** The button under the row, as wide as the window; made the first time one is asked for. */
+    private var below: Slot? = null
+    private var belowShown = false
+    /** The row's button Down left from, for Up to come back to. */
+    private var lastInRow = 0
 
     var isOpen = false
         private set
@@ -84,13 +91,14 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
     fun applyLook() {
         Glass.background(this, Glass.Kind.POPUP)
         for (s in slots) if (s.round != null) style(s)
+        below?.let { if (it.round != null) style(it) }
     }
 
     /**
      * Opens with [name] over [buttons], beside [anchor] (the held row, in the parent's coordinates) and inside [area];
      * the first button is selected.
      */
-    fun open(name: CharSequence, buttons: List<Button>, anchor: RectF, area: RectF) {
+    fun open(name: CharSequence, buttons: List<Button>, anchor: RectF, area: RectF, under: Button? = null) {
         val host = parent as? View ?: return
         if (buttons.isEmpty()) return
         serial++
@@ -100,6 +108,9 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         shown = buttons.size
         buttons.forEachIndexed { i, b -> fill(slot(i), b) }
         for (i in buttons.size until slots.size) slots[i].view.visibility = GONE
+        belowShown = under != null
+        if (under != null) fill(belowSlot(), under) else below?.view?.visibility = GONE
+        lastInRow = 0
         isOpen = true
         armed = false
         visibility = VISIBLE
@@ -187,7 +198,7 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
                 return if (armed) super.dispatchKeyEvent(event) else true
             }
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                if (down) close()
+                if (down) vertical(event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN, event.repeatCount > 0)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
@@ -208,6 +219,35 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         } else if (!repeat) {
             close()
         }
+    }
+
+    /** Down from the row: the button under it; Up from there: back to the row. Past the top or bottom, closed. */
+    private fun vertical(downKey: Boolean, repeat: Boolean) {
+        val under = below?.takeIf { belowShown }
+        val onUnder = under != null && under.view.isFocused
+        when {
+            downKey && under != null && !onUnder -> {
+                lastInRow = (0 until shown).indexOfFirst { slots[it].view.isFocused }.coerceAtLeast(0)
+                removeCallbacks(closeLater)
+                under.view.requestFocus()
+            }
+            !downKey && onUnder -> slots[lastInRow.coerceIn(0, shown - 1)].view.requestFocus()
+            !repeat -> close()
+        }
+    }
+
+    private fun belowSlot(): Slot {
+        below?.let { return it }
+        val view = rows.base().apply { gravity = Gravity.CENTER }
+        val icon = ImageView(context).apply { imageTintList = rows.textColors }
+        val text = rows.text("")
+        view.addView(icon, LayoutParams(t.dp(18), t.dp(18)))
+        view.addView(text)
+        val s = Slot(view, icon, text)
+        view.setOnClickListener { if (isOpen) s.action?.invoke() }
+        addView(view, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(34)).apply { topMargin = t.dp(8) })
+        below = s
+        return s
     }
 
     private fun isInside(v: View): Boolean {

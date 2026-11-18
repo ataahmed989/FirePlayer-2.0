@@ -373,6 +373,19 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         })
     }
 
+    /** Manage groups over the Live TV tab (a group's held window); focus returns to the page when it closes. */
+    override fun openManageGroups(playlistId: String, groupId: String?) {
+        if (panel.isOpen) panel.close()
+        val back = currentFocus
+        live.root.animate().alpha(0.35f).setDuration(160).withLayer().start()
+        liveSettings.openManageGroups(playlistId, groupId, onClose = {
+            live.root.animate().alpha(1f).setDuration(160).withLayer().start()
+            // The column's rows may show other groups after the edits made there (hidden, moved): then the page puts
+            // focus back on its current entry.
+            if (back != null && back.isShown && !isInside(back, live.sidebar)) back.requestFocus() else focusPage()
+        })
+    }
+
     private fun openLink() {
         SidePanel.prompt(this, "Video link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) { text ->
             var link = text.trim()

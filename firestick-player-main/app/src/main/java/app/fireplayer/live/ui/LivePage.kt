@@ -85,6 +85,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
          * to [playlistId]'s groups; with no [groupId], the groups. Focus comes back where it was when it closes.
          */
         fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?)
+        /** Manage groups over this page (a group's held window): [playlistId]'s groups, [groupId]'s row selected. */
+        fun openManageGroups(playlistId: String, groupId: String?)
         /** The settings window on the right, where the full-screen extra row's windows open. */
         val sidePanel: SidePanel
         /** Display size or the screen dimmer changed: the full-screen picture is laid out and dimmed again. */
@@ -1186,7 +1188,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         host.openAssignFavorites(ch.playlistId, ch.groupId, ch.key)
     }
 
-    /** Center held on a group in the column: its full name, Move to top (selected) and Hide category, beside its row. */
+    /**
+     * Center held on a group in the column: its full name, Move to top (selected) and Hide category, beside its row, and
+     * Manage groups under them.
+     */
     private fun openGroupPopup(scope: GuideScope.Group, name: String, row: View) {
         if (fullScreen || popup.isOpen || row.width == 0) return
         popupFocusBack = { sidebar.focusScope(scope) }
@@ -1195,7 +1200,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         popup.open(name, listOf(
             HoldPopup.Button("Move to top") { moveGroupToTop(scope) },
             HoldPopup.Button("Hide category") { hideGroup(scope) },
-        ), inRoot(row, RectF(0f, 0f, row.width.toFloat(), row.height.toFloat())), area)
+        ), inRoot(row, RectF(0f, 0f, row.width.toFloat(), row.height.toFloat())), area,
+            under = HoldPopup.Button("Manage groups") { popupManage(scope) })
+    }
+
+    /** Manage groups: the window gives way to Manage groups for the group's playlist, that group's row selected. */
+    private fun popupManage(scope: GuideScope.Group) {
+        popup.close(fade = false)
+        host.openManageGroups(scope.playlistId, scope.groupId)
     }
 
     /**
