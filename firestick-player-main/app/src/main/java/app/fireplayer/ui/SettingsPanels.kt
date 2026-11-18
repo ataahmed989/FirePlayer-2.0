@@ -20,6 +20,7 @@ import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ui.channelButtonsRow
 import app.fireplayer.live.ui.liveBufferRow
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
@@ -105,6 +106,12 @@ class SettingsPanels(
     var onAssStylingChanged: () -> Unit = {}
 
     /**
+     * Whether that Subtitle style window is the one on screen (true as it's drawn, false as Subtitles & audio is drawn
+     * again on Back), so a paused film can show example lines that follow each change, as the player's own window does.
+     */
+    var onStylePreview: (Boolean) -> Unit = {}
+
+    /**
      * Opens Playlists & EPG or Live TV (Live TV's own windows) over the window that's open, from App settings' list;
      * null leaves them out of the list.
      */
@@ -136,9 +143,10 @@ class SettingsPanels(
      */
     fun renderCategories(panel: SidePanel): Unit = with(panel) {
         val live = liveWindows
+        // With the icons the Settings tab shows beside them.
         for (category in SettingsCategory.entries) {
-            if (!category.isLive) row(category.title) { openSub(category.title) { renderCategory(this, category) } }
-            else if (live != null) row(category.title) { live(category) }
+            if (!category.isLive) iconRow(category.title, category.icon) { openSub(category.title) { renderCategory(this, category) } }
+            else if (live != null) iconRow(category.title, category.icon) { live(category) }
         }
     }
 
@@ -160,14 +168,20 @@ class SettingsPanels(
                 skipIntroSection(this)
             }
             SettingsCategory.REMOTE -> {
-                remoteSection(this)
+                // Channel ▲▼ belongs to Live TV, but it's a remote setting too: under Menu button opens here as well.
+                remoteSection(this) { channelButtonsRow(this, activity) }
                 skippingSection(this, full = true)
             }
             SettingsCategory.SUBTITLES_AUDIO -> {
+                // Drawn again on Back from Subtitle style: its example lines go.
+                onStylePreview(false)
                 defaultsSection(this, autoSync = true, resume = false)
-                // Its own window over this one; the preset in use shows beside it.
+                // Its own window over this one, under its own heading (it isn't a default); the preset in use shows
+                // beside it.
+                header("Subtitle style")
                 row("Subtitle style", presets.active().name) {
                     openSub("Subtitle style") {
+                        onStylePreview(true)
                         renderSubtitleStyle(
                             this,
                             onStyleChanged = { onSubtitleStyleChanged() },
@@ -200,7 +214,7 @@ class SettingsPanels(
     }
 
     /**
-     * The shared part of Live FirePlayer Settings, after its Playlists and EPG (user spec): Remote ([remoteMore]: the
+     * The shared part of Live FirePlayer Settings, after its Playlists & EPG (user spec): Remote ([remoteMore]: the
      * channel changing buttons), Look, Defaults (no auto sync: live channels don't support it), Playback (Live TV
      * buffer; where the VOD window has its Playback), Statuses, App.
      */
@@ -218,9 +232,7 @@ class SettingsPanels(
 
     fun remoteSection(panel: SidePanel, more: SidePanel.() -> Unit = {}): Unit = with(panel) {
         header("Remote")
-        choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
-            prefs.menuOpensStyle = it == 1
-        }
+        menuButtonRow(this, activity)
         more()
     }
 
@@ -230,7 +242,7 @@ class SettingsPanels(
         val chipsOpen = isPartOpen("chips")
         val hidden = prefs.hiddenChips
         val shownCount = CHIPS.count { it.first !in hidden }
-        dropdownRow("Info pods", "$shownCount of ${CHIPS.size}", Rows.Badge.INACTIVE, chipsOpen) {
+        dropdownRow("Info pods", "$shownCount of ${CHIPS.size} shown", Rows.countBadge(shownCount, CHIPS.size), chipsOpen) {
             togglePart("chips")
             refresh()
         }
@@ -285,7 +297,8 @@ class SettingsPanels(
 
     fun defaultsSection(panel: SidePanel, autoSync: Boolean, resume: Boolean): Unit = with(panel) {
         header("Defaults")
-        val subLanguages = languages + ""
+        // Off first, as Never is in every other list of choices.
+        val subLanguages = listOf("") + languages
         choice("Subtitle language", subLanguages.map { languageName(it) }, subLanguages.indexOf(prefs.subtitleLanguage)) {
             prefs.subtitleLanguage = subLanguages[it]
         }
@@ -375,7 +388,6 @@ class SettingsPanels(
         keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true) {
             checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
         }
-        problemOf(os)?.let { message("OpenSubtitles: $it.") }
         val tmdb = checks.status(CredentialChecks.Service.TMDB)
         keyRow(
             "TMDB API key",
@@ -388,22 +400,23 @@ class SettingsPanels(
             TitleService.start(activity)
             checks.check(CredentialChecks.Service.TMDB) { if (isOpen) refresh() }
         }
+        // What's wrong with a key, after the keys, so their card stays whole.
+        problemOf(os)?.let { message("OpenSubtitles: $it.") }
         problemOf(tmdb)?.let { message("TMDB: $it.") }
         if (os.state != CredentialChecks.State.NOT_SET || tmdb.state != CredentialChecks.State.NOT_SET) {
-            row("Check the keys now", if (os.state == CredentialChecks.State.CHECKING || tmdb.state == CredentialChecks.State.CHECKING) "Checking…" else null) {
+            // While it checks, dimmed and doing nothing, as the Update buttons while they update.
+            val row = row("Check the keys now", if (keysChecking()) CHECKING else null) {
+                if (keysChecking()) return@row
                 for (s in CredentialChecks.Service.entries) checks.check(s) { if (isOpen) refresh() }
                 refresh()
             }
+            if (keysChecking()) dim(row)
         }
         // TMDB asks apps that use its API to say so.
-        view(TextView(activity).apply {
-            text = TMDB_NOTICE
-            setTextColor(color(R.color.text_muted))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-            setLineSpacing(2f * density, 1f)
-            alpha = 0.8f
-        }, top = 3, bottom = 4)
+        message(TMDB_NOTICE)
     }
+
+    private fun keysChecking(): Boolean = CredentialChecks.Service.entries.any { checks.status(it).state == CredentialChecks.State.CHECKING }
 
     fun skipIntroSection(panel: SidePanel): Unit = with(panel) {
         header("Skip intro and credits")
@@ -423,7 +436,7 @@ class SettingsPanels(
                 "Times from the file's chapters, else SkipDB and IntroDB, with a TMDB key.")
         }
         val counts = COUNTDOWNS
-        choice("Next episode / Exit countdown", counts.map { if (it == 0) "Until the end" else "$it s" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
+        choice("Next episode / Exit countdown", counts.map { if (it == 0) "Until the end" else "$it seconds" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
             prefs.autoCountdownSec = counts[it]
         }
     }
@@ -444,7 +457,7 @@ class SettingsPanels(
             states.any { it == CredentialChecks.State.CHECKING } -> "Checking…" to Rows.Badge.BUSY
             states.all { it == CredentialChecks.State.WORKING } -> "All working" to Rows.Badge.ACTIVE
             states.all { it == CredentialChecks.State.NOT_SET } -> "Not set up" to Rows.Badge.INACTIVE
-            else -> "${states.count { it == CredentialChecks.State.WORKING }} of 2 working" to Rows.Badge.LIGHT
+            else -> states.count { it == CredentialChecks.State.WORKING }.let { n -> "$n of ${states.size} working" to Rows.countBadge(n, states.size) }
         }
         dropdownRow("Services and font", summary, style, statusesOpen) {
             togglePart("statuses")
@@ -459,7 +472,8 @@ class SettingsPanels(
                 }.asSubRow()
             }
             val font = importedFontName
-            badgeRow("Subtitle font from phone", if (font != null) "Active" else "None", if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
+            // Said as in Subtitle font, the window it opens.
+            badgeRow("Font from your phone", activeOrNot(font != null), if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
                 openSub("Subtitle font") { fontSection(this) }
             }.asSubRow()
         }
@@ -468,17 +482,20 @@ class SettingsPanels(
     /** App: Check for updates; in a player's window also "App settings" (every setting, in its categories). */
     fun appSection(panel: SidePanel, allSettings: Boolean): Unit = with(panel) {
         header("App")
-        row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
+        val row = row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
+            // Already checking: dimmed, and a second press does nothing.
+            if (updateStatus == CHECKING) return@row
             if (!updater.offered) {
                 updateStatus = "Not in test builds"; refresh(); return@row
             }
-            updateStatus = "Checking…"; refresh()
+            updateStatus = CHECKING; refresh()
             updater.check(onFailed = { updateStatus = "Couldn't check"; if (isOpen) refresh() }) { release ->
                 updateStatus = if (release == null) "Up to date" else null
                 if (isOpen) refresh()
                 release?.let { updater.offer(it) }
             }
         }
+        if (updateStatus == CHECKING) dim(row)
         // The settings these windows leave out stay here (user: preserved, not removed).
         if (allSettings) {
             row(SettingsCategory.LIST_TITLE) { openSub(SettingsCategory.LIST_TITLE) { renderCategories(this) } }
@@ -569,7 +586,7 @@ class SettingsPanels(
                         }
                     }
                 }
-                compactRow(p.server, "${TitleStatus.count(p.renamed)} renamed", if (p.waiting == 0) tickPill() else null) { onClick() }
+                rowWithPill(p.server, "${TitleStatus.count(p.renamed)} renamed", if (p.waiting == 0) tickPill() else null) { onClick() }
             }
         }
     }
@@ -654,9 +671,10 @@ class SettingsPanels(
     }
 
     /**
-     * A key or sign-in row: "Active" in blue once saved, "Inactive" in gray before ([badge] in its place, such as
-     * the TMDB check's). Its box starts empty, so a saved key is never shown, and says where to get one (or that one
-     * is saved); confirmed empty, it leaves a saved key as it is. [onSaved] follows a new one.
+     * A key or sign-in row: "Set" in blue once saved, "Not set" in gray before, the words the keys' own checks use
+     * ([badge] in their place, such as the TMDB check's). Its box starts empty, so a saved key is never shown, and
+     * says where to get one (or that one is saved); confirmed empty, it leaves a saved key as it is. [onSaved] follows
+     * a new one.
      */
     private fun SidePanel.keyRow(
         label: String,
@@ -668,7 +686,7 @@ class SettingsPanels(
         onSaved: () -> Unit = {},
     ) {
         val set = prefs.keys.isSet(key)
-        val (text, style) = badge ?: (activeOrNot(set) to if (set) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE)
+        val (text, style) = badge ?: (if (set) SET to Rows.Badge.ACTIVE else NOT_SET to Rows.Badge.INACTIVE)
         badgeRow(label, text, style) {
             SidePanel.prompt(activity, title, "", password = password, hint = if (set) SAVED_HINT else whereFrom) { typed ->
                 if (prefs.keys.save(key, typed)) onSaved()
@@ -691,6 +709,7 @@ class SettingsPanels(
         val style = presets.active()
         val all = presets.all()
 
+        header("Subtitle style")
         choice("Preset", all.map { it.name }, all.indexOfFirst { it.name == style.name }) {
             presets.setActive(all[it].name); onStyleChanged()
         }
@@ -755,9 +774,10 @@ class SettingsPanels(
             prefs.keepAssStyling = !prefs.keepAssStyling; onAssChanged(); refresh()
         }
 
-        spacer(6)
-        // Saving only makes sense once something has been changed.
-        row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()) {
+        header("Presets")
+        // Saving only makes sense once something has been changed; then it's blue and says so, as Save custom does.
+        val unsaved = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()
+        row("Save as preset", if (unsaved) "Unsaved" else null, enabled = unsaved) {
             fun askName(title: String) {
                 SidePanel.prompt(activity, title, "") { name ->
                     val clean = name.trim()
@@ -773,7 +793,7 @@ class SettingsPanels(
                 }
             }
             askName("Preset name")
-        }
+        }.isSelected = unsaved
         if (presets.isSaved(style.name)) {
             row("Delete \"${style.name}\"") {
                 FireDialog.ask(
@@ -823,15 +843,34 @@ class SettingsPanels(
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"
+        private const val SET = "Set"
+        private const val NOT_SET = "Not set"
+        private const val CHECKING = "Checking…"
         private const val SAVED_HINT = "Saved · type a new one to replace it"
         private const val OPTIONAL_HINT = "Optional · more downloads a day"
         private const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."
         private const val STATUS_EVERY_MS = 2_500L
 
-        fun formatStep(sec: Int): String =
-            if (sec < 60) "$sec s" else "${sec / 60}:${"%02d".format(sec % 60)}"
+        /** A skip step in words, as the other choices of a time are: "5 seconds", "1 minute", "10 minutes". */
+        fun formatStep(sec: Int): String = when {
+            sec < 60 -> "$sec seconds"
+            sec == 60 -> "1 minute"
+            sec % 60 == 0 -> "${sec / 60} minutes"
+            else -> "${sec / 60} min ${sec % 60} s"
+        }
 
         fun nearest(options: List<Float>, value: Float): Float =
             options.minByOrNull { kotlin.math.abs(it - value) } ?: value
+    }
+}
+
+/**
+ * Remote › Menu button opens: Settings or Subtitle style. One row and one saved value ([Prefs.menuOpensStyle]), first under
+ * every Remote header (the player windows, Live FirePlayer Settings, the Settings tab's Live TV and Remote & skipping).
+ */
+fun menuButtonRow(panel: SidePanel, context: android.content.Context): Unit = with(panel) {
+    val prefs = Prefs(context)
+    choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
+        prefs.menuOpensStyle = it == 1
     }
 }

@@ -99,7 +99,7 @@ class HoldPopupTest {
         assertEquals(230f, HoldPlace.y(anchorCenterY = 400f, height = 400f, top = 230f, bottom = 530f), 0f)
     }
 
-    // ---- Move to top and Hide category (GroupEdits) -----------------------------------------------------------------
+    // ---- Move to top and Hide group (GroupEdits) -----------------------------------------------------------------
 
     private fun group(id: String) = ChannelGroup("p", id, id.uppercase(), 0)
 

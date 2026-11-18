@@ -40,11 +40,15 @@ class SettingsCategoryTest {
             "Check the keys now", "Skip buttons", "Next episode / Exit countdown", "Check for updates",
             // Settings tab: Playlists, EPG, Live TV and Subtitle style windows.
             "Add playlist", "Update all playlists", "Reorder playlists", "EPG sources", "Past days to keep EPG",
-            "Update interval", "Update EPG", "Clear EPG", "Channel changing buttons", "Hide controls after",
+            "Update interval", "Update EPG", "Clear EPG", "Channel ▲▼", "Hide controls after",
             "Full screen after no key presses", "Subtitle style",
         )
         // Renamed since by the user's outline for Playlists and EPG, and rows added since.
-        val renamed = mapOf("Update all playlists" to "Update playlists", "Past days to keep EPG" to "Days to keep EPG")
+        val renamed = mapOf(
+            "Update all playlists" to "Update playlists", "Past days to keep EPG" to "Days to keep EPG",
+            // Told apart from a playlist's own update interval.
+            "Update interval" to "EPG update interval",
+        )
         val added = listOf("Manage playlists", "Manage EPG sources", "Live TV buffer")
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

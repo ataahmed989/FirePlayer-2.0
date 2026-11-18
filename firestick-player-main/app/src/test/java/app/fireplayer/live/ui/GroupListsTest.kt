@@ -83,6 +83,26 @@ class GroupListsTest {
         assertEquals(mapOf("news" to 2), counts)
     }
 
+    @Test fun assignFavoritesHeadsTheShownGroupsAndTheHiddenOnes() {
+        // Two shown, one hidden: Groups, news, sport, Hidden groups, adult.
+        val both = FavoriteGroups.Headings(shown = 2, total = 3)
+        assertEquals(5, both.size)
+        assertEquals(0, both.shownHeading)
+        assertEquals(3, both.hiddenHeading)
+        assertEquals(listOf(null, 0, 1, null, 2), (0 until both.size).map { both.groupAt(it) })
+        // All shown: only the Groups heading.
+        val shownOnly = FavoriteGroups.Headings(shown = 2, total = 2)
+        assertEquals(-1, shownOnly.hiddenHeading)
+        assertEquals(listOf(null, 0, 1), (0 until shownOnly.size).map { shownOnly.groupAt(it) })
+        // All hidden: only the Hidden groups heading.
+        val hiddenOnly = FavoriteGroups.Headings(shown = 0, total = 2)
+        assertEquals(-1, hiddenOnly.shownHeading)
+        assertEquals(listOf(null, 0, 1), (0 until hiddenOnly.size).map { hiddenOnly.groupAt(it) })
+        // Nothing past the end.
+        assertNull(both.groupAt(5))
+        assertNull(both.groupAt(-1))
+    }
+
     /** Runs its tasks only when told, one at a time, like the settings' worker thread. */
     private class Queue : Executor {
         val tasks = ArrayDeque<Runnable>()

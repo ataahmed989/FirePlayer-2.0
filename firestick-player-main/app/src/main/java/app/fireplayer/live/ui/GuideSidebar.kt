@@ -439,8 +439,13 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                     main.removeCallbacks(showPending)
                     when (event.action) {
                         KeyEvent.ACTION_DOWN -> {
-                            val held = press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)
-                            if (held && entry != null && group != null) callbacks?.onHold(group, entry.label, row)
+                            if (group == null) {
+                                // Only a group has a small window: on any other row (All channels, a playlist) a long
+                                // press is still a press, picked or folded on its release.
+                                if (event.repeatCount == 0) press.down(0, false, 0L)
+                            } else if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) {
+                                callbacks?.onHold(group, entry!!.label, row)
+                            }
                         }
                         // A short press: the row's own action (pick the scope, or fold/unfold a playlist).
                         KeyEvent.ACTION_UP -> if (press.up(event.isCanceled)) row.performClick()

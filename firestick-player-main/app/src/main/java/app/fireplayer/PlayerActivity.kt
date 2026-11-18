@@ -377,6 +377,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var frozeOut = false
     // A sleep timer's time left while the player is away; it only counts down on screen.
     private var sleepRemainingMs = 0L
+    /** The minutes picked in Sleep timer while it runs (ticked there), 0 for none. */
+    private var sleepChosenMin = 0
     // The link is of a kind the player can't open at all, so OK can't try again.
     private var cannotOpen = false
     // The most the buffering line has shown during this wait, so it never counts backwards.
@@ -603,6 +605,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyDisplayMode()
         }
         panel = SidePanel(this)
+        // A wider or narrower window opened over another (or come back to): the subtitles move aside by as much.
+        panel.onWidthChanged = { w -> if (panel.isOpen) subtitlesBeside(w) }
         buildMoreRow()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
@@ -610,6 +614,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Subtitle style opened from App settings (Subtitles & audio): the subtitles follow, as in the player's own.
         settingsPanels.onSubtitleStyleChanged = { applySubtitleStyle(); refreshLabels() }
         settingsPanels.onAssStylingChanged = { applySubtitleStyle(); if (stylingNeedsRebuild()) rebuildPlayer() }
+        // Paused, example lines follow each change there too, as in the player's own Subtitle style window.
+        settingsPanels.onStylePreview = { on ->
+            if (stylePreviewing != on) {
+                stylePreviewing = on
+                showTextCues()
+            }
+        }
         settingsPanels.liveWindows = { category ->
             val live = liveSettings ?: app.fireplayer.live.ui.LiveSettings(this, panel).also { liveSettings = it }
             live.openCategory(category)
@@ -3444,6 +3455,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updateClock()
             if (sleepEndsAt > 0 && SystemClock.elapsedRealtime() >= sleepEndsAt) {
                 sleepEndsAt = 0
+                sleepChosenMin = 0
                 player?.pause()
                 finishWithResult()
                 return
@@ -3900,14 +3912,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun openPanel(title: String, from: View, onClosed: () -> Unit = {}, render: SidePanel.() -> Unit) {
         hideControls()
-        // Subtitles move into the part of the screen the window doesn't cover, instead of running under it.
-        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
         panel.open(title, onClose = {
             screenSubtitles.setPadding(0, 0, 0, 0)
             onClosed()
+            // Example lines shown for a Subtitle style window (one opened from App settings, say) go with it.
+            if (stylePreviewing) {
+                stylePreviewing = false
+                showTextCues()
+            }
             showControls(from)
         }, render = render)
+        // Subtitles move into the part of the screen the window doesn't cover, instead of running under it: by the
+        // width open has just given it.
+        subtitlesBeside(panel.root.layoutParams.width)
         focusSink.isFocusable = false
+    }
+
+    /** The subtitles kept clear of a settings window [width] wide. */
+    private fun subtitlesBeside(width: Int) {
+        screenSubtitles.setPadding(0, 0, width + (18 * resources.displayMetrics.density).toInt(), 0)
     }
 
     private fun trackOptions(type: Int): List<TrackOption> {
@@ -4110,7 +4133,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val release = savedFileOf(o.group.getTrackFormat(o.trackIndex).id)?.let { savedRelease(it) }
             row(o.label, release, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
-        row("Search online") { panel.close(); openFindPanel(from) }
+        // Named as the window it opens, over this one (Back comes back here).
+        row("Find subtitles") { openFindPanel() }
         spacer(6)
         stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
             delays.subtitleUs += dir * 100_000L
@@ -4127,13 +4151,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 autoSync.handOff(delays.subtitleUs)
                 refreshLabels()
             }
-            renderAutoSync(this)
+            // Right under Delay, in its card, as in Audio delay.
             row("Reset") {
                 delays.subtitleUs = 0
                 autoSync.handOff(delays.subtitleUs)
                 refreshLabels()
                 refresh()
             }
+            renderAutoSync(this)
         }
     }
 
@@ -4171,7 +4196,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
         spacer(6)
-        badgeRow("Auto sync", badge, style) {
+        // Named as in Settings › Subtitles & audio, where its switch writes the same saved value.
+        badgeRow("Auto sync subtitles", badge, style) {
             when {
                 !prefs.autoSync -> { prefs.autoSync = true; autoSync.setOn(true); followSubtitle() }
                 !downloaded -> {}
@@ -4219,7 +4245,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         choice("Sync with", options, selected, alsoChecked = autoPick) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }.asSubRow()
     }
 
-    /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
+    /** Tells auto sync which subtitles are on: a file from Find subtitles, or anything else (left alone). */
     private fun followSubtitle() {
         if (!::autoSync.isInitialized) return
         val entry = entries.getOrNull(player?.currentMediaItemIndex ?: playingIndex)
@@ -4235,15 +4261,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         autoSync.follow(file, entry?.key, saved?.release, saved?.language)
     }
 
-    /** Where Search online puts the subtitles it downloads. */
+    /** Where Find subtitles puts the subtitles it downloads. */
     private fun downloadDir() = SavedSubtitles.dir(this)
 
     private fun openAudioPanel(from: View) = openPanel("Audio", from) {
         val options = trackOptions(C.TRACK_TYPE_AUDIO)
-        if (options.isEmpty()) message("No audio tracks.")
+        // Under a heading, as Subtitles' tracks are.
+        header("In this video")
         options.forEach { o ->
             row(o.label, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
+        if (options.size <= 1) message("No other audio tracks.")
         spacer(6)
         stepper("Delay", formatDelay(delays.audioUs)) { dir ->
             delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
@@ -4325,7 +4353,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {
         row("Off", checked = sleepEndsAt == 0L && !sleepAtEnd) { setSleep(0); refresh() }
         listOf(15, 30, 45, 60, 90, 120).forEach { min ->
-            row("$min min") { setSleep(min); refresh() }
+            // The time picked is ticked while it runs, as the choice is in every other window of choices.
+            row("$min min", checked = sleepEndsAt > 0 && sleepChosenMin == min) { setSleep(min); refresh() }
         }
         row("End of this video", checked = sleepAtEnd) { setSleep(-1); refresh() }
         if (sleepEndsAt > 0) message("Stops in ${sleepLabel()}.")
@@ -4335,6 +4364,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         sleepAtEnd = minutes < 0
         player?.pauseAtEndOfMediaItems = sleepAtEnd
         sleepEndsAt = if (minutes > 0) SystemClock.elapsedRealtime() + minutes * 60_000L else 0L
+        sleepChosenMin = if (minutes > 0) minutes else 0
         sleepRemainingMs = 0
         refreshLabels()
     }
@@ -4370,7 +4400,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }) {
             // VOD FirePlayer Settings (user spec): This episode / film, then the player's own sections. Every other
             // setting is under App › App settings, as on the home screen.
-            renderThisTitle(from)
+            renderThisTitle()
             settingsPanels.renderPlayerVod(this)
         }
     }
@@ -4543,7 +4573,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var thisTitleSession = -1
 
     /** The top of Settings: what this film or episode was matched as, and how to put it right. */
-    private fun SidePanel.renderThisTitle(from: View) {
+    private fun SidePanel.renderThisTitle() {
         val entry = currentEntry() ?: return
         if (thisTitleSession != session) {
             thisTitleSession = session
@@ -4571,7 +4601,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             if (!thisTitleOpen) return
             val why = when {
-                !tmdb.isConfigured -> "Add a TMDB API key (Statuses, below) to match episodes with TMDB's names and numbers."
+                !tmdb.isConfigured -> "Needs a TMDB API key (Statuses, below) to match episodes with TMDB's names and numbers."
                 ep.why != null && ep.joined -> ep.why + " TMDB's: " + ep.parts.joinToString(" and ") { "S${it.season} E${it.number}" } + "."
                 ep.why != null -> ep.why.orEmpty()
                 ep.match == ShowGuide.Match.NONE -> "TMDB doesn't know this show by your provider's name. Fix match finds it."
@@ -4584,9 +4614,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }.asSubRow()
-            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }.asSubRow()
-            row("Picture & sound") { openQuality(from, show = true) }.asSubRow()
-            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }.asSubRow()
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(show = true) }.asSubRow()
+            row("Picture & sound") { openQuality(show = true) }.asSubRow()
+            if (tmdb.isConfigured) row("Fix match") { openFixShow() }.asSubRow()
             if (portal != null) row("Source", portal) {}.asSubRow()
             // Why it was matched so, under the card, so the card stays whole.
             message(why)
@@ -4602,11 +4632,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
-            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }.asSubRow()
-            row("Picture & sound") { openQuality(from, show = false) }.asSubRow()
-            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }.asSubRow()
+            if (tmdb.isConfigured) row("Film details") { openDetails(show = false) }.asSubRow()
+            row("Picture & sound") { openQuality(show = false) }.asSubRow()
+            if (tmdb.isConfigured) row("Fix match") { openFixFilm() }.asSubRow()
             row("Source", portal) {}.asSubRow()
-            if (!tmdb.isConfigured) message("Add a TMDB API key (Statuses, below) to fix this film's name.")
+            if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this film's name.")
         }
     }
 
@@ -4615,7 +4645,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var about: Tmdb.About? = null
     private var aboutStatus: String? = null
 
-    private fun openDetails(from: View, show: Boolean) {
+    private fun openDetails(show: Boolean) {
         val entry = currentEntry() ?: return
         if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
             aboutFor = entry.key
@@ -4623,8 +4653,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             aboutStatus = LOADING
             loadAbout(entry, show)
         }
-        panel.close()
-        openPanel(if (show) "Show details" else "Film details", from) {
+        // Over Settings, as every window opened from a row is: Back comes back to it.
+        panel.openSub(if (show) "Show details" else "Film details") {
             val a = about
             if (a == null) message(aboutStatus ?: LOADING)
             else details(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri))
@@ -4636,11 +4666,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * then what the copy playing is made of; then every copy the provider lists. The button is the first thing focused,
      * so the window opens at its top.
      */
-    private fun openQuality(from: View, show: Boolean) {
+    private fun openQuality(show: Boolean) {
         val entry = currentEntry() ?: return
         if (copiesFor != entry.key) loadCopies(entry, show)
-        panel.close()
-        openPanel("Picture & sound", from) {
+        panel.openSub("Picture & sound") {
             val v = copyVerdict()
             bestButton(v)
             pictureAndSound()
@@ -4899,7 +4928,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val uri = entry.uri
         val seriesId = if (show) NextEpisode.rememberedShowId(this, uri) else null
         val showTmdb = guide?.tmdbId ?: 0
-        moreCopiesOpen = false
         copyList = null
         copiesOriginal = null
         if (show && seriesId == null) {
@@ -5082,15 +5110,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         order.forEach { copyRow(it) }
         if (unknown.isNotEmpty()) {
-            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", null, Rows.Badge.INACTIVE, moreCopiesOpen) {
-                moreCopiesOpen = !moreCopiesOpen
+            val open = isPartOpen("moreCopies")
+            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", null, Rows.Badge.INACTIVE, open) {
+                togglePart("moreCopies")
                 refresh()
             }
-            if (moreCopiesOpen) unknown.forEach { copyRow(it) }
+            if (open) unknown.forEach { copyRow(it) }
         }
     }
-
-    private var moreCopiesOpen = false
 
     /** Plays another copy of this title from where this one is, in place of it. */
     private fun playCopy(copy: Copies.Copy) {
@@ -5373,22 +5400,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var fixRest = true
     private val fixSeasons = HashMap<Int, List<Tmdb.TvEpisode>?>()
 
-    private fun openFixFilm(from: View) {
+    private fun openFixFilm() {
         val entry = currentEntry() ?: return
         fixQuery = entry.english?.searchQuery ?: entry.info.searchQuery
-        openFixSearch(from, shows = false)
+        openFixSearch(shows = false)
     }
 
-    private fun openFixShow(from: View) {
+    private fun openFixShow() {
         fixQuery = guide?.searchName ?: currentEntry()?.info?.searchQuery.orEmpty()
-        openFixSearch(from, shows = true)
+        openFixSearch(shows = true)
     }
 
-    private fun openFixSearch(from: View, shows: Boolean) {
+    private fun openFixSearch(shows: Boolean) {
         fixHits = emptyList()
         fixStatus = "Searching…"
         runFixSearch(shows)
-        openPanel(if (shows) "Fix match · Find the show" else "Fix match · Find the film", from) {
+        // Over the window it was opened from (Back comes back to it).
+        panel.openSub(if (shows) "Fix match · Find the show" else "Fix match · Find the film") {
             searchBox(fixQuery, "TMDB") {
                 SidePanel.prompt(this@PlayerActivity, "Search TMDB", fixQuery) {
                     fixQuery = it.trim()
@@ -5400,7 +5428,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             fixHits.forEach { hit ->
                 resultRow(hit.name, listOfNotNull(hit.year, if (hit.show) "TV show" else "Film").joinToString(" · "), null,
                     poster = hit.poster, withPoster = true) {
-                    if (hit.show) pickFixShow(hit, from) else saveFixFilm(hit)
+                    if (hit.show) pickFixShow(hit) else saveFixFilm(hit)
                 }
             }
             message("Press OK on the search box to type. FirePlayer starts it with the name your provider gave.")
@@ -5440,7 +5468,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /** Step two for a show: which of its episodes this is. Starts on where it's paired now. */
-    private fun pickFixShow(hit: Tmdb.Hit, from: View) {
+    private fun pickFixShow(hit: Tmdb.Hit) {
         val entry = currentEntry() ?: return
         val ep = guideEpisode(entry)
         fixShow = hit
@@ -5449,9 +5477,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         fixNumber = ep?.number ?: entry.info.episode ?: 1
         fixRest = true
         loadFixSeason()
-        panel.close()
-        openPanel("Fix match · Pick the episode", from) {
-            val show = fixShow ?: return@openPanel
+        // Over the search (Back goes back to the results).
+        panel.openSub("Fix match · Pick the episode") {
+            val show = fixShow ?: return@openSub
             facts(listOfNotNull(
                 ep?.let { e ->
                     val own = e.providerTitle.takeIf { it.isNotEmpty() }?.let { " · “$it”" }.orEmpty()
@@ -5482,7 +5510,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                         picked.overview), top = 4, bottom = 6)
                 }
             }
-            row("Move the rest of the season too", if (fixRest) "On" else "Off") {
+            row("Move the rest of the season too", app.fireplayer.ui.SettingsPanels.onOff(fixRest)) {
                 fixRest = !fixRest
                 refresh()
             }
@@ -5547,7 +5575,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // What TMDB made of the name, shown above the results.
     private var findMatch: String? = null
 
-    private fun openFindPanel(from: View) {
+    /** Find subtitles, over the Subtitles window it's opened from (Back comes back to it). */
+    private fun openFindPanel() {
         val entry = entries.getOrNull(player?.currentMediaItemIndex ?: 0) ?: return
         if (findFor != entry.key) {
             // Another video (the next episode, say): start again from its own name and number.
@@ -5574,15 +5603,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
             }
         }
-        openPanel("Find subtitles", from) {
+        panel.openSub("Find subtitles") {
             if (!openSubtitles.isConfigured) {
-                message("Add your free OpenSubtitles API key to search for subtitles.")
-                // Straight to where the key is entered (Accounts & services; the player's Settings has the status).
+                message("Needs an OpenSubtitles API key (free, from opensubtitles.com).")
+                // Straight to where the key is entered (Accounts & services; the player's Settings has the status), over
+                // this window, so Back comes back to the search with the key in.
                 row("Add the key") {
-                    panel.close()
-                    openPanel(app.fireplayer.ui.SettingsCategory.ACCOUNTS.title, from) { settingsPanels.credentialsSection(this) }
+                    openSub(app.fireplayer.ui.SettingsCategory.ACCOUNTS.title) { settingsPanels.credentialsSection(this) }
                 }
-                return@openPanel
+                return@openSub
             }
             row("Search for", findQuery) {
                 SidePanel.prompt(this@PlayerActivity, "Search for", findQuery.orEmpty()) {
@@ -5591,8 +5620,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
             }
             if (findIsShow) {
-                stepper("Season", findSeason.toString()) { findSeason = (findSeason + it).coerceIn(0, 99) }
-                stepper("Episode", findEpisode.toString()) { findEpisode = (findEpisode + it).coerceIn(0, 999) }
+                // Side by side, as Fix match sets them.
+                steppers(listOf(
+                    SidePanel.Step("Season", findSeason.toString()) { findSeason = (findSeason + it).coerceIn(0, 99) },
+                    SidePanel.Step("Episode", findEpisode.toString()) { findEpisode = (findEpisode + it).coerceIn(0, 999) },
+                ))
             }
             val languages = SEARCH_LANGUAGES
             choice("Language", languages.map { settingsPanels.languageName(it) }, languages.indexOf(searchLanguage())) {
@@ -5622,8 +5654,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     val notes = listOf(if (on) "In use" else usedAgo(s.lastUsed), lang).filter { it.isNotEmpty() }.joinToString(" · ")
                     resultRow(readableRelease(s.release), notes, null, selected = on) { useSaved(entry, s) }
                 }
-                if (findResults.isNotEmpty()) header("Search results")
             }
+            // The results under their heading whether or not any were downloaded before.
+            if (findResults.isNotEmpty()) header("Search results")
             val savedIds = saved.mapTo(HashSet()) { it.fileId }
             findResults.filter { it.result.fileId !in savedIds }.forEach { ranked ->
                 val r = ranked.result

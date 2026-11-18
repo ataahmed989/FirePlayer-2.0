@@ -34,11 +34,11 @@ import java.util.concurrent.Executors
 
 /**
  * Live TV's settings windows, in the shared SidePanel:
- * - Live FirePlayer Settings ([openPlayerSettings], over Live TV: Menu or the Settings button): Playlists and EPG
+ * - Live FirePlayer Settings ([openPlayerSettings], over Live TV: Menu or the Settings button): Playlists & EPG
  *   ([playlistsAndEpg]), then the shared Remote / Look / Defaults / Playback / Statuses / App sections
  *   ([SettingsPanels.renderPlayerLive]).
  * - Manage playlists (Add playlist, Reorder playlists) and Manage EPG sources (each playlist's EPG, Days to keep EPG,
- *   Update interval, Update EPG, Clear EPG): wide windows under Playlists and EPG.
+ *   EPG update interval, Update EPG, Clear EPG): windows under Playlists & EPG.
  * - Individual playlist settings (name, EPG sources, Xtream parameters or M3U link, account, Manage groups, updates).
  * - Manage groups (hide or show each group, all, new ones; reorder the shown ones; Assign favorites) and Reorder
  *   playlists: wide windows, long lists ([SidePanel.longList]) so 350 groups open at once.
@@ -52,8 +52,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     private val sync = LiveSync.get(activity)
     private val prefs = LivePrefs(activity)
     private val io = Executors.newSingleThreadExecutor()
-    /** Favorites set in Assign favorites are stored here, never queued behind the settings' reads. */
-    private val writes = Executors.newSingleThreadExecutor()
+    /**
+     * Favorites set in Assign favorites are stored here, never queued behind the settings' reads: the one queue the
+     * guide's own stars go through too, so a read after it sees those as well ([LiveDb.writes]).
+     */
+    private val writes get() = LiveDb.writes
     private var released = false
     /** Questions to the provider (Active connections): never ahead of the settings' own reads and saves. */
     private val net = Executors.newSingleThreadExecutor()
@@ -111,8 +114,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         main.removeCallbacks(tell)
         tell.run()
         io.shutdown()
-        // Queued favorites are still stored.
-        writes.shutdown()
+        // Queued favorites are still stored (the queue is the app's, not this window's).
         net.shutdownNow()
     }
 
@@ -135,17 +137,18 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     // ---- Live FirePlayer Settings (the contextual window over Live TV) ---------------------------------------------
 
-    /** Live FirePlayer Settings: Playlists and EPG, Remote, Look, Defaults, Playback, Statuses, App (user spec). */
+    /** Live FirePlayer Settings: Playlists & EPG, Remote, Look, Defaults, Playback, Statuses, App (user spec). */
     fun openPlayerSettings(shared: SettingsPanels, onClose: (() -> Unit)? = null) = reloadThen {
         panel.open("Settings", onClose) {
-            header("Playlists and EPG")
+            // Named as its category in App settings and the Settings tab.
+            header(SettingsCategory.PLAYLISTS_EPG.title)
             playlistsAndEpg(this, headings = false)
-            shared.renderPlayerLive(this) { channelButtons(this) }
+            shared.renderPlayerLive(this) { channelButtonsRow(this, activity) }
         }
     }
 
     /**
-     * Playlists and EPG as Live FirePlayer Settings and the Settings tab's Playlists & EPG both show them (user
+     * Playlists & EPG as Live FirePlayer Settings and the Settings tab's Playlists & EPG both show them (user
      * outline): each playlist, Manage playlists, Update playlists; then EPG sources ▾, closed each time the window
      * opens, with Manage EPG sources under it. [headings]: Playlists and EPG under headings of their own, in the window
      * that holds only them.
@@ -157,26 +160,15 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         epgRows(this, saysIfNone = headings)
     }
 
-    /**
-     * Remote › Channel changing buttons: the two ways as rows (the chosen one ticked), with what the chosen one does.
-     * (As one row with its value, the long names didn't fit the window.)
-     */
-    private fun channelButtons(p: SidePanel) = with(p) {
-        message("Channel changing buttons")
-        val only = prefs.channelButtonsOnly
-        row("D-pad + channel buttons", checked = !only) { prefs.channelButtonsOnly = false; refresh() }
-        row("Channel buttons only", checked = only) { prefs.channelButtonsOnly = true; refresh() }
-        message(
-            if (only) "Channel +/− change channels. Up/Down or Center show the controls."
-            else "With the controls hidden, Up/Down and Channel +/− change channels. Center shows the controls.",
-        )
-    }
 
     // ---- Playlists ------------------------------------------------------------------------------------------------
 
-    /** The Playlists window, from Live TV while it has no playlists. */
+    /** The Playlists window, from Live TV while it has no playlists: under the heading Playlists & EPG gives them. */
     fun openPlaylists(onClose: (() -> Unit)? = null) = reloadThen {
-        panel.open("Playlists", onClose) { playlistRows(this) }
+        panel.open("Playlists", onClose) {
+            header("Playlists")
+            playlistRows(this)
+        }
     }
 
     /**
@@ -199,25 +191,27 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun managePlaylistsRow(p: SidePanel) {
-        p.row("Manage playlists") { p.openSub("Manage playlists", wide = true) { managePlaylists(this) } }
+        // Two short rows: the usual width (wide windows are for long names).
+        p.row("Manage playlists") { p.openSub("Manage playlists") { managePlaylists(this) } }
     }
 
     /** Manage playlists (user outline): Add playlist and Reorder playlists. */
     private fun managePlaylists(p: SidePanel): Unit = with(p) {
+        header("Playlists")
         row("Add playlist") { addPlaylist() }
         reorderPlaylistsRow(this)
     }
 
     /**
      * Reorder playlists: with fewer than two, dimmed and saying so; it stays focusable (focus doesn't jump past it)
-     * and does nothing.
+     * and does nothing. Reorder groups does the same.
      */
     private fun reorderPlaylistsRow(p: SidePanel) {
         val ready = playlists.size > 1
         val row = p.row("Reorder playlists", if (ready) null else "Needs 2 playlists") {
             if (playlists.size > 1) p.openSub("Reorder playlists", wide = true) { reorderPlaylists(this) }
         }
-        if (!ready) row.alpha = 0.45f
+        if (!ready) p.dim(row)
     }
 
     /**
@@ -229,14 +223,14 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         val row = p.row(label, updatedText(lastSync)) {
             if (!sync.busy) { start(); p.refresh() }
         }
-        if (busy) row.alpha = 0.45f
+        if (busy) p.dim(row)
     }
 
     /** "Updating…" while anything updates, else "Updated 5:04 PM" (or "yesterday", "Nov 15"), or "Never updated". */
     private fun updatedText(lastSync: Long): String = when {
         sync.busy -> "Updating…"
         lastSync > 0 -> "Updated ${whenText(lastSync, short = true)}"
-        else -> "Never updated"
+        else -> NEVER_UPDATED
     }
 
     /** "5:04 PM" today, "yesterday 5:04 PM", else "Nov 15, 5:04 PM" ([short]: "yesterday", "Nov 15"). */
@@ -253,7 +247,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun shortStatus(p: Playlist): String = when {
-        p.lastStatus.isBlank() -> "Not updated yet"
+        p.lastStatus.isBlank() -> NEVER_UPDATED
         p.lastStatus.startsWith("Updated: ") -> p.lastStatus.removePrefix("Updated: ")
         else -> p.lastStatus
     }
@@ -272,7 +266,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     /** Asks the provider how many of the account's connections are in use (Xtream only), then shows it. */
     private fun askConnections(pl: Playlist, window: Int) {
         if (pl.kind != PlaylistKind.XTREAM || !asking.add(pl.id)) return
-        connections[pl.id] = "Checking…"
+        connections[pl.id] = CHECKING
         net.execute {
             val account = runCatching { XtreamApi(pl).get(null)?.let { XtreamParser.account(it) } }.getOrNull()
             val text = when {
@@ -291,27 +285,32 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     private fun renderPlaylist(p: SidePanel, id: String) = with(p) {
         val pl = playlists.firstOrNull { it.id == id } ?: run { message("This playlist was deleted."); return@with }
-        message(if (sync.busy) "Updating…" else "${pl.lastStatus.ifBlank { "Not updated yet" }} (last update: ${if (pl.lastSync > 0) whenText(pl.lastSync) else "never"})")
 
         header("Playlist")
         row("Name", pl.name) { edit("Name", pl.name) { v -> save(pl.copy(name = v.ifBlank { pl.name })) } }
+        // How the last update went, read-only, as the account's rows are (when it was is on Update playlist below).
+        row("Status", shortStatus(pl)) {}
+        // A problem in full under the card: the row's value is shortened.
+        if (pl.lastStatus.isNotBlank() && !pl.lastStatus.startsWith("Updated")) message(pl.lastStatus.removeSuffix(".") + ".")
 
         // This playlist's own EPG comes first; others fill in only by an exact EPG id (automatic or manual fallback is
         // still to be decided: the automatic one stays provisional).
         header("EPG sources")
         val own = epg[pl.id]
         // A link of the viewer's own can carry a sign-in too: only where it points is shown, and its box starts empty.
-        row("Own EPG", if (pl.epgUrl.isBlank()) (if (pl.kind == PlaylistKind.XTREAM) "The server's own" else "The playlist's own") else hostName(pl.epgUrl)) {
+        val ownName = if (pl.kind == PlaylistKind.XTREAM) "server's" else "playlist's"
+        row("Own EPG", if (pl.epgUrl.isBlank()) "The $ownName own" else hostName(pl.epgUrl)) {
             SidePanel.prompt(activity, "EPG link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
-                hint = if (pl.epgUrl.isBlank()) "An XMLTV link (blank: the playlist's own)" else "Saved · type a new one to replace it") { v ->
+                hint = if (pl.epgUrl.isBlank()) "An XMLTV link (blank: the $ownName own)" else "Saved · type a new one to replace it") { v ->
                 if (v.isNotBlank()) save(pl.copy(epgUrl = normalized(v)))
             }
         }
-        if (pl.epgUrl.isNotBlank()) row("Use the playlist's own EPG") { save(pl.copy(epgUrl = "")) }.asSubRow()
+        if (pl.epgUrl.isNotBlank()) row("Use the $ownName own EPG") { save(pl.copy(epgUrl = "")) }.asSubRow()
         row("Own EPG status", epgValue(own)) {}.asSubRow()
         val others = playlists.filter { it.id != pl.id && (epg[it.id]?.programmes ?: 0) > 0 }
-        row("Fallback", if (others.isEmpty()) "None" else others.joinToString { it.name }, enabled = false) {}
-        message("Only when this playlist has no listings of its own: other playlists' EPGs, for channels with exactly the same EPG id.")
+        // Read-only, at full brightness and focusable, as the other rows that only say how things stand.
+        row("Fallback", if (others.isEmpty()) "None" else others.joinToString { it.name }) {}
+        message(FALLBACK_NOTE)
 
         if (pl.kind == PlaylistKind.XTREAM) {
             header("Xtream Codes parameters")
@@ -324,20 +323,28 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 }
             }
             row("Username", pl.username) { edit("Username", pl.username) { v -> save(pl.copy(username = v.trim())) } }
-            row("Password", if (pl.password.isNotEmpty()) "Set" else "Not set") {
+            // As the sign-in rows in Accounts & services: a badge saying whether one is saved, never the password.
+            badgeRow("Password", if (pl.password.isNotEmpty()) "Set" else "Not set", if (pl.password.isNotEmpty()) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
                 SidePanel.prompt(activity, "Password", "", password = true) { v -> if (v.isNotEmpty()) save(pl.copy(password = v)) }
             }
             choice("Output format", listOf("MPEG-TS (.ts)", "HLS (.m3u8)"), if (pl.output == "m3u8") 1 else 0) { i ->
                 save(pl.copy(output = if (i == 1) "m3u8" else "ts"))
             }
-            row("Include TV channels", if (pl.includeLive) "On" else "Off") { save(pl.copy(includeLive = !pl.includeLive)) }
+            row("Include TV channels", SettingsPanels.onOff(pl.includeLive)) { save(pl.copy(includeLive = !pl.includeLive)) }
             includeVod(this)
 
             // Read-only, as the provider reports them.
             header("Account")
             row("Account expires", if (pl.expiresAt > 0) DateFormat.getMediumDateFormat(activity).format(Date(pl.expiresAt)) else "Not reported") {}
             row("Connection allowance", if (pl.maxConnections > 0) "${pl.maxConnections}" else "Not reported") {}
-            row("Active connections", connections[pl.id] ?: "—") { askConnections(pl, session); refresh() }
+            // While the provider is asked, dimmed and doing nothing, as the other rows that check something.
+            val asked = connections[pl.id] == CHECKING
+            val active = row("Active connections", connections[pl.id] ?: "—") {
+                if (connections[pl.id] == CHECKING) return@row
+                askConnections(pl, session)
+                refresh()
+            }
+            if (asked) dim(active)
         } else {
             header("M3U playlist")
             // The link often carries the sign-in: only where it points is shown, and its box starts empty.
@@ -350,7 +357,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                     save(pl.copy(url = url, name = name))
                 }
             }
-            row("Include TV channels", if (pl.includeLive) "On" else "Off") { save(pl.copy(includeLive = !pl.includeLive)) }
+            row("Include TV channels", SettingsPanels.onOff(pl.includeLive)) { save(pl.copy(includeLive = !pl.includeLive)) }
             includeVod(this)
         }
 
@@ -366,8 +373,10 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             save(pl.copy(updateHours = hours[i]))
         }
         updateRow(this, "Update playlist", pl.lastSync) { sync.update(pl.id) }
-        row("Delete playlist") {
-            FireDialog.ask(activity, "Delete \"${pl.name}\"? Its channels, favorites and guide go too.", listOf(
+        // Named, as the other Delete rows are. Focus starts on the safe answer, so a double press doesn't delete; Menu
+        // closes it with the window.
+        row("Delete \"${pl.name}\"") {
+            FireDialog.ask(activity, "Delete \"${pl.name}\"? Its channels, favorites and guide go too.", listOf<Pair<String, () -> Unit>>(
                 "Delete" to {
                     val window = session
                     // Its channel stops if it's the one playing (or remembered), and isn't brought back later.
@@ -385,8 +394,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                         }
                     }
                 },
-                "Cancel" to {},
-            ))
+                "Keep it" to {},
+            ), focus = 1, fromPanel = true)
         }
     }
 
@@ -422,7 +431,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         FireDialog.ask(activity, "Add playlist", listOf(
             "Xtream Codes" to { addXtream() },
             "M3U playlist link" to { addM3u() },
-        ))
+        ), fromPanel = true)
     }
 
     private fun addXtream() {
@@ -575,8 +584,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     // ---- Manage groups ----------------------------------------------------------------------------------------------
 
     /**
-     * Manage groups on its own, over the guide: [playlistId]'s window, with focus on [groupId]'s row if given. The
-     * playlist and its groups are read first. [onClose] runs when it closes.
+     * Manage groups on its own, over the guide (a group's held window): [playlistId]'s window, with focus on [groupId]'s
+     * row if given. The playlist and its groups are read first. [onClose] runs when it closes.
      */
     fun openManageGroups(playlistId: String, groupId: String? = null, onClose: (() -> Unit)? = null) = reloadThen(groupsOf = playlistId) {
         panel.open("Manage groups", onClose, wide = true) { manageGroups(this, playlistId) }
@@ -584,10 +593,10 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     /**
-     * Manage groups (user spec), one wide window per playlist: Assign favorites; Reorder groups (how many are shown);
-     * then Hide or show — Hide new groups, Show all, Hide all, and a switch for each group. Hidden groups and their
-     * channels leave the guide. A long list (350 groups open at once); a switch flips in place at once and is stored
-     * behind it.
+     * Manage groups (user spec), one wide window per playlist, each part under its heading: Favorites (Assign
+     * favorites); Order (Reorder groups, how many are shown); then Hide or show — Hide new groups, Show all, Hide all,
+     * and a switch for each group. Hidden groups and their channels leave the guide. A long list (350 groups open at
+     * once); a switch flips in place at once and is stored behind it.
      */
     private fun manageGroups(p: SidePanel, playlistId: String): Unit = with(p) {
         if (playlists.none { it.id == playlistId }) { message("This playlist was deleted."); return@with }
@@ -600,21 +609,31 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
         override val size: Int get() = FIRST_GROUP + all.size
 
+        /** Reorder groups needs two shown groups, as Reorder playlists needs two playlists. */
+        private val canReorder: Boolean get() = all.count { !it.hidden } > 1
+
         override fun entry(index: Int): ListEntry = when (index) {
-            0 -> ListEntry("favorites", "Assign favorites")
-            1 -> ListEntry("reorder", "Reorder groups", "${all.count { !it.hidden }} shown")
-            2 -> ListEntry("hideOrShow", "Hide or show", kind = ListEntry.Kind.HEADING)
-            3 -> ListEntry("hideNew", "Hide new groups", if (playlists.firstOrNull { it.id == playlistId }?.hideNewGroups == true) "On" else "Off")
-            4 -> ListEntry("showAll", "Show all")
-            5 -> ListEntry("hideAll", "Hide all")
-            else -> all[index - FIRST_GROUP].let { g -> ListEntry(GROUP + g.id, g.name, if (g.hidden) "Off" else "On", sub = true) }
+            0 -> ListEntry("favHeading", "Favorites", kind = ListEntry.Kind.HEADING)
+            1 -> ListEntry("favorites", "Assign favorites")
+            2 -> ListEntry("orderHeading", "Order", kind = ListEntry.Kind.HEADING)
+            REORDER -> ListEntry(
+                "reorder", "Reorder groups",
+                if (canReorder) "${all.count { !it.hidden }} shown" else "Needs 2 shown groups",
+                dimmed = !canReorder,
+            )
+            4 -> ListEntry("hideOrShow", "Hide or show", kind = ListEntry.Kind.HEADING)
+            5 -> ListEntry("hideNew", "Hide new groups", SettingsPanels.onOff(playlists.firstOrNull { it.id == playlistId }?.hideNewGroups == true))
+            6 -> ListEntry("showAll", "Show all")
+            7 -> ListEntry("hideAll", "Hide all")
+            else -> all[index - FIRST_GROUP].let { g -> ListEntry(GROUP + g.id, g.name, SettingsPanels.onOff(!g.hidden), sub = true) }
         }
 
         override fun onClick(index: Int) {
             when (index) {
-                0 -> openFavoriteGroups(playlistId)
-                1 -> p.openSub("Reorder groups", wide = true) { reorderGroups(this, playlistId) }
-                3 -> {
+                1 -> openFavoriteGroups(playlistId)
+                // Dimmed with fewer than two shown: it does nothing.
+                REORDER -> if (canReorder) p.openSub("Reorder groups", wide = true) { reorderGroups(this, playlistId) }
+                5 -> {
                     val pl = playlists.firstOrNull { it.id == playlistId } ?: return
                     val updated = pl.copy(hideNewGroups = !pl.hideNewGroups)
                     // Shown at once; stored behind it.
@@ -622,15 +641,15 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                     p.changed(index)
                     io.execute { db.savePlaylist(updated) }
                 }
-                4 -> setAllGroups(p, playlistId, hidden = false)
-                5 -> setAllGroups(p, playlistId, hidden = true)
-                else -> {
+                6 -> setAllGroups(p, playlistId, hidden = false)
+                7 -> setAllGroups(p, playlistId, hidden = true)
+                in FIRST_GROUP until size -> {
                     // The group as it is now (this row may have been flipped since it was drawn).
                     val g = all.getOrNull(index - FIRST_GROUP) ?: return
                     val hide = !g.hidden
                     groups[playlistId] = all.map { if (it.id == g.id) it.copy(hidden = hide) else it }
                     p.changed(index)
-                    p.changed(1)
+                    p.changed(REORDER)
                     io.execute {
                         db.setGroupHidden(playlistId, g.id, hide)
                         main.post { tellGuide(playlistId) }
@@ -644,7 +663,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     private fun setAllGroups(p: SidePanel, playlistId: String, hidden: Boolean) {
         val all = groups[playlistId].orEmpty()
         groups[playlistId] = all.map { it.copy(hidden = hidden) }
-        p.changed(1)
+        p.changed(REORDER)
         p.changed(FIRST_GROUP, all.size)
         io.execute {
             db.setAllGroupsHidden(playlistId, hidden)
@@ -661,7 +680,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
      */
     fun openAssignFavorites(playlistId: String, groupId: String? = null, channel: ChannelKey? = null, onClose: (() -> Unit)? = null) {
         reloadThen(groupsOf = playlistId) {
-            readFavorites(playlistId, groupId?.takeIf { id -> groups[playlistId].orEmpty().any { it.id == id } }) {
+            readFavorites(playlistId, groupId?.takeIf { id -> groups[playlistId].orEmpty().any { it.id == id } }, from = null) {
                 panel.open("Assign favorites", onClose, wide = true) { favoriteGroups(this, playlistId) }
                 val group = groupId?.let { id -> groups[playlistId].orEmpty().firstOrNull { it.id == id } }
                 if (group == null || shownChannels?.groupId != group.id) return@readFavorites
@@ -681,13 +700,16 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * Reads [playlistId]'s favorites per group (and [groupId]'s channels), once every star set before is stored, then
-     * [then] on the main thread.
+     * [then] on the main thread. Asked [from] a window (its session): what was read is kept only while that window is
+     * still the one open, so a second press while the first read was on its way can't swap in a list read before the
+     * stars set since.
      */
-    private fun readFavorites(playlistId: String, groupId: String?, then: () -> Unit) = afterWrites {
+    private fun readFavorites(playlistId: String, groupId: String?, from: Int?, then: () -> Unit) = afterWrites {
         io.execute {
             val counts = db.favoriteCounts(playlistId)
             val channels = groupId?.let { db.channels(GuideScope.Group(playlistId, it)) }
             main.post {
+                if (from != null && (!panel.isOpen || panel.session != from)) return@post
                 favoriteCounts[playlistId] = counts.toMutableMap()
                 if (groupId != null && channels != null) shownChannels = GroupChannels(playlistId, groupId, channels.toMutableList())
                 then()
@@ -698,32 +720,34 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     /** Assign favorites from Manage groups: the playlist's groups, over it. */
     private fun openFavoriteGroups(playlistId: String) {
         val from = panel.session
-        readFavorites(playlistId, null) {
-            // Only into the window it was asked from (it may have closed, or moved on, while they were read).
-            if (!panel.isOpen || panel.session != from) return@readFavorites
+        // Only into the window it was asked from (it may have closed, or moved on, while they were read).
+        readFavorites(playlistId, null, from) {
             panel.openSub("Assign favorites", wide = true) { favoriteGroups(this, playlistId) }
         }
     }
 
     /**
-     * Assign favorites, the groups: the shown ones in the guide's order, then the hidden ones (dimmed, under their
-     * own heading), each with how many favorites it holds. OK opens a group's channels.
+     * Assign favorites, the groups: the shown ones in the guide's order under a Groups heading, then the hidden ones
+     * (dimmed, under their own heading), each with how many favorites it holds. OK opens a group's channels.
      */
     private fun favoriteGroups(p: SidePanel, playlistId: String): Unit = with(p) {
         if (playlists.none { it.id == playlistId }) { message("This playlist was deleted."); return@with }
         val ordered = FavoriteGroups.order(groups[playlistId].orEmpty())
         if (ordered.isEmpty()) { message("This playlist has no groups yet. They appear after its next update."); return@with }
         val shown = ordered.count { !it.hidden }
-        // The hidden groups follow under a heading of their own.
-        val headingAt = if (shown < ordered.size) shown else -1
+        // The shown groups under a heading, as the hidden ones that follow are under theirs.
+        val layout = FavoriteGroups.Headings(shown, ordered.size)
         longList(object : LongList {
-            override val size: Int get() = ordered.size + if (headingAt >= 0) 1 else 0
+            override val size: Int get() = layout.size
 
-            private fun groupAt(index: Int): ChannelGroup? =
-                if (headingAt < 0 || index < headingAt) ordered[index] else if (index == headingAt) null else ordered[index - 1]
+            private fun groupAt(index: Int): ChannelGroup? = layout.groupAt(index)?.let { ordered[it] }
 
             override fun entry(index: Int): ListEntry {
-                val g = groupAt(index) ?: return ListEntry("hidden", "Hidden groups", kind = ListEntry.Kind.HEADING)
+                val g = groupAt(index) ?: return if (index == layout.shownHeading) {
+                    ListEntry("shown", "Groups", kind = ListEntry.Kind.HEADING)
+                } else {
+                    ListEntry("hidden", "Hidden groups", kind = ListEntry.Kind.HEADING)
+                }
                 val count = favoriteCounts[playlistId]?.get(g.id) ?: 0
                 return ListEntry(GROUP + g.id, g.name, FavoriteGroups.countText(count), faded = g.hidden)
             }
@@ -738,8 +762,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     /** A group's channels in Assign favorites, read first (once every star set before is stored). */
     private fun openFavoriteChannels(playlistId: String, g: ChannelGroup) {
         val from = panel.session
-        readFavorites(playlistId, g.id) {
-            if (!panel.isOpen || panel.session != from) return@readFavorites
+        readFavorites(playlistId, g.id, from) {
             panel.openSub(g.name, wide = true) { favoriteChannels(this, playlistId, g.id) }
         }
     }
@@ -790,8 +813,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
      * window from the Settings tab ([onClose]); [sub]: over the window that's open (App settings' list), Back returns
      * to it.
      */
-    fun openPlaylistsAndEpg(onClose: (() -> Unit)? = null, sub: Boolean = false) = reloadThen {
-        show(SettingsCategory.PLAYLISTS_EPG.title, onClose, sub) { playlistsAndEpg(this, headings = true) }
+    fun openPlaylistsAndEpg(onClose: (() -> Unit)? = null, sub: Boolean = false) {
+        val from = panel.session
+        reloadThen {
+            // Over App settings' list only while it's still the window open (a second press, or Back, meanwhile).
+            if (sub && (!panel.isOpen || panel.session != from)) return@reloadThen
+            show(SettingsCategory.PLAYLISTS_EPG.title, onClose, sub) { playlistsAndEpg(this, headings = true) }
+        }
     }
 
     /** Live TV's categories of App settings (Playlists & EPG, Live TV) over the window that's open. */
@@ -808,7 +836,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun epgValue(s: LiveDb.EpgStatus?): String = when {
-        s == null -> "Not loaded"
+        s == null -> NOT_LOADED
         s.status == "OK" -> "${s.programmes} programmes · ${whenText(s.lastSync)}"
         else -> s.status
     }
@@ -823,7 +851,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         val epgOpen = isPartOpen("epgSources")
         val loaded = playlists.count { (epg[it.id]?.programmes ?: 0) > 0 }
         val failing = playlists.any { epg[it.id]?.let { s -> s.status != "OK" } == true }
-        dropdownRow("EPG sources", "$loaded of ${playlists.size} loaded", if (failing) Rows.Badge.PROBLEM else if (loaded == playlists.size) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE, epgOpen) {
+        dropdownRow("EPG sources", "$loaded of ${playlists.size} loaded", Rows.countBadge(loaded, playlists.size, problem = failing), epgOpen) {
             togglePart("epgSources")
             refresh()
         }
@@ -836,8 +864,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * Manage EPG sources (user outline): each playlist's EPG with its number of programmes or its status (OK opens that
-     * playlist's window), then Days to keep EPG, Update interval, Update EPG and Clear EPG; the last status and where
-     * listings come from at the bottom.
+     * playlist's window), then EPG update interval, Update EPG and Clear EPG, then Days to keep EPG under Storage; the
+     * last status and where listings come from at the bottom.
      */
     private fun manageEpg(p: SidePanel): Unit = with(p) {
         header("EPG sources")
@@ -846,21 +874,25 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             row(pl.name, epgValue(epg[pl.id])) { openPlaylist(pl.id) }
         }
         header("Updates")
-        // Provisional: the outline fixes one day of past programmes; whether it's adjustable is still open.
-        row("Days to keep EPG", "1 day", enabled = false) {}
         val hours = listOf(6, 12, 24, 48)
-        choice("Update interval", hours.map { "Every $it hours" }, hours.indexOf(prefs.epgUpdateHours).let { if (it < 0) 2 else it }) { i ->
+        // Said apart from a playlist's own Update interval (its channels), a different saved value.
+        choice("EPG update interval", hours.map { "Every $it hours" }, hours.indexOf(prefs.epgUpdateHours).let { if (it < 0) 2 else it }) { i ->
             prefs.epgUpdateHours = hours[i]
         }
         updateRow(this, "Update EPG", lastEpgUpdate()) { sync.updateEpg() }
         row("Clear EPG") {
-            FireDialog.ask(activity, "Clear all programme listings? They load again at the next update.", listOf(
+            // Focus starts on the safe answer, so a double press doesn't clear; Menu closes it with the window.
+            FireDialog.ask(activity, "Clear all programme listings? They load again at the next update.", listOf<Pair<String, () -> Unit>>(
                 "Clear" to { sync.clearEpg() },
-                "Cancel" to {},
-            ))
+                "Keep it" to {},
+            ), focus = 1, fromPanel = true)
         }
+        header("Storage")
+        // Provisional: the outline fixes one day of past programmes; whether it's adjustable is still open. Read-only,
+        // at full brightness, as the other rows that only say how things stand.
+        row("Days to keep EPG", "1 day") {}
         message("Last status: " + lastEpgStatus())
-        message("Each playlist's guide comes from its own EPG. A playlist without one borrows another playlist's listings only for channels with the exact same EPG id.")
+        message(FALLBACK_NOTE)
     }
 
     /** When the EPG last loaded: the last import that worked (a failed one also records its time); 0 if never. */
@@ -868,8 +900,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /** The most recent EPG result, in words. */
     private fun lastEpgStatus(): String {
-        if (sync.busy) return "updating…"
-        val last = epg.values.maxByOrNull { it.lastSync } ?: return "not loaded yet."
+        if (sync.busy) return "Updating…"
+        val last = epg.values.maxByOrNull { it.lastSync } ?: return "$NOT_LOADED."
         val name = playlists.firstOrNull { it.id == last.source }?.name ?: "EPG"
         return if (last.status == "OK") "$name, ${last.programmes} programmes, ${whenText(last.lastSync)}."
         else "$name: ${last.status.removeSuffix(".")} (${whenText(last.lastSync)})."
@@ -881,16 +913,18 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     fun openLiveOptions(onClose: (() -> Unit)? = null, sub: Boolean = false) {
         show(SettingsCategory.LIVE_TV.title, onClose, sub) {
             header("Remote")
-            channelButtons(this)
+            app.fireplayer.ui.menuButtonRow(this, activity)
+            channelButtonsRow(this, activity)
             header("Full screen")
-            val hide = listOf(4, 6, 10, 0)
-            choice("Hide controls after", listOf("4 seconds", "6 seconds", "10 seconds", "Never"), hide.indexOf(prefs.controlsHideSec).let { if (it < 0) 1 else it }) { i ->
+            // Never first, as in every list of choices.
+            val hide = listOf(0, 4, 6, 10)
+            choice("Hide controls after", listOf("Never", "4 seconds", "6 seconds", "10 seconds"), hide.indexOf(prefs.controlsHideSec).let { if (it < 0) hide.indexOf(6) else it }) { i ->
                 prefs.controlsHideSec = hide[i]
             }
             header("Guide")
             val secs = listOf(0, 30, 60, 120, 300)
             val labels = listOf("Never", "30 seconds", "1 minute", "2 minutes", "5 minutes")
-            choice("Full screen after no key presses", labels, secs.indexOf(prefs.fullScreenAfterSec).let { if (it < 0) 1 else it }) { i ->
+            choice("Full screen after no key presses", labels, secs.indexOf(prefs.fullScreenAfterSec).let { if (it < 0) secs.indexOf(60) else it }) { i ->
                 prefs.fullScreenAfterSec = secs[i]
             }
             header("Playback")
@@ -906,7 +940,18 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             "The button beside each moves it to the top."
         /** A group's entry key in Manage groups and Assign favorites (focus comes back to it by this). */
         const val GROUP = "g|"
-        /** Manage groups: the group switches start after Assign favorites, Reorder groups, a heading and three rows. */
-        const val FIRST_GROUP = 6
+        /** Manage groups' Reorder groups row. */
+        const val REORDER = 3
+        /**
+         * Manage groups: the group switches start after Favorites and Assign favorites, Order and Reorder groups, then
+         * Hide or show and its three rows.
+         */
+        const val FIRST_GROUP = 8
+        const val CHECKING = "Checking…"
+        const val NEVER_UPDATED = "Never updated"
+        const val NOT_LOADED = "Not loaded"
+        /** Where a playlist's listings come from: said the same way in its window and in Manage EPG sources. */
+        const val FALLBACK_NOTE = "Each playlist's guide comes from its own EPG. A playlist without listings of its own " +
+            "borrows other playlists' listings, only for channels with exactly the same EPG id."
     }
 }
