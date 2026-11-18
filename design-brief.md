@@ -171,8 +171,9 @@ details behind a decision that the user has seen but not individually approved. 
 - **Header:** rotates the page's Top 10 (Home: featured) while idle; while focus is in the page's Continue row it shows
   the focused title; other rows don't change it.
 - **Rows:** 15 titles plus "See all". Holding OK on a title opens a small window (like Live TV's HoldPopup) with
-  "+ Add to list" chosen first (one press; "Remove from list" when already there) and Mark watched (user); on Continue rows also Open title page, Play from
-  beginning, Remove from Continue Watching (proposed). Rows per page editable in Settings › Rows like Manage groups.
+  "+ Add to list" chosen first (one press; "Remove from list" when already there) and Mark watched; on Continue
+  Watching cards also "Remove" (takes it out of Continue Watching) (user). Rows per page editable in Settings › Rows
+  like Manage groups.
 - **Scrolling** works like the Episodes sheet (`ui/EpisodesSheet.kt`): the chosen tile stays at the left edge and
   grows about 12% from its left edge with a fading ring, followers make room, and two critically damped `Spring`s
   drive position and growth so a held D-pad glides. Translation and scale only, no per-frame layout. Each row lays out

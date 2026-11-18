@@ -374,7 +374,7 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   along the Continue row (same on Home). 15 posters per row; hold OK: My List, Mark watched; MediaFusion rows off.
 - 2026-11-18 · User (sizing page comments): no More Like This button on the title page (it stays a row); TV Shows'
   row is "Continue Watching · Series"; holding OK on a title opens a small window with "+ Add to list" (chosen first)
-  and Mark watched.
+  and Mark watched; on Continue Watching cards also "Remove".
 - 2026-11-18 · User: title rows scroll like the Episodes sheet (chosen tile at the left edge, grows, one per press,
   held D-pad glides).
 - 2026-11-18 · User: best source depends on each TV (a This TV page in Settings); no file-size limit for now.
