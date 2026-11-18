@@ -178,7 +178,16 @@ details behind a decision that the user has seen but not individually approved. 
   grows about 12% from its left edge with a fading ring, followers make room, and two critically damped `Spring`s
   drive position and growth so a held D-pad glides. Translation and scale only, no per-frame layout. Each row lays out
   its 15 tiles once; the page's rows are recycled.
-- **Sizes:** open. To be set with the user, starting from the approved Home concept (Design-References 01/02).
+- **Sizes (user, 2026-11-18, chosen on the sizing page; units are dp on the 960 × 540 dp screen, 1 dp = 2 px at 1080p):**
+  - Content starts at x = 94 dp (after the 58 dp rail strip); 14 dp between cards; rows run off the right edge.
+  - Posters: 6.5 across, 3:4 → 121 × 162 dp; the chosen one grows **16%** → 141 × 188 dp.
+  - Continue Watching: wide 16:9 cards, 4.5 across → 182 × 102 dp; chosen 211 × 119 dp. A show's episode cards on
+    the title page use the same size. (The player's own Episodes sheet keeps its 12%.)
+  - Header: 195 dp tall, from y = 44 dp under a page-name/clock line; on Home the live/history window is 330 dp wide
+    beside a 496 dp header card. Movies and TV Shows use the same 195 dp header.
+  - Text: medium — row titles 16 sp, card captions 12.5 sp, header title 34 sp, facts 12.5 sp.
+  - Home scrolled down (past Continue Watching): the header and live window slide away and the focused row sits just
+    under the page-name line, giving about two and a half rows of posters.
 
 ### 6.4 Pressing titles and the title page
 

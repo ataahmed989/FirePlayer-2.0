@@ -372,6 +372,9 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   Continue Watching · Series), like Glass Home. Sources are looked up when a title page opens.
 - 2026-11-18 · User: Movies/TV Shows header rotates the page's Top 10 while idle and shows the focused title only
   along the Continue row (same on Home). 15 posters per row; hold OK: My List, Mark watched; MediaFusion rows off.
+- 2026-11-18 · User (sizing page): posters 6.5 across at 3:4 (121 × 162 dp), Continue Watching wide cards 4.5 across
+  (182 × 102 dp), header 195 dp, medium text, chosen card grows 16%, and Home's header slides away once you scroll
+  past Continue Watching. Details in design-brief.md §6.3.
 - 2026-11-18 · User (sizing page comments): no More Like This button on the title page (it stays a row); TV Shows'
   row is "Continue Watching · Series"; holding OK on a title opens a small window with "+ Add to list" (chosen first)
   and Mark watched; on Continue Watching cards also "Remove".

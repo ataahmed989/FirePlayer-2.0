@@ -157,7 +157,7 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 
 - [x] Plan agreed with the user (design-brief.md §6): add-on sources, title page, Continue rows, playback stages,
       Sources panel, no sync, best source per TV.
-- [ ] Card and header sizes, with the user.
+- [x] Card and header sizes, chosen by the user on the sizing page (design-brief.md §6.3).
 - [ ] Build: Cinemeta/TMDB catalogs, Home/Movies/TV Shows rows, title page, add-on source finder, Sources panel,
       Continue Watching in-process (ContinueProvider untouched); Home becomes the launcher destination when it works.
 
