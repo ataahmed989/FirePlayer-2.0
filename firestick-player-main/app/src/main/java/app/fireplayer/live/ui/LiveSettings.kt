@@ -6,10 +6,13 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.text.format.DateFormat
+import android.util.Log
 import android.view.KeyEvent
 import app.fireplayer.R
+import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.ChannelKey
+import app.fireplayer.live.GuideScope
 import app.fireplayer.live.LiveDb
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.Playlist
@@ -18,6 +21,8 @@ import app.fireplayer.live.XtreamApi
 import app.fireplayer.live.XtreamParser
 import app.fireplayer.playback.PlayerHost
 import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.ListEntry
+import app.fireplayer.ui.LongList
 import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
@@ -32,7 +37,9 @@ import java.util.concurrent.Executors
  * - Live FirePlayer Settings ([openPlayerSettings], over Live TV: Menu or the Settings button): Playlists and EPG, then
  *   the shared Remote / Look / Defaults / Statuses / App sections ([SettingsPanels.renderPlayerLive]).
  * - Individual playlist settings (name, EPG sources, Xtream parameters or M3U link, account, Manage groups, updates).
- * - Manage groups (hide or show each group, all, new ones; reorder the shown ones) and Reorder playlists.
+ * - Manage groups (hide or show each group, all, new ones; reorder the shown ones; Assign favorites) and Reorder
+ *   playlists: wide windows, long lists ([SidePanel.longList]) so 350 groups open at once.
+ * - Assign favorites (a playlist's groups, then a group's channels: OK stars one), also opened from the guide.
  * - The Settings tab's Playlists, EPG and Live TV windows, built from the same pieces.
  * Saved passwords are never shown, nor an M3U link (it often carries the sign-in): only that one is saved.
  */
@@ -42,6 +49,9 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     private val sync = LiveSync.get(activity)
     private val prefs = LivePrefs(activity)
     private val io = Executors.newSingleThreadExecutor()
+    /** Favorites set in Assign favorites are stored here, never queued behind the settings' reads. */
+    private val writes = Executors.newSingleThreadExecutor()
+    private var released = false
     /** Questions to the provider (Active connections): never ahead of the settings' own reads and saves. */
     private val net = Executors.newSingleThreadExecutor()
     private val asking = HashSet<String>()
@@ -70,13 +80,36 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         sync.changed(playlistId)
     }
 
+    /**
+     * The guide is told about changes made here a moment after the last one: ten groups switched or ten channels
+     * starred in a row read the guide again once, not ten times (a read can take a second with a big playlist).
+     */
+    private val toTell = LinkedHashSet<String>()
+    private val tell = Runnable {
+        val ids = toTell.toList()
+        toTell.clear()
+        ids.forEach { changed(it) }
+    }
+
+    private fun tellGuide(playlistId: String) {
+        toTell += playlistId
+        main.removeCallbacks(tell)
+        main.postDelayed(tell, TELL_MS)
+    }
+
     init {
         sync.addListener(listener)
     }
 
     fun release() {
         sync.removeListener(listener)
+        released = true
+        // Changes still waiting to be told go now.
+        main.removeCallbacks(tell)
+        tell.run()
         io.shutdown()
+        // Queued favorites are still stored.
+        writes.shutdown()
         net.shutdownNow()
     }
 
@@ -131,17 +164,33 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         panel.open("Playlists", onClose) { playlistRows(this) }
     }
 
-    /** The playlists (each opens its settings), Add playlist, Update all playlists, Reorder playlists. */
-    private fun playlistRows(p: SidePanel) = with(p) {
-        if (playlists.isEmpty()) message("Add an Xtream Codes account or an M3U playlist link. Channels and the TV guide load from it.")
+    /** The playlists (each opens its settings), Reorder playlists under them, Add playlist, Update all playlists. */
+    private fun playlistRows(p: SidePanel): Unit = with(p) {
+        if (playlists.isEmpty()) {
+            message("Add an Xtream Codes account or an M3U playlist link. Channels and the TV guide load from it.")
+            // With nothing to put in order, what's wanted first is first.
+            row("Add playlist") { addPlaylist() }
+            reorderPlaylistsRow(this)
+            return@with
+        }
         for (pl in playlists) {
             row(pl.name, shortStatus(pl), twoLines = false) { openPlaylist(pl.id) }
         }
+        reorderPlaylistsRow(this)
         row("Add playlist") { addPlaylist() }
-        if (playlists.isNotEmpty()) {
-            updateRow(this, "Update all playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
+        updateRow(this, "Update all playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
+    }
+
+    /**
+     * Reorder playlists: with fewer than two, dimmed and saying so; it stays focusable (focus doesn't jump past it)
+     * and does nothing.
+     */
+    private fun reorderPlaylistsRow(p: SidePanel) {
+        val ready = playlists.size > 1
+        val row = p.row("Reorder playlists", if (ready) null else "Needs 2 playlists") {
+            if (playlists.size > 1) p.openSub("Reorder playlists", wide = true) { reorderPlaylists(this) }
         }
-        if (playlists.size > 1) row("Reorder playlists") { openSub("Reorder playlists") { reorderPlaylists(this) } }
+        if (!ready) row.alpha = 0.45f
     }
 
     /**
@@ -181,7 +230,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             // Only into the window it was asked from (it may have closed, or moved on, while the playlist was read).
             if (!panel.isOpen || panel.session != from) return@reloadThen
             val pl = playlists.firstOrNull { it.id == id } ?: return@reloadThen
-            panel.openSub(pl.name) { renderPlaylist(this, id) }
+            panel.openSub(pl.name, wide = true) { renderPlaylist(this, id) }
             askConnections(pl, panel.session)
         }
     }
@@ -274,7 +323,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         header("Groups")
         val g = groups[pl.id].orEmpty()
         row("Manage groups", if (g.isEmpty()) "No groups" else "${g.count { !it.hidden }} of ${g.size} shown") {
-            openSub("Manage groups") { manageGroups(this, pl.id) }
+            openSub("Manage groups", wide = true) { manageGroups(this, pl.id) }
         }
 
         header("Updates")
@@ -382,136 +431,96 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     // ---- Reorder (playlists and groups) ---------------------------------------------------------------------------
 
     /**
-     * A list the viewer puts in order: OK picks an entry up (it says "Moving"), Up/Down carry it, OK puts it down;
-     * the button beside each moves it to the top. Every move is saved as it happens. The rows stay where they are
-     * and only their words change, so a move is instant even with 350 groups.
+     * A list the viewer puts in order ([Reorder]): OK picks an entry up (it says "Moving"), Up/Down carry it, OK puts
+     * it down; the button beside each moves it to the top. Every move is saved as it happens ([save]). A long list:
+     * only the rows on screen exist, and a move only shows the rows it changed again, so it's instant with 350 groups.
      */
-    private class Reorder<T>(var items: MutableList<T>, val save: (List<T>) -> Unit) {
-        var moving = -1
-        val rows = ArrayList<android.view.View>()
-    }
+    private fun <T> reorderRows(p: SidePanel, r: Reorder<T>, name: (T) -> String, key: (T) -> String, save: (List<T>) -> Unit) {
+        p.longList(object : LongList {
+            override val size: Int get() = r.items.size + 1
 
-    private fun <T> reorderRows(p: SidePanel, r: Reorder<T>, name: (T) -> String) = with(p) {
-        message("Press OK on one to pick it up, move it with Up and Down, and press OK again to put it down. The button beside each moves it to the top.")
-        fun show(i: Int) = updateRow(r.rows[i], name(r.items[i]), if (r.moving == i) "Moving" else "${i + 1}")
-        r.rows.clear()
-        r.items.forEachIndexed { i, item ->
-            r.rows += rowWithButton(
-                name(item),
-                if (r.moving == i) "Moving" else "${i + 1}",
-                R.drawable.ic_move_top,
-                "Move to top",
-                onClick = {
-                    val before = r.moving
-                    r.moving = if (r.moving == i) -1 else i
-                    if (before in r.rows.indices) show(before)
-                    show(i)
-                },
-                onButton = {
-                    val was = r.moving
-                    r.moving = -1
-                    if (i > 0) {
-                        r.items.add(0, r.items.removeAt(i))
-                        r.save(r.items.toList())
-                        for (k in 0..i) show(k)
+            override fun entry(index: Int): ListEntry =
+                if (index == 0) ListEntry("note", if (r.items.isEmpty()) "Nothing to put in order: every group is hidden. Show some in Manage groups first." else REORDER_NOTE, kind = ListEntry.Kind.NOTE)
+                else r.items[index - 1].let { item ->
+                    ListEntry("i|" + key(item), name(item), r.value(index - 1), button = R.drawable.ic_move_top, buttonLabel = "Move to top")
+                }
+
+            override fun onClick(index: Int) {
+                val before = r.press(index - 1)
+                if (before >= 0 && before != index - 1) p.changed(before + 1)
+                p.changed(index)
+            }
+
+            override fun onButton(index: Int) {
+                val i = index - 1
+                val before = r.toTop(i)
+                if (i > 0) save(r.items.toList())
+                // Every row down to where it was now says another place; one picked up further down is put down.
+                p.changed(1, i + 1)
+                if (before > i) p.changed(before + 1)
+                p.focusEntry(1)
+            }
+
+            override fun onKey(index: Int, keyCode: Int, event: KeyEvent): Boolean {
+                val step = when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> -1
+                    KeyEvent.KEYCODE_DPAD_DOWN -> 1
+                    else -> return false
+                }
+                if (r.moving != index - 1) return false
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val to = r.carry(step)
+                    if (to >= 0) {
+                        save(r.items.toList())
+                        p.changed(index)
+                        p.changed(to + 1)
+                        // Focus follows the entry being moved (the list glides along with it).
+                        p.focusEntry(to + 1)
                     }
-                    if (was > i && was in r.rows.indices) show(was) else if (was == i) show(i)
-                    r.rows[0].requestFocus()
-                },
-                keys = { code, ev ->
-                    val step = when (code) { KeyEvent.KEYCODE_DPAD_UP -> -1; KeyEvent.KEYCODE_DPAD_DOWN -> 1; else -> 0 }
-                    if (r.moving != i || step == 0) return@rowWithButton false
-                    val to = i + step
-                    if (ev.action == KeyEvent.ACTION_DOWN && to in r.items.indices) {
-                        r.items.add(to, r.items.removeAt(i))
-                        r.moving = to
-                        r.save(r.items.toList())
-                        show(i)
-                        show(to)
-                        // Focus follows the entry being moved.
-                        r.rows[to].requestFocus()
-                    }
-                    true
-                },
-            )
-        }
+                }
+                return true
+            }
+        })
     }
 
     private fun reorderPlaylists(p: SidePanel) {
-        val r = reorderState(p, "playlists") {
-            Reorder(playlists.toMutableList()) { order ->
-                io.execute {
-                    db.setPlaylistOrder(order.map { it.id })
-                    val list = db.playlists()
-                    main.post { playlists = list; order.firstOrNull()?.let { changed(it.id) } }
-                }
-            }
-        }
-        reorderRows(p, r) { it.name }
-    }
-
-    // ---- Manage groups ----------------------------------------------------------------------------------------------
-
-    /**
-     * Manage groups (user spec): Order — the shown groups in the viewer's order; Hide or show — "Hide new groups",
-     * Show all, Hide all, and a switch for each group. Hidden groups and their channels leave the guide. A group's
-     * switch flips in place (redrawing 350 groups took a second on the TV); Show all / Hide all redraw the window.
-     */
-    private fun manageGroups(p: SidePanel, playlistId: String) = with(p) {
-        val pl = playlists.firstOrNull { it.id == playlistId } ?: run { message("This playlist was deleted."); return@with }
-        val all = groups[playlistId].orEmpty()
-        if (all.isEmpty()) { message("This playlist has no groups yet. They appear after its next update."); return@with }
-        header("Order")
-        fun shownText() = "${groups[playlistId].orEmpty().count { !it.hidden }} shown"
-        val order = row("Reorder groups", shownText()) {
-            openSub("Reorder groups") { reorderGroups(this, playlistId) }
-        }
-        header("Hide or show")
-        row("Hide new groups", if (pl.hideNewGroups) "On" else "Off") { save(pl.copy(hideNewGroups = !pl.hideNewGroups)) }
-        row("Show all") { setAllGroups(playlistId, hidden = false) }
-        row("Hide all") { setAllGroups(playlistId, hidden = true) }
-        for (g in all) {
-            lateinit var view: android.view.View
-            view = row(g.name, if (g.hidden) "Off" else "On") {
-                // The group as it is now (this row may have been flipped since it was drawn).
-                val now = groups[playlistId].orEmpty().firstOrNull { it.id == g.id } ?: return@row
-                val hide = !now.hidden
-                groups[playlistId] = groups[playlistId].orEmpty().map { if (it.id == g.id) it.copy(hidden = hide) else it }
-                updateRow(view, g.name, if (hide) "Off" else "On")
-                updateRow(order, "Reorder groups", shownText())
-                io.execute {
-                    db.setGroupHidden(playlistId, g.id, hide)
-                    main.post { changed(playlistId) }
-                }
-            }.asSubRow()
+        val r = reorderState(p, "playlists") { Reorder(playlists) }
+        reorderRows(p, r, { it.name }, { it.id }) { order ->
+            // In memory at once (the windows behind this one show it), each with its new place for later saves (and as
+            // last read, should an update have changed its status meanwhile).
+            val now = playlists.associateBy { it.id }
+            playlists = order.mapIndexed { i, pl -> (now[pl.id] ?: pl).copy(position = i) }
+            playlistOrder.submit(order.map { it.id })
         }
     }
 
-    /** Show all / Hide all: shown at once, stored behind (switches pressed after it are stored after it too). */
-    private fun setAllGroups(playlistId: String, hidden: Boolean) {
-        groups[playlistId] = groups[playlistId].orEmpty().map { it.copy(hidden = hidden) }
-        panel.refresh()
-        io.execute {
-            db.setAllGroupsHidden(playlistId, hidden)
-            main.post { changed(playlistId) }
-        }
+    /** Playlist order, stored as it changes (only the newest of quick moves). */
+    private val playlistOrder = LatestSave<List<String>>(io) { ids ->
+        db.setPlaylistOrder(ids)
+        main.post { ids.firstOrNull()?.let { tellGuide(it) } }
     }
+
+    /** Each playlist's group order, stored as it changes (only the newest of quick moves). */
+    private val groupOrders = HashMap<String, LatestSave<List<String>>>()
 
     private fun reorderGroups(p: SidePanel, playlistId: String) {
         val r = reorderState(p, "groups|$playlistId") {
             // Hidden groups aren't listed (user): only the ones the guide shows are put in order.
-            Reorder(groups[playlistId].orEmpty().filter { !it.hidden }.toMutableList()) { order ->
-                // The groups in memory take the new order now (hidden ones after); the database follows.
-                val ids = order.map { it.id }
-                val all = groups[playlistId].orEmpty()
-                groups[playlistId] = ids.mapNotNull { id -> all.firstOrNull { it.id == id } } + all.filter { it.id !in ids }
-                io.execute {
-                    db.setGroupOrder(playlistId, ids)
-                    main.post { changed(playlistId) }
-                }
-            }
+            Reorder(groups[playlistId].orEmpty().filter { !it.hidden })
         }
-        reorderRows(p, r) { it.name }
+        reorderRows(p, r, { it.name }, { it.id }) { order ->
+            // The groups in memory take the new order now (hidden ones after); the database follows.
+            val ids = order.map { it.id }
+            val all = groups[playlistId].orEmpty()
+            val listed = ids.toHashSet()
+            groups[playlistId] = order + all.filter { it.id !in listed }
+            groupOrders.getOrPut(playlistId) {
+                LatestSave(io) { saved ->
+                    db.setGroupOrder(playlistId, saved)
+                    main.post { tellGuide(playlistId) }
+                }
+            }.submit(ids)
+        }
     }
 
     // A reorder list lives while its window is open (keyed by the window's session), so refreshes keep the order.
@@ -527,6 +536,217 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
             reorder = make()
         }
         return reorder as Reorder<T>
+    }
+
+    // ---- Manage groups ----------------------------------------------------------------------------------------------
+
+    /**
+     * Manage groups on its own, over the guide: [playlistId]'s window, with focus on [groupId]'s row if given. The
+     * playlist and its groups are read first. [onClose] runs when it closes.
+     */
+    fun openManageGroups(playlistId: String, groupId: String? = null, onClose: (() -> Unit)? = null) = reloadThen(groupsOf = playlistId) {
+        panel.open("Manage groups", onClose, wide = true) { manageGroups(this, playlistId) }
+        if (groupId != null) panel.focusEntry(GROUP + groupId)
+    }
+
+    /**
+     * Manage groups (user spec), one wide window per playlist: Assign favorites; Reorder groups (how many are shown);
+     * then Hide or show — Hide new groups, Show all, Hide all, and a switch for each group. Hidden groups and their
+     * channels leave the guide. A long list (350 groups open at once); a switch flips in place at once and is stored
+     * behind it.
+     */
+    private fun manageGroups(p: SidePanel, playlistId: String): Unit = with(p) {
+        if (playlists.none { it.id == playlistId }) { message("This playlist was deleted."); return@with }
+        if (groups[playlistId].isNullOrEmpty()) { message("This playlist has no groups yet. They appear after its next update."); return@with }
+        longList(GroupSwitches(p, playlistId))
+    }
+
+    private inner class GroupSwitches(private val p: SidePanel, private val playlistId: String) : LongList {
+        private val all: List<ChannelGroup> get() = groups[playlistId].orEmpty()
+
+        override val size: Int get() = FIRST_GROUP + all.size
+
+        override fun entry(index: Int): ListEntry = when (index) {
+            0 -> ListEntry("favorites", "Assign favorites")
+            1 -> ListEntry("reorder", "Reorder groups", "${all.count { !it.hidden }} shown")
+            2 -> ListEntry("hideOrShow", "Hide or show", kind = ListEntry.Kind.HEADING)
+            3 -> ListEntry("hideNew", "Hide new groups", if (playlists.firstOrNull { it.id == playlistId }?.hideNewGroups == true) "On" else "Off")
+            4 -> ListEntry("showAll", "Show all")
+            5 -> ListEntry("hideAll", "Hide all")
+            else -> all[index - FIRST_GROUP].let { g -> ListEntry(GROUP + g.id, g.name, if (g.hidden) "Off" else "On", sub = true) }
+        }
+
+        override fun onClick(index: Int) {
+            when (index) {
+                0 -> openFavoriteGroups(playlistId)
+                1 -> p.openSub("Reorder groups", wide = true) { reorderGroups(this, playlistId) }
+                3 -> {
+                    val pl = playlists.firstOrNull { it.id == playlistId } ?: return
+                    val updated = pl.copy(hideNewGroups = !pl.hideNewGroups)
+                    // Shown at once; stored behind it.
+                    playlists = playlists.map { if (it.id == pl.id) updated else it }
+                    p.changed(index)
+                    io.execute { db.savePlaylist(updated) }
+                }
+                4 -> setAllGroups(p, playlistId, hidden = false)
+                5 -> setAllGroups(p, playlistId, hidden = true)
+                else -> {
+                    // The group as it is now (this row may have been flipped since it was drawn).
+                    val g = all.getOrNull(index - FIRST_GROUP) ?: return
+                    val hide = !g.hidden
+                    groups[playlistId] = all.map { if (it.id == g.id) it.copy(hidden = hide) else it }
+                    p.changed(index)
+                    p.changed(1)
+                    io.execute {
+                        db.setGroupHidden(playlistId, g.id, hide)
+                        main.post { tellGuide(playlistId) }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Show all / Hide all: shown at once in place, stored behind (switches pressed after it are stored after it too). */
+    private fun setAllGroups(p: SidePanel, playlistId: String, hidden: Boolean) {
+        val all = groups[playlistId].orEmpty()
+        groups[playlistId] = all.map { it.copy(hidden = hidden) }
+        p.changed(1)
+        p.changed(FIRST_GROUP, all.size)
+        io.execute {
+            db.setAllGroupsHidden(playlistId, hidden)
+            main.post { tellGuide(playlistId) }
+        }
+    }
+
+    // ---- Assign favorites -------------------------------------------------------------------------------------------
+
+    /**
+     * Assign favorites on its own, over the guide (user spec). With [groupId] it opens on that group's channels, with
+     * focus on [channel] if given, and Back goes to the playlist's groups (on that group); without, on the groups.
+     * [onClose] runs when it closes.
+     */
+    fun openAssignFavorites(playlistId: String, groupId: String? = null, channel: ChannelKey? = null, onClose: (() -> Unit)? = null) {
+        reloadThen(groupsOf = playlistId) {
+            readFavorites(playlistId, groupId?.takeIf { id -> groups[playlistId].orEmpty().any { it.id == id } }) {
+                panel.open("Assign favorites", onClose, wide = true) { favoriteGroups(this, playlistId) }
+                val group = groupId?.let { id -> groups[playlistId].orEmpty().firstOrNull { it.id == id } }
+                if (group == null || shownChannels?.groupId != group.id) return@readFavorites
+                // The groups underneath, on this group: where Back comes to.
+                panel.focusEntry(GROUP + group.id)
+                panel.openSub(group.name, wide = true) { favoriteChannels(this, playlistId, group.id) }
+                if (channel != null) panel.focusEntry(channel.toString())
+            }
+        }
+    }
+
+    /** Each playlist's favorites per group, read as Assign favorites opens and kept up to date as stars change. */
+    private val favoriteCounts = HashMap<String, MutableMap<String, Int>>()
+
+    /** The group whose channels Assign favorites lists, as read when it opened (stars change in it as they're set). */
+    private var shownChannels: GroupChannels? = null
+
+    /**
+     * Reads [playlistId]'s favorites per group (and [groupId]'s channels), once every star set before is stored, then
+     * [then] on the main thread.
+     */
+    private fun readFavorites(playlistId: String, groupId: String?, then: () -> Unit) = afterWrites {
+        io.execute {
+            val counts = db.favoriteCounts(playlistId)
+            val channels = groupId?.let { db.channels(GuideScope.Group(playlistId, it)) }
+            main.post {
+                favoriteCounts[playlistId] = counts.toMutableMap()
+                if (groupId != null && channels != null) shownChannels = GroupChannels(playlistId, groupId, channels.toMutableList())
+                then()
+            }
+        }
+    }
+
+    /** Assign favorites from Manage groups: the playlist's groups, over it. */
+    private fun openFavoriteGroups(playlistId: String) {
+        val from = panel.session
+        readFavorites(playlistId, null) {
+            // Only into the window it was asked from (it may have closed, or moved on, while they were read).
+            if (!panel.isOpen || panel.session != from) return@readFavorites
+            panel.openSub("Assign favorites", wide = true) { favoriteGroups(this, playlistId) }
+        }
+    }
+
+    /**
+     * Assign favorites, the groups: the shown ones in the guide's order, then the hidden ones (dimmed, under their
+     * own heading), each with how many favorites it holds. OK opens a group's channels.
+     */
+    private fun favoriteGroups(p: SidePanel, playlistId: String): Unit = with(p) {
+        if (playlists.none { it.id == playlistId }) { message("This playlist was deleted."); return@with }
+        val ordered = FavoriteGroups.order(groups[playlistId].orEmpty())
+        if (ordered.isEmpty()) { message("This playlist has no groups yet. They appear after its next update."); return@with }
+        val shown = ordered.count { !it.hidden }
+        // The hidden groups follow under a heading of their own.
+        val headingAt = if (shown < ordered.size) shown else -1
+        longList(object : LongList {
+            override val size: Int get() = ordered.size + if (headingAt >= 0) 1 else 0
+
+            private fun groupAt(index: Int): ChannelGroup? =
+                if (headingAt < 0 || index < headingAt) ordered[index] else if (index == headingAt) null else ordered[index - 1]
+
+            override fun entry(index: Int): ListEntry {
+                val g = groupAt(index) ?: return ListEntry("hidden", "Hidden groups", kind = ListEntry.Kind.HEADING)
+                val count = favoriteCounts[playlistId]?.get(g.id) ?: 0
+                return ListEntry(GROUP + g.id, g.name, FavoriteGroups.countText(count), faded = g.hidden)
+            }
+
+            override fun onClick(index: Int) {
+                val g = groupAt(index) ?: return
+                openFavoriteChannels(playlistId, g)
+            }
+        })
+    }
+
+    /** A group's channels in Assign favorites, read first (once every star set before is stored). */
+    private fun openFavoriteChannels(playlistId: String, g: ChannelGroup) {
+        val from = panel.session
+        readFavorites(playlistId, g.id) {
+            if (!panel.isOpen || panel.session != from) return@readFavorites
+            panel.openSub(g.name, wide = true) { favoriteChannels(this, playlistId, g.id) }
+        }
+    }
+
+    /**
+     * Assign favorites, a group's channels: number and full name; a favorite is blue with a filled star. OK stars or
+     * unstars one at once in place; it's stored behind it, and the guide is told (its rows, the details' star and the
+     * Favorites list follow).
+     */
+    private fun favoriteChannels(p: SidePanel, playlistId: String, groupId: String): Unit = with(p) {
+        val shown = shownChannels?.takeIf { it.playlistId == playlistId && it.groupId == groupId }
+        if (shown == null || shown.channels.isEmpty()) { message("No channels in this group."); return@with }
+        longList(shown)
+    }
+
+    private inner class GroupChannels(val playlistId: String, val groupId: String, val channels: MutableList<Channel>) : LongList {
+        override val size: Int get() = channels.size
+
+        override fun entry(index: Int): ListEntry = channels[index].let { c ->
+            ListEntry(c.key.toString(), "${c.number}  ${c.name}", icon = if (c.favorite) R.drawable.ic_star_filled else R.drawable.ic_star, chosen = c.favorite)
+        }
+
+        override fun onClick(index: Int) {
+            val c = channels.getOrNull(index) ?: return
+            val fav = !c.favorite
+            channels[index] = c.copy(favorite = fav)
+            favoriteCounts.getOrPut(playlistId) { HashMap() }.let { FavoriteGroups.adjust(it, groupId, fav) }
+            panel.changed(index)
+            if (released) return
+            writes.execute {
+                runCatching { db.setFavorite(c.key, fav, System.currentTimeMillis()) }
+                    .onFailure { Log.w(TAG, "Favorite not stored: ${it.javaClass.simpleName}") }
+                main.post { tellGuide(playlistId) }
+            }
+        }
+    }
+
+    /** [action] on the main thread once every favorite set before is stored (a read after it then sees them all). */
+    private fun afterWrites(action: () -> Unit) {
+        if (released) return
+        writes.execute { main.post { if (!released) action() } }
     }
 
     // ---- EPG ------------------------------------------------------------------------------------------------------
@@ -634,5 +854,17 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 prefs.fullScreenAfterSec = secs[i]
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "FirePlayerLive"
+        /** How long after the last change here the guide is told about it. */
+        const val TELL_MS = 400L
+        const val REORDER_NOTE = "Press OK on one to pick it up, move it with Up and Down, and press OK again to put it down. " +
+            "The button beside each moves it to the top."
+        /** A group's entry key in Manage groups and Assign favorites (focus comes back to it by this). */
+        const val GROUP = "g|"
+        /** Manage groups: the group switches start after Assign favorites, Reorder groups, a heading and three rows. */
+        const val FIRST_GROUP = 6
     }
 }

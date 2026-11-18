@@ -25,6 +25,7 @@ import androidx.media3.common.text.Cue
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.ui.LivePage
 import app.fireplayer.live.ui.LivePicture
@@ -352,6 +353,21 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         liveSettings.openPlayerSettings(settingsPanels, onClose = {
             live.root.animate().alpha(1f).setDuration(160).start()
             if (onClosed != null) onClosed() else if (back != null && back.isShown) back.requestFocus() else focusPage()
+        })
+    }
+
+    /** Assign favorites over the Live TV tab (from the guide); focus returns where it was when it closes. */
+    override fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?) {
+        // A window already open closes first, so its own close runs (its focus, the guide brightening again).
+        if (panel.isOpen) panel.close()
+        val back = currentFocus
+        // The guide steps back while the window is open, as for Live FirePlayer Settings: one fade, drawn as one layer.
+        live.root.animate().alpha(0.35f).setDuration(160).withLayer().start()
+        liveSettings.openAssignFavorites(playlistId, groupId, channel, onClose = {
+            live.root.animate().alpha(1f).setDuration(160).withLayer().start()
+            // Back where it was. A popup it came from is gone by now, and a row of the groups column may show another
+            // group after the guide read its data again: then the page puts focus back on its current entry.
+            if (back != null && back.isShown && !isInside(back, live.sidebar)) back.requestFocus() else focusPage()
         })
     }
 

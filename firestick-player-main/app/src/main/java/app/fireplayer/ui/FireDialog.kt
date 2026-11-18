@@ -77,9 +77,11 @@ object FireDialog {
         val width = (screenWidth * 0.22f).toInt().coerceAtLeast(rows.dp(190))
         show(activity, dialog, box, width, menuPassesOn = true) { params ->
             if (besidePanel) {
-                // Just left of the settings window (31% of the screen plus its margin).
+                // Just left of the settings window (31% of the screen, or a wide window's 44%, plus its margin).
+                val panelWidth = activity.findViewById<View>(R.id.panel)?.takeIf { it.isShown }?.layoutParams?.width?.takeIf { it > 0 }
+                    ?: (screenWidth * 0.31f).toInt()
                 params.gravity = Gravity.END or Gravity.CENTER_VERTICAL
-                params.marginEnd = (screenWidth * 0.31f).toInt() + rows.dp(30)
+                params.marginEnd = panelWidth + rows.dp(30)
                 params.rightMargin = params.marginEnd
             }
         }

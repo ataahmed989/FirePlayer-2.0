@@ -530,6 +530,17 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         }
     }
 
+    /**
+     * How many favorites each of a playlist's groups holds (Assign favorites), by group id. Hidden groups count too
+     * (their channels stay favorites); channels without a group aren't in any.
+     */
+    fun favoriteCounts(playlistId: String): Map<String, Int> =
+        readableDatabase.rawQuery(
+            "SELECT c.group_id, COUNT(*) FROM favorite f JOIN channel c ON c.playlist_id = f.playlist_id AND c.id = f.channel_id " +
+                "WHERE f.playlist_id = ? AND c.blocked = 0 AND c.group_id IS NOT NULL GROUP BY c.group_id",
+            arrayOf(playlistId),
+        ).use { c -> buildMap { while (c.moveToNext()) put(c.getString(0), c.getInt(1)) } }
+
     /** Notes a channel as watched; only the last [RECENT_KEEP] are kept. */
     fun noteRecent(key: ChannelKey, now: Long) {
         val db = writableDatabase
