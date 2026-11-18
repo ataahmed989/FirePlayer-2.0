@@ -12,7 +12,10 @@ package app.fireplayer.vod
 /** Film or series. */
 enum class Kind { MOVIE, SERIES }
 
-/** A film or series as FirePlayer shows it. One per IMDb id ("tt…"), whichever row it appears in. */
+/**
+ * A film or series as FirePlayer shows it. One per IMDb id ("tt…"), whichever row it appears in. [id] and [kind]
+ * together identify it: Cinemeta lists a few ids under both kinds, and the two are never merged.
+ */
 data class Title(
     val id: String,
     val kind: Kind,
@@ -64,7 +67,10 @@ enum class RowStyle {
 
 /** Where a row's cards come from. */
 sealed class Source {
-    /** A Cinemeta catalog: "top" (Popular), "year" (New in a year; [genre] holds the year), "imdbRating" (Featured). */
+    /**
+     * A Cinemeta catalog: "top" (Popular), "year" (New in a year; [genre] holds the year), "imdbRating" (Featured).
+     * On "top" and "imdbRating" [genre] filters by genre (a genre chip's See all is "top" with that genre).
+     */
     data class Catalog(val kind: Kind, val catalog: String, val genre: String? = null) : Source()
 
     /** TMDB's weekly trending list, first 10, mapped to IMDb ids. Needs the user's TMDB key; empty without it. */
@@ -112,16 +118,24 @@ interface VodRepository {
      * Cards for [row], up to [limit] starting at [skip]. [onCards] is called first with whatever is cached (fresh =
      * false, possibly empty) and then once more with fresh data (fresh = true) if the cache was old or missing. On a
      * network failure with nothing cached it is called once with an empty list and fresh = true.
+     *
+     * The last call always has fresh = true: a cache that is still current is passed once, with fresh = true, and with
+     * nothing cached there is no first call. For a Catalog, [skip] is a position in Cinemeta's list, which comes in
+     * pages of 50 that often hold a few less: step it by the limit asked for (50 in See all), not by the number of
+     * cards received, and drop repeats by id. An empty fresh list means the end.
      */
     fun load(row: RowSpec, skip: Int = 0, limit: Int = 15, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel
 
-    /** Genre names for a GENRES row. */
+    /** Genre names for a GENRES row: the stored (or built-in) list at once, and again if Cinemeta's has changed. */
     fun genres(kind: Kind, onGenres: (List<String>) -> Unit): Cancel
 
-    /** The header's idle rotation for [page]: the page's Top 10 (Home: films and series mixed), or Cinemeta Popular's first 10 without a TMDB key. */
+    /**
+     * The header's idle rotation for [page]: the page's Top 10 (Home: films and series mixed), or Cinemeta Popular's
+     * first 10 without a TMDB key. Called again when a fresher feed arrives (the stored one comes first).
+     */
     fun header(page: Page, onFeed: (HeaderFeed) -> Unit): Cancel
 
-    /** Whether a TMDB key is set (Top 10, age ratings, cast photos, More Like This). */
+    /** Whether a TMDB key is set (Top 10, age ratings, cast photos, More Like This); a key TMDB refused counts as none. */
     fun hasTmdbKey(): Boolean
 
     // ---- The user's library (stored on this TV only; no syncing) ----
