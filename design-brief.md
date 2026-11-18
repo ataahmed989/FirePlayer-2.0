@@ -191,8 +191,8 @@ details behind a decision that the user has seen but not individually approved. 
   page: a show's season pills and episode cards (EpisodesSheet look, Specials last) and More Like This; a film's More
   Like This. Back from a row returns to the buttons; Back from the buttons leaves the page.
 - **Buttons:** Play/Resume (the label carries the state, e.g. "Resume S2 E5 · 12m left") · Play from beginning (only
-  with a saved position; on a show it restarts the current episode) · Episodes (shows) · More Like This · Sources
-  (count once answered). Proposed: (+) My List and (⋯) Details / Mark watched / Remove from Continue Watching. No
+  with a saved position; on a show it restarts the current episode) · Episodes (shows) · Sources (count once
+  answered). No More Like This button: More Like This is only a row on the page (user, 2026-11-18). Proposed: (+) My List and (⋯) Details / Mark watched / Remove from Continue Watching. No
   trailer.
 - **Sources are looked up when a title page opens:** after 1.5 s (0.5 s with a resume point, or from Next Episodes or
   a Continue card's hold menu), only for what Play would start, from both add-ons; kept in memory 10 minutes (6
