@@ -2,6 +2,7 @@ package app.fireplayer.live.ui
 
 import app.fireplayer.live.Programme
 import kotlin.math.abs
+import kotlin.math.floor
 
 /**
  * One cell of a guide row: a programme, or a gap with no listing ("No information"). A row's cells cover its whole
@@ -96,10 +97,24 @@ object GuideCells {
 
     /**
      * The whole channel rows that fit under the time header in a guide [height] tall: what focus and scrolling count
-     * with. The rows run on to the bottom edge, where the next one shows cut (a hint that the list goes on); that one
-     * is never focused.
+     * with. Laid out by [rowHeight] and [headerHeight], they fill it exactly.
      */
     fun wholeRows(height: Float, headerH: Float, rowH: Float): Int = ((height - headerH) / rowH).toInt().coerceAtLeast(1)
+
+    /**
+     * The height of each of [rows] channel rows filling a guide [height] pixels tall under a time header at least
+     * [minHeader] tall: the space under the header divided by [rows], in whole pixels (crisp hairlines and text), one
+     * at least.
+     */
+    fun rowHeight(height: Float, minHeader: Float, rows: Int): Float =
+        floor((height - minHeader) / rows.coerceAtLeast(1)).coerceAtLeast(1f)
+
+    /**
+     * The time header over [rows] rows [rowH] tall in a guide [height] tall: [minHeader] and the few pixels the whole rows
+     * leave, so the last row ends on the guide's bottom edge.
+     */
+    fun headerHeight(height: Float, minHeader: Float, rows: Int, rowH: Float): Float =
+        maxOf(minHeader, height - rows.coerceAtLeast(1) * rowH)
 
     /**
      * The first row shown with [row] focused: [top] (the first shown now) while the focus is at least a row inside the

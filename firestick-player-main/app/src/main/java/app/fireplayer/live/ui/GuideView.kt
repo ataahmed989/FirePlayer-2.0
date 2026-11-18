@@ -37,8 +37,9 @@ import kotlin.math.roundToInt
  * cells; glass: light tints with a rim).
  *
  * The D-pad moves a focus cell: up/down keep the same time column (and go round from the last channel to the first and
- * back on a fresh press), left/right step programme by programme, and the time window scrolls in half-hour steps. The
- * rows run down to the bottom edge, the last one cut there. The white highlight glides from cell to cell, in step
+ * back on a fresh press), left/right step programme by programme, and the time window scrolls in half-hour steps.
+ * Exactly [ROWS] whole rows fill the height under the time header, down to the bottom edge (their height follows from
+ * the space, as TiviMate shows eight under its miniature). The white highlight glides from cell to cell, in step
  * with the rows and the time window sliding (one animator drives all three, so they never drift apart). Left from the
  * programme on air leaves the grid ([Callbacks.onLeaveLeft]), which shows the playlist/group column again. Nothing
  * here starts playback: [Callbacks.onPick] (Center, on release) decides; Center held opens the channel's small window
@@ -74,49 +75,46 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     private fun noInfo(ch: Channel) = if (ch.playlistId in loadingPlaylists) "Loading the guide…" else "No information"
 
-    // ---- Geometry (dp, from the user's concepts: 29 dp rows, about 2.5 hours across the full width) -----------------
-    private val headerH = t.dpf(26f)
-    private val rowH = t.dpf(29f)
-    /** Between cells, both ways: cells are 26 dp tall. */
+    // ---- Geometry (dp; TiviMate's proportions, larger and calmer than before (user); about 2 hours across the grid) ---
+    /** The time header is at least this tall; it also takes the few pixels the whole rows leave ([layRows]). */
+    private val headerMin = t.dpf(HEADER_MIN_DP)
+    private var headerH = headerMin
+    /** Each channel row: [ROWS] of them fill the height under the header ([layRows]), 35 dp under the miniature. */
+    private var rowH = t.dpf(35f)
+    /** Between cells, both ways: cells are 32 dp tall in 35 dp rows. */
     private val gap = t.dpf(3f)
-    private val radiusClassic = t.dpf(6f)
-    private val radiusGlass = t.dpf(7f)
+    private val radiusClassic = t.dpf(7f)
+    private val radiusGlass = t.dpf(8f)
     private val hairline = t.dpf(0.5f)
     private val numberLead = t.dpf(4f)
-    private val numberMin = t.dpf(20f)
+    private val numberMin = t.dpf(22f)
     /** Where channel numbers end (right-aligned): wider than [numberMin] for long provider numbers (29342). */
     private var numberRight = numberMin
     private val logoGap = t.dpf(8f)
-    private val logoW = t.dpf(46f)
-    private val logoH = t.dpf(26f)
-    private val nameGap = t.dpf(8f)
+    /** The logo box (and its plate), grown with the rows and the names: 7 dp between one row's logo and the next. */
+    private val logoW = t.dpf(50f)
+    private val logoH = t.dpf(28f)
+    private val nameGap = t.dpf(9f)
     private val nameEnd = t.dpf(4f)
-    private val markerGap = t.dpf(6f)
+    private val markerGap = t.dpf(7f)
     private val markerW = t.dpf(8f)
     /**
-     * The channel column. Wider than the concepts' ~236 dp because Figtree is wider than their lettering: at 256 dp a
-     * name as long as "USA Cinemax Action West" still fits beside a two-digit number and its logo. In the grid (the
-     * groups column and the tab rail slid away) it's 320 dp, so long names show more ([setWideColumn]).
+     * The channel column ([LiveWidths]). Beside the groups column it's 288 dp: a name as long as "USA Cinemax Action
+     * West" (15.5 sp) still fits beside a three-digit number and its logo, and the programmes keep about 80 minutes. In
+     * the grid (the groups column and the tab rail slid away) it's 344 dp, so long names show more ([setWideColumn]).
      */
-    private val channelNarrow = t.dpf(256f)
-    private val channelWide = t.dpf(320f)
+    private val channelNarrow = t.dpf(LiveWidths.CHANNELS_OPEN.toFloat())
+    private val channelWide = t.dpf(LiveWidths.CHANNELS_GRID.toFloat())
     /** The channel column as drawn now: the programme cells start here. Equal to [channelTo] unless it's moving. */
     private var channelW = channelNarrow
     /** The width the channel column is going to; names are ellipsized for it. */
     private var channelTo = channelNarrow
     private var channelFrom = channelNarrow
-    private val pxPerMin = t.dpf(4.6f)
-    private val textInset = t.dpf(8f)
+    private val pxPerMin = t.dpf(LiveWidths.DP_PER_MIN)
+    private val textInset = t.dpf(9f)
 
     /** The channel column's width in pixels: the programme cells start here (for aligning things beside the guide). */
     val channelColumnWidth: Int get() = channelTo.roundToInt()
-
-    /**
-     * The height in pixels that shows the time header and exactly [rows] channel rows (29 dp each). Any other height
-     * works too: the rows run on to the bottom edge, the one under the last whole row cut there (never focused: focus
-     * and scrolling count whole rows only, [GuideCells.wholeRows]).
-     */
-    fun heightFor(rows: Int): Int = ceil(headerH + rows.coerceAtLeast(1) * rowH).toInt()
 
     // ---- State ----------------------------------------------------------------------------------------------------
     private var channels: List<Channel> = emptyList()
@@ -168,11 +166,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
 
     // ---- Paints ---------------------------------------------------------------------------------------------------
-    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14f) * fontScale() }
-    private val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14f) * fontScale() }
-    private val numberPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(13f) * fontScale(); color = t.text; textAlign = Paint.Align.RIGHT }
-    private val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(13f) * fontScale(); color = t.text }
-    private val datePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.semibold; textSize = t.dpf(13f) * fontScale(); color = t.accent }
+    // Sizes (sp) after TiviMate's: names and titles about 16 sp in its 39 dp rows, a little under that in our 35 dp.
+    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(15f) * fontScale() }
+    private val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(15.5f) * fontScale() }
+    private val numberPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14.5f) * fontScale(); color = t.text; textAlign = Paint.Align.RIGHT }
+    private val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14f) * fontScale(); color = t.text }
+    private val datePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.semibold; textSize = t.dpf(14f) * fontScale(); color = t.accent }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(1f) }
     private val nowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent; strokeWidth = t.dpf(2f) }
@@ -519,7 +518,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         scrollTarget = y
     }
 
-    /** Whole rows on screen (the cut one under them doesn't count). */
+    /** Whole rows on screen: [ROWS] once laid out. */
     private fun visibleRows(): Int = GuideCells.wholeRows(height.toFloat(), headerH, rowH)
 
     /** The time window's length once the channel column has settled (what loading and stepping plan for). */
@@ -592,10 +591,26 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             postDelayed(widthSettled, WIDTH_SETTLE_MS)
             return
         }
+        // The height changed (laid out the first time): the rows' height follows it. The rows keep their place, counted
+        // in rows, and focus stays on a whole row.
+        val top = (scrollTarget / rowH).roundToInt()
         stopMotion()
+        layRows(h)
+        jumpScroll(top * rowH)
         jumpScroll(targetScroll(focusRow) * rowH)
         requested = null
         ensureLoaded()
+    }
+
+    /**
+     * [ROWS] whole rows under the time header, filling [h] pixels down to the bottom edge: the rows' height is the space
+     * under the header divided by [ROWS] (whole pixels, for crisp hairlines and text), the header takes the few pixels
+     * left. Worked out only when the height changes, never while drawing.
+     */
+    private fun layRows(h: Int) {
+        if (h <= 0) return
+        rowH = GuideCells.rowHeight(h.toFloat(), headerMin, ROWS)
+        headerH = GuideCells.headerHeight(h.toFloat(), headerMin, ROWS, rowH)
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
@@ -624,7 +639,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val w = width.toFloat()
         drawWs = windowStart - (windowX / pxPerMin * 60_000).toLong()
         val wEnd = drawWs + ((w - channelW) / pxPerMin * 60_000).toLong()
-        // The rows run down to the bottom edge, the last one cut there: the list goes on. Focus stays on whole rows.
+        // The rows end on the bottom edge: [ROWS] whole ones at rest (a row more shows in part while they scroll).
         rowsBottom = height.toFloat()
 
         drawHeader(canvas, now, wEnd)
@@ -636,7 +651,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         canvas.clipRect(0f, headerH, w, rowsBottom)
         if (channels.isNotEmpty()) {
             val firstRow = (scrollY / rowH).toInt().coerceAtLeast(0)
-            val lastRow = ((scrollY + rowsBottom - headerH) / rowH).toInt().coerceAtMost(channels.size - 1)
+            // The last row with any of it showing: at rest none starts on the bottom edge, so none is drawn there unseen.
+            val lastRow = (ceil((scrollY + rowsBottom - headerH) / rowH).toInt() - 1).coerceAtMost(channels.size - 1)
             for (r in firstRow..lastRow) {
                 val top = headerH + r * rowH - scrollY
                 drawChannel(canvas, r, top)
@@ -723,7 +739,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         if (playing) {
             // The channel playing: a small blue ▶ just after its name.
             val mx = nx + nameWidths[r] + markerGap
-            val s = t.dpf(4.5f)
+            val s = t.dpf(5f)
             marker.reset()
             marker.moveTo(mx, cy - s); marker.lineTo(mx + s * 1.6f, cy); marker.lineTo(mx, cy + s); marker.close()
             fill.color = t.accent
@@ -885,6 +901,10 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     }
 
     private companion object {
+        /** Channel rows on screen, whole, under the time header (user: eight under the miniature, as TiviMate). */
+        const val ROWS = 8
+        /** The time header's least height (dp): the date and times at 14 sp over its rule. */
+        const val HEADER_MIN_DP = 28f
         const val MAX_ROWS = 600
         /** A move: rows scrolling, the window sliding and the highlight gliding, decelerating. */
         const val MOVE_MS = 150L

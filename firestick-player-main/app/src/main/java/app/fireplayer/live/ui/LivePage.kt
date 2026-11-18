@@ -177,14 +177,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var loadSerial = 0
 
     // Geometry (dp on the 960 x 540 dp screen), after the user's concepts: no panels; a large miniature with the details
-    // beside it; the guide below, full width in the grid. With the groups column open the tab rail shows at the left,
-    // then the column, then the content; in the grid both slide away and the content slides left (one motion).
-    private val railSpace = t.dp(76)
-    private val columnW = t.dp(208)
-    private val miniW = t.dp(368)
+    // beside it; the guide below, full width in the grid. With the groups column open the tab rail's strip shows at the
+    // left, then the column, then the content; in the grid both slide away and the content slides left (one motion).
+    // Open: rail 58 + column 224 + gap 12 + miniature 368 + 18 + details 268 + margin 12 = 960 ([LiveWidths]).
+    private val railSpace = t.dp(LiveWidths.RAIL)
+    private val columnW = t.dp(LiveWidths.COLUMN)
+    private val miniW = t.dp(LiveWidths.MINI)
     private val miniH = t.dp(207)
-    private val gap = t.dp(12)
-    /** The details' logo: the guide rows' logo box, and the room before the name when there's one. */
+    private val gap = t.dp(LiveWidths.GAP)
+    /**
+     * The details' logo box (a little smaller than the guide rows' since those grew: the details keep their size), and
+     * the room before the name when there's one.
+     */
     private val detailLogoW = t.dp(46)
     private val detailLogoH = t.dp(26)
     private val detailNameInset = detailLogoW + t.dp(10)
@@ -248,10 +252,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         details.addView(timeRow, lp(top = 8))
         details.addView(detailDesc, wide(top = 8))
         details.addView(detailNext, wide(top = 6))
-        topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(18) })
+        topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(LiveWidths.DETAILS_GAP) })
         content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
         content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
-        // Down to the screen's bottom edge: the guide's rows run on to it, the last one cut there (the list goes on).
+        // Down to the screen's bottom edge: the guide fits exactly its eight whole rows in there ([GuideView.ROWS]).
         guideLayer.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             leftMargin = closedInset; topMargin = t.dp(14); rightMargin = gap
         })

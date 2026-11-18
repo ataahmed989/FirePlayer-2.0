@@ -69,6 +69,19 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
      */
     var focusOnly = false
 
+    /**
+     * A flat strip of this glass (the tab rail along the screen's edge): square, its film under an even glaze, with no
+     * rim, bevel or shadow (nothing baked: only the film and one rectangle are drawn).
+     */
+    var flat = false
+        set(v) {
+            if (field == v) return
+            field = v
+            laidOut.setEmpty()
+            invalidateSelf()
+        }
+    private val flatGlaze = Paint().apply { color = FLAT_GLAZE }
+
     private val laidOut = Rect()
     private val shape = RectF()
     private var radius = 0f
@@ -140,6 +153,11 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         val now = SystemClock.uptimeMillis()
         val a = alphaValue / 255f
         if (source != null) drawFilm(canvas, source, a)
+        if (flat) {
+            flatGlaze.alpha = (Color.alpha(FLAT_GLAZE) * a).roundToInt()
+            canvas.drawRect(shape, flatGlaze)
+            return
+        }
         val t = fade.value(now)
         if (t < 1f && !focusOnly) drawBake(canvas, focusedLook = false, strength = a * (1f - t))
         if (t > 0f) drawBake(canvas, focusedLook = true, strength = a * t)
@@ -153,7 +171,7 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         }
         laidOut.set(b)
         shape.set(b)
-        radius = GlassBakes.radius(style, b.width(), b.height(), density)
+        radius = if (flat) 0f else GlassBakes.radius(style, b.width(), b.height(), density)
         if (windowLike) {
             fallbackPaint.shader = LinearGradient(
                 0f, b.top.toFloat(), 0f, b.bottom.toFloat(),
@@ -720,6 +738,8 @@ private val TOGGLE_GLOW = Shadow(0x803D8BFF.toInt(), 0f, 3f)
 
 private val PANEL_GLAZE = intArrayOf(0x29FFFFFF, 0x0DFFFFFF, 0x14FFFFFF)
 private val PANEL_GLAZE_STOPS = floatArrayOf(0f, 0.5f, 1f)
+/** A flat strip's glaze: about the window glaze's average, evenly. */
+private const val FLAT_GLAZE = 0x17FFFFFF
 private val CONTROL_GLAZE = intArrayOf(0x33FFFFFF, 0x0FFFFFFF, 0x1AFFFFFF)
 private val CONTROL_GLAZE_STOPS = floatArrayOf(0f, 0.45f, 1f)
 /** Bottom left to top right. */

@@ -2,6 +2,9 @@ package app.fireplayer.shell
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.view.Gravity
@@ -13,12 +16,16 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import app.fireplayer.R
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassDrawable
 import app.fireplayer.ui.ListMath
 
 /**
- * The left tab rail: the one FirePlayer brand mark, then the tabs. It sits collapsed (icons only) while the page has
- * focus and widens with labels when focus comes into it, drawn over the page so the page (and live video) never
- * moves. Only tabs that work are shown; the others are added as they're built (user decision: no placeholders).
+ * The left tab rail: the one FirePlayer brand mark, then the tabs. A slim flat strip along the screen's left edge, full
+ * height and square, with a hairline down its right edge (user: a slim panel rather than a floating window, so no space
+ * goes unused around it). Classic is a flat dark fill a little darker than the wallpaper; glass, a flat strip of the
+ * glass. It sits collapsed (icons only) while the page has focus and widens with labels when focus comes into it, the
+ * same strip drawn over the page so the page (and live video) never moves. Only tabs that work are shown; the others
+ * are added as they're built (user decision: no placeholders).
  */
 class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
@@ -39,18 +46,24 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     var expanded = false
         private set
 
-    val collapsedWidth = t.dp(64)
+    /** The strip's width collapsed: what the pages beside it leave free ([WIDTH_DP]). */
+    val collapsedWidth = t.dp(WIDTH_DP)
     private val expandedWidth = t.dp(212)
+    /** The hairline down the strip's right edge, separating it from the page. */
+    private val rule = Paint()
+    private val ruleWidth = t.dpf(1f)
 
     init {
         orientation = VERTICAL
-        setPadding(t.dp(10), t.dp(14), t.dp(10), t.dp(14))
+        // The tabs (44 dp) centred in the collapsed strip, [SIDE_DP] each side; their icons stay put as it widens.
+        setPadding(t.dp(SIDE_DP), t.dp(22), t.dp(SIDE_DP), t.dp(22))
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
 
         val brand = LinearLayout(context).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(t.dp(6), 0, 0, 0)
+            // The 30 dp mark centred over the tabs' 22 dp icons.
+            setPadding(t.dp(7), 0, 0, 0)
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         brand.addView(ImageView(context).apply { setImageResource(R.drawable.ic_brand) }, LayoutParams(t.dp(30), t.dp(30)))
@@ -150,31 +163,52 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         items[selected]?.requestFocus()
     }
 
-    /** Wide with labels while focus is in the rail; icons only otherwise. */
+    /** Wide with labels while focus is in the rail; icons only otherwise. The same strip, only wider. */
     fun setExpanded(on: Boolean) {
         if (expanded == on) return
         expanded = on
         brandText.visibility = if (on) VISIBLE else GONE
         for (l in labels) l.visibility = if (on) VISIBLE else GONE
         layoutParams = layoutParams.apply { width = if (on) expandedWidth else collapsedWidth }
-        applyLook()
     }
 
+    /**
+     * The strip's surface, opaque in both looks: widened over the page, the groups column's names never show through
+     * the labels. Glass: the glass's blurred wallpaper under its glaze, flat (no rim, bevel, shadow or corners, and
+     * nothing new blurred). Classic: one flat colour.
+     */
     fun applyLook() {
-        if (expanded && !Glass.on) {
-            // Widened over the page: the classic panel's slight see-through let the groups column's names show
-            // through the labels. Same colour, opaque.
-            val l = paddingLeft; val tp = paddingTop; val r = paddingRight; val b = paddingBottom
-            background = GradientDrawable().apply {
-                setColor(0xFA0B0E12.toInt())
-                setStroke(t.dp(1), 0x1FFFFFFF)
-                cornerRadius = t.dpf(15f)
-            }
-            setPadding(l, tp, r, b)
+        val l = paddingLeft; val tp = paddingTop; val r = paddingRight; val b = paddingBottom
+        background = if (Glass.on) {
+            (Glass.drawable(context, Glass.Kind.PANEL) as GlassDrawable).apply { flat = true }
         } else {
-            Glass.background(this, Glass.Kind.PANEL)
+            ColorDrawable(CLASSIC_FILL)
         }
+        setPadding(l, tp, r, b)
+        rule.color = if (Glass.on) GLASS_RULE else CLASSIC_RULE
+        invalidate()
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        // Over the strip's fill, on its right edge (the tabs keep clear of it). Drawn only when the rail is.
+        canvas.drawRect(width - ruleWidth, 0f, width.toFloat(), height.toFloat(), rule)
     }
 
     override fun generateDefaultLayoutParams(): LayoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+    companion object {
+        /**
+         * The collapsed strip's width (dp): its 44 dp tabs with [SIDE_DP] each side. The pages beside it start here (Live
+         * TV's groups column, the other tabs' pages).
+         */
+        const val WIDTH_DP = 58
+        private const val SIDE_DP = 7
+
+        /** Classic: a little darker than the classic wallpaper along the screen's left edge (about #0C1117). */
+        private const val CLASSIC_FILL = 0xFF080B0F.toInt()
+        /** The same hairlines as at the groups column's edge, one per look. */
+        private const val CLASSIC_RULE = 0x14FFFFFF
+        private const val GLASS_RULE = 0x1FFFFFFF
+    }
 }

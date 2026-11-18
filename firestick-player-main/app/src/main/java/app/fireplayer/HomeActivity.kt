@@ -708,11 +708,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
     /**
      * Live TV lays out its own left side (the rail slides over it, the column and content move), so its page starts at
-     * the screen's edge; other tabs start right of the rail.
+     * the screen's edge; other tabs start right of the rail's strip.
      */
     private fun pageInset(tab: NavRail.Tab) {
         (pages.layoutParams as ViewGroup.MarginLayoutParams).let { lp ->
-            lp.marginStart = if (tab == NavRail.Tab.LIVE) 0 else tokens.dp(76)
+            lp.marginStart = if (tab == NavRail.Tab.LIVE) 0 else rail.collapsedWidth
             pages.layoutParams = lp
         }
     }

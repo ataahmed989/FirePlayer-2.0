@@ -26,7 +26,8 @@ import app.fireplayer.ui.ListMath
 
 /**
  * The playlist and group column (design-layout): "All playlists", then each playlist, which expands to Favorites,
- * All channels and its own groups. Playlist scope stays visible: a group is always shown under its playlist.
+ * All channels and its own groups. Playlist scope stays visible: a group is always shown under its playlist, and the
+ * entry the guide shows and the playlist holding it (the playlist in use) are blue.
  * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid. Down from the last
  * row goes round to the first, Up from the first to the last ([wrapTo]). Center held on a group opens its small window
  * ([Callbacks.onHold]: Move to top, Hide category), whose edits show here at once ([moveGroupToTop], [hideGroup]).
@@ -69,7 +70,8 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         isFocusable = false
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
         clipToPadding = false
-        setPadding(t.dp(4), t.dp(6), t.dp(10), t.dp(10))
+        // The white pill 8 dp from the rail's strip on one side and the column's hairline on the other.
+        setPadding(t.dp(8), t.dp(6), t.dp(8), t.dp(10))
         overScrollMode = OVER_SCROLL_NEVER
     }
 
@@ -270,7 +272,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             near.requestFocus()
             return
         }
-        val row = (focusedChild?.height ?: t.dp(34)) + t.dp(1)
+        val row = (focusedChild?.height ?: t.dp(ROW_DP)) + t.dp(1)
         val run = row * WRAP_ROWS
         // Focus can't be kept through the jump: it stays at the end rather than fall out of the column.
         if (!holdFocus()) { releaseFocus(); return }
@@ -354,7 +356,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf(android.R.attr.state_selected), intArrayOf()),
                 intArrayOf(t.accent, t.accent, t.text),
             )
-            val label = t.label(ctx, 15f).apply {
+            val label = t.label(ctx, ENTRY_SP).apply {
                 setTextColor(colors)
                 isDuplicateParentStateEnabled = true
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -364,15 +366,16 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 setImageResource(R.drawable.ic_chevron_down)
                 imageTintList = colors
                 isDuplicateParentStateEnabled = true
-                layoutParams = LinearLayout.LayoutParams(t.dp(18), t.dp(18)).apply { rightMargin = t.dp(8) }
+                layoutParams = LinearLayout.LayoutParams(t.dp(CHEVRON_DP), t.dp(CHEVRON_DP)).apply { rightMargin = t.dp(CHEVRON_GAP_DP) }
             }
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = t.dp(34)
+                // TiviMate's calm spacing: a row every 39 dp (38 and the 1 dp between), the white pill as tall.
+                minimumHeight = t.dp(ROW_DP)
                 isFocusable = true
                 background = StateListDrawable().apply {
-                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { setColor(t.focusFill); cornerRadius = t.dpf(10f) })
+                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { setColor(t.focusFill); cornerRadius = t.dpf(11f) })
                     setEnterFadeDuration(Tokens.FADE_MS.toInt())
                     setExitFadeDuration(Tokens.FADE_MS.toInt())
                 }
@@ -388,11 +391,11 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             // Playlist names a little larger than their groups (user); groups line up under the playlist's name.
             val indent = when (item) {
                 Item.All -> t.dp(12)
-                is Item.Head -> t.dp(6)
-                is Item.Entry -> t.dp(32)
+                is Item.Head -> t.dp(HEAD_INDENT_DP)
+                is Item.Entry -> t.dp(HEAD_INDENT_DP + CHEVRON_DP + CHEVRON_GAP_DP)
             }
             h.row.setPadding(indent, 0, t.dp(10), 0)
-            h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (item is Item.Entry) 14.5f else 16.5f)
+            h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (item is Item.Entry) ENTRY_SP else HEAD_SP)
             h.label.typeface = if (item is Item.Entry) t.regular else t.semibold
             h.label.text = when (item) {
                 Item.All -> "All playlists"
@@ -401,7 +404,12 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             }
             h.chevron.visibility = if (item is Item.Head) View.VISIBLE else View.GONE
             if (item is Item.Head) h.chevron.rotation = if (item.expanded) 0f else -90f
-            h.row.isSelected = scopeOf(item) == current
+            // Blue: the entry the guide shows, and the playlist in use, the one holding it (user). With All playlists in
+            // use, its own row. Rebound whenever the current entry changes, so the blue follows it.
+            h.row.isSelected = when (item) {
+                is Item.Head -> playlistOf(current) == item.playlist.id
+                else -> scopeOf(item) == current
+            }
             h.row.contentDescription = when (item) {
                 is Item.Head -> "${item.playlist.name}, playlist, ${if (item.expanded) "expanded" else "collapsed"}"
                 else -> h.label.text
@@ -476,5 +484,14 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private companion object {
         /** A wrap to a row far away glides only this many rows (the rest is a jump). */
         const val WRAP_ROWS = 3
+
+        // Sizes after TiviMate's column (user: larger and calmer): groups at 16 sp, playlist names a step larger.
+        const val ENTRY_SP = 16f
+        const val HEAD_SP = 17.5f
+        const val ROW_DP = 38
+        const val CHEVRON_DP = 20
+        const val CHEVRON_GAP_DP = 8
+        /** A playlist's chevron from the row's start; its groups' names start under the playlist's name. */
+        const val HEAD_INDENT_DP = 6
     }
 }
