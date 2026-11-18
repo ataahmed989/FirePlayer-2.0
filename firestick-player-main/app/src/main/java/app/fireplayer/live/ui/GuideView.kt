@@ -1,5 +1,6 @@
 package app.fireplayer.live.ui
 
+import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
@@ -13,6 +14,7 @@ import android.text.format.DateFormat
 import android.util.LongSparseArray
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.animation.DecelerateInterpolator
@@ -38,13 +40,16 @@ import kotlin.math.roundToInt
  * time window scrolls in half-hour steps. The white highlight glides from cell to cell, in step with the rows and the
  * time window sliding (one animator drives all three, so they never drift apart). Left from the programme on air
  * leaves the grid ([Callbacks.onLeaveLeft]), which shows the playlist/group column again. Nothing here starts
- * playback: [Callbacks.onPick] (Center) decides.
+ * playback: [Callbacks.onPick] (Center, on release) decides; Center held opens the channel's small window instead
+ * ([Callbacks.onHold]).
  */
 class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     interface Callbacks {
         fun onFocusMoved(channel: Channel, cell: Cell?)
         fun onPick(channel: Channel, cell: Cell?)
+        /** Center held on [channel]: its small window (Favorite, Assign favorites). The release after it does nothing. */
+        fun onHold(channel: Channel)
         fun onLeaveLeft()
         fun needProgrammes(channels: List<Channel>, from: Long, to: Long)
         fun logo(url: String): Bitmap?
@@ -88,14 +93,21 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private val markerW = t.dpf(8f)
     /**
      * The channel column. Wider than the concepts' ~236 dp because Figtree is wider than their lettering: at 256 dp a
-     * name as long as "USA Cinemax Action West" still fits beside a two-digit number and its logo.
+     * name as long as "USA Cinemax Action West" still fits beside a two-digit number and its logo. In the grid (the
+     * groups column and the tab rail slid away) it's 320 dp, so long names show more ([setWideColumn]).
      */
-    private val channelW = t.dpf(256f)
+    private val channelNarrow = t.dpf(256f)
+    private val channelWide = t.dpf(320f)
+    /** The channel column as drawn now: the programme cells start here. Equal to [channelTo] unless it's moving. */
+    private var channelW = channelNarrow
+    /** The width the channel column is going to; names are ellipsized for it. */
+    private var channelTo = channelNarrow
+    private var channelFrom = channelNarrow
     private val pxPerMin = t.dpf(4.6f)
     private val textInset = t.dpf(8f)
 
     /** The channel column's width in pixels: the programme cells start here (for aligning things beside the guide). */
-    val channelColumnWidth: Int get() = channelW.roundToInt()
+    val channelColumnWidth: Int get() = channelTo.roundToInt()
 
     /**
      * The height in pixels that shows the time header and exactly [rows] channel rows (29 dp each): sized to it, the
@@ -145,6 +157,13 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             invalidate()
         }
     }
+    /** The channel column widening or narrowing with the groups column's slide: only drawn again, never laid out. */
+    private val columnMotion: ValueAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        addUpdateListener { a -> columnAt(channelFrom + (channelTo - channelFrom) * a.animatedFraction) }
+    }
+
+    /** OK: picks on release, or opens the channel's small window when held (see [PressHold]). */
+    private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
 
     // ---- Paints ---------------------------------------------------------------------------------------------------
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14f) * fontScale() }
@@ -266,6 +285,60 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         invalidate()
     }
 
+    /**
+     * One channel's details changed (its favorite): its row takes the new copy in place. Focus, scroll and the rows'
+     * text stay as they are; the details follow when it's the focused one.
+     */
+    fun updateChannel(ch: Channel) {
+        val i = keys.indexOf(ch.key)
+        if (i < 0 || channels[i] == ch) return
+        if (channels[i].name != ch.name) { names[i] = null; invalidate() }
+        channels = ArrayList(channels).also { it[i] = ch }
+        if (i == focusRow) notifyFocus()
+    }
+
+    /**
+     * The focused row's channel column (number, logo and name) where it rests, in this view's coordinates: what the
+     * channel's small window opens beside. False when no row is focused.
+     */
+    fun focusedRowRect(out: RectF): Boolean {
+        if (focusRow !in channels.indices || height == 0) return false
+        val top = headerH + focusRow * rowH - scrollTarget
+        out.set(0f, top, channelTo, top + rowH)
+        return true
+    }
+
+    /**
+     * The channel column wide (the grid, with the groups column and tab rail slid away) or as beside the groups column.
+     * With [animateMs] it widens or narrows in step with the column's slide (same time, [easing]), drawn again at each
+     * width: nothing is laid out. Names are ellipsized once for the width it's going to; while it widens they show as
+     * far as it has got.
+     */
+    fun setWideColumn(wide: Boolean, animateMs: Long = 0L, easing: TimeInterpolator? = null) {
+        val to = if (wide) channelWide else channelNarrow
+        if (to != channelTo) {
+            channelTo = to
+            names.fill(null)
+        }
+        columnMotion.cancel()
+        if (channelW == to) return
+        if (animateMs <= 0L || !isShown) {
+            columnAt(to)
+            return
+        }
+        channelFrom = channelW
+        columnMotion.duration = animateMs
+        columnMotion.interpolator = easing ?: quickEase
+        columnMotion.start()
+    }
+
+    /** The channel column drawn [w] wide; the glide's start moves with the cells it was drawn over. */
+    private fun columnAt(w: Float) {
+        glide.shiftX(w - channelW)
+        channelW = w
+        invalidate()
+    }
+
     /** Moves focus to [key] (after a channel change in full screen, the guide shows where you are). */
     fun focusChannel(key: ChannelKey) {
         val i = channels.indexOfFirst { it.key == key }
@@ -284,6 +357,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) { callbacks?.onLeaveLeft(); return true }
             return super.onKeyDown(keyCode, event)
         }
+        // Another key between an OK's press and release: that release no longer picks.
+        if (!isOk(keyCode)) press.cancel()
         // A held key repeats every ~50 ms: each move is a short glide, so the highlight keeps up without jumping.
         val d = if (event.repeatCount > 0) REPEAT_MS else MOVE_MS
         when (keyCode) {
@@ -294,12 +369,26 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             KeyEvent.KEYCODE_DPAD_RIGHT -> step(+1, d)
             KeyEvent.KEYCODE_DPAD_LEFT -> step(-1, d)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                if (event.repeatCount == 0) focusedChannel()?.let { callbacks?.onPick(it, focusedCell()) }
+                // A short press picks when it's released (onKeyUp); held, it opens the channel's small window, once.
+                if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) {
+                    focusedChannel()?.let { callbacks?.onHold(it) }
+                }
             }
             else -> return super.onKeyDown(keyCode, event)
         }
         return true
     }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (isOk(keyCode) && channels.isNotEmpty()) {
+            if (press.up(event.isCanceled)) focusedChannel()?.let { callbacks?.onPick(it, focusedCell()) }
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun isOk(keyCode: Int) =
+        keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
     private fun step(dir: Int, duration: Long) {
         val ch = focusedChannel() ?: return
@@ -423,7 +512,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     private fun visibleRows(): Int = ((height - headerH) / rowH).toInt().coerceAtLeast(1)
 
-    private fun windowMs(): Long = (((width - channelW) / pxPerMin) * 60_000).toLong().coerceAtLeast(GuideCells.SLOT_MS)
+    /** The time window's length once the channel column has settled (what loading and stepping plan for). */
+    private fun windowMs(): Long = (((width - channelTo) / pxPerMin) * 60_000).toLong().coerceAtLeast(GuideCells.SLOT_MS)
 
     private fun cellsOf(ch: Channel): List<Cell>? = rows[ch.key]?.cells
 
@@ -502,6 +592,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         // The highlight shows (or goes) on its cell at once; only moves within the grid glide.
         glide.clear()
+        // An OK pressed here and released elsewhere (or the other way round) is no pick.
+        press.cancel()
         if (gainFocus) {
             // Back in the grid: what's on now, on the same channel.
             val now = clock()
@@ -613,6 +705,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val nx = lx + logoW + nameGap
         namePaint.color = if (playing) t.accent else t.text
         val name = nameOf(r, nx, playing)
+        // While the column widens, the names (ellipsized for its new width) show as far as it has got.
+        val cut = channelW < channelTo
+        if (cut) {
+            canvas.save()
+            canvas.clipRect(nx, top, channelW - nameEnd, top + rowH)
+        }
         canvas.drawText(name, 0, name.length, nx, baseline(cy, namePaint), namePaint)
         if (playing) {
             // The channel playing: a small blue ▶ just after its name.
@@ -623,12 +721,16 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             fill.color = t.accent
             canvas.drawPath(marker, fill)
         }
+        if (cut) canvas.restore()
     }
 
-    /** Row [r]'s name ellipsized to the column (less room when the ▶ follows it), kept until the list changes. */
+    /**
+     * Row [r]'s name ellipsized to the column (less room when the ▶ follows it), kept until the list or the column's
+     * width changes.
+     */
     private fun nameOf(r: Int, nx: Float, playing: Boolean): CharSequence {
         names[r]?.let { if (namePlaying[r] == playing) return it }
-        val avail = channelW - nameEnd - nx - if (playing) markerGap + markerW else 0f
+        val avail = channelTo - nameEnd - nx - if (playing) markerGap + markerW else 0f
         val s = TextUtils.ellipsize(channels[r].name, namePaint, avail.coerceAtLeast(0f), TextUtils.TruncateAt.END)
         names[r] = s
         namePlaying[r] = playing
@@ -768,6 +870,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         removeCallbacks(tick)
         removeCallbacks(widthSettled)
         stopMotion()
+        columnMotion.cancel()
+        if (channelW != channelTo) columnAt(channelTo)
+        press.cancel()
         super.onDetachedFromWindow()
     }
 

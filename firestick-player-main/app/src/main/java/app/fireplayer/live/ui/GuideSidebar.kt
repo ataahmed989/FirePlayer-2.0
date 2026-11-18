@@ -25,13 +25,17 @@ import app.fireplayer.shell.Tokens
 /**
  * The playlist and group column (design-layout): "All playlists", then each playlist, which expands to Favorites,
  * All channels and its own groups. Playlist scope stays visible: a group is always shown under its playlist.
- * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid.
+ * Moving over an entry shows its channels after a short pause; Center or Right goes into the grid. Center held on a
+ * group opens its small window ([Callbacks.onHold]: Move to top, Hide category), whose edits show here at once
+ * ([moveGroupToTop], [hideGroup]).
  */
 class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(context) {
 
     interface Callbacks {
         /** [scope] should be shown; [enter] when the viewer pressed Center/Right to go into the grid. */
         fun onScope(scope: GuideScope, enter: Boolean)
+        /** Center held on a group's [row] ([name] in full): its small window. Nothing is picked or previewed. */
+        fun onHold(scope: GuideScope.Group, name: String, row: View)
     }
 
     sealed class Item {
@@ -50,6 +54,8 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private val main = Handler(Looper.getMainLooper())
     private var pendingScope: GuideScope? = null
     private val showPending = Runnable { pendingScope?.let { if (it != current) pick(it, enter = false) } }
+    /** Set while focus is put on a row for the viewer (back from a small window): that row isn't previewed. */
+    private var quietFocus = false
 
     init {
         layoutManager = LinearLayoutManager(context)
@@ -98,6 +104,70 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         post { findViewHolderForAdapterPosition(i)?.itemView?.requestFocus() ?: getChildAt(0)?.requestFocus() }
     }
 
+    /**
+     * Focus on [scope]'s row without previewing it: back from its small window, or onto the row that took a hidden
+     * group's place. The current entry's if it isn't listed.
+     */
+    fun focusScope(scope: GuideScope) {
+        val i = items.indexOfFirst { scopeOf(it) == scope }
+        if (i < 0) { focusCurrent(); return }
+        // Found even while a move or removal waits for the next layout (its position as it will be).
+        val v = findViewHolderForAdapterPosition(i)?.itemView
+        if (v != null) { focusQuietly(v); return }
+        // Not on screen yet: a row moving up into a removed one's place shows with the next layout, where it is; one
+        // further away is scrolled to.
+        if (!hasPendingAdapterUpdates()) (layoutManager as LinearLayoutManager).scrollToPositionWithOffset(i, height / 3)
+        post { findViewHolderForAdapterPosition(i)?.itemView?.let { focusQuietly(it) } ?: focusCurrent() }
+    }
+
+    private fun focusQuietly(v: View) {
+        quietFocus = true
+        v.requestFocus()
+        quietFocus = false
+    }
+
+    /**
+     * Move to top: [groupId] becomes the first of its playlist's groups, shown at once. Only its row moves (the rows it
+     * passes step down one); when its new place is above the rows on screen, the list comes to it with the row staying
+     * where it is on screen. False when it was first already, or isn't listed.
+     */
+    fun moveGroupToTop(playlistId: String, groupId: String): Boolean {
+        val list = groups[playlistId] ?: return false
+        val moved = GroupEdits.toTop(list, groupId) { it.id }
+        if (moved === list) return false
+        val key = entryKey(GuideScope.Group(playlistId, groupId))
+        val lm = layoutManager as LinearLayoutManager
+        val from = items.indexOfFirst { keyOf(it) == key }
+        val firstShown = lm.findFirstVisibleItemPosition()
+        val rowTop = findViewHolderForAdapterPosition(from)?.itemView?.top
+        groups = groups + (playlistId to moved)
+        items = buildItems()
+        val to = items.indexOfFirst { keyOf(it) == key }
+        if (from < 0 || to < 0) { rebuild(); return true }
+        adapter?.notifyItemMoved(from, to)
+        if (to < firstShown && rowTop != null) lm.scrollToPositionWithOffset(to, rowTop - paddingTop)
+        return true
+    }
+
+    /**
+     * Hide category: [groupId]'s row leaves the column at once. Returns the scope of the row that takes its place (the
+     * next group, or the one above when it was the last: another group, or the playlist's All channels), for focus to
+     * go to; when the guide was showing the hidden group, it shows that one now. Null when it isn't listed.
+     */
+    fun hideGroup(playlistId: String, groupId: String): GuideScope? {
+        val list = groups[playlistId] ?: return null
+        if (list.none { it.id == groupId }) return null
+        val hidden = GuideScope.Group(playlistId, groupId)
+        val landing = GroupEdits.afterHide(list.map { it.id }, groupId)?.let { GuideScope.Group(playlistId, it) }
+            ?: GuideScope.AllChannels(playlistId)
+        val pos = items.indexOfFirst { keyOf(it) == entryKey(hidden) }
+        groups = groups + (playlistId to list.filter { it.id != groupId })
+        items = buildItems()
+        if (pos >= 0) adapter?.notifyItemRemoved(pos) else rebuild()
+        if (current == hidden) pick(landing, enter = false)
+        return landing
+    }
+
     private fun rebuild() {
         items = buildItems()
         @Suppress("NotifyDataSetChanged")
@@ -122,8 +192,10 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private fun keyOf(item: Item): String = when (item) {
         Item.All -> "all"
         is Item.Head -> "h|" + item.playlist.id
-        is Item.Entry -> "e|" + item.scope.encode()
+        is Item.Entry -> entryKey(item.scope)
     }
+
+    private fun entryKey(scope: GuideScope) = "e|" + scope.encode()
 
     private val ids = HashMap<String, Long>()
     private fun idOf(item: Item): Long = ids.getOrPut(keyOf(item)) { ids.size + 1L }
@@ -248,11 +320,30 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 if (!has) return@setOnFocusChangeListener
                 main.removeCallbacks(showPending)
                 pendingScope = scopeOf(item)
-                if (pendingScope != null) main.postDelayed(showPending, 350)
+                if (pendingScope != null && !quietFocus) main.postDelayed(showPending, 350)
+            }
+            // Center held on a group: its small window, instead of picking it on release (the long press is used up)
+            // or previewing it.
+            val entry = item as? Item.Entry
+            val group = entry?.scope as? GuideScope.Group
+            if (entry != null && group != null) {
+                h.row.setOnLongClickListener { row ->
+                    main.removeCallbacks(showPending)
+                    callbacks?.onHold(group, entry.label, row)
+                    true
+                }
+            } else {
+                h.row.setOnLongClickListener(null)
+                h.row.isLongClickable = false
             }
             h.row.setOnKeyListener { _, keyCode, event ->
                 if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
                 when (keyCode) {
+                    // Center picks on release; held, a group's small window opens. Neither waits for the preview.
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                        main.removeCallbacks(showPending)
+                        false
+                    }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         val s = scopeOf(item)
                         if (item is Item.Head && !item.expanded) { toggle(item); true }
