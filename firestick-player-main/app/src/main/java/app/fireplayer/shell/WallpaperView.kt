@@ -24,9 +24,10 @@ import java.util.concurrent.Executors
  * off the main thread; with glass, the same pass builds the blurred pictures glass shows ([StillGlass]), so glass on
  * these screens never copies or blurs anything per frame.
  *
- * Live video shows through a [hole]: the guide's miniature, or the whole screen in full screen. The live picture is a
- * SurfaceView behind the window, so everything drawn here stays outside the hole; its rounded corners are the
- * wallpaper drawn over the corners of the video.
+ * Live video shows through a hole ([setHole]): the guide's miniature, or the whole screen in full screen, and every
+ * place in between while the picture grows or shrinks. The live picture is a SurfaceView behind the window, so
+ * everything drawn here stays outside the hole; its rounded corners are the wallpaper drawn over the corners of the
+ * video.
  */
 class WallpaperView(context: Context) : View(context) {
 
@@ -59,8 +60,15 @@ class WallpaperView(context: Context) : View(context) {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    /** Where live video shows: [rect] in this view's coordinates; null for none; [full] for the whole view. */
+    /**
+     * Where live video shows: [rect] in this view's coordinates; null for none; [full] for the whole view. Called every
+     * frame while the picture moves (the hole follows it, its corners rounding off or back), so it makes nothing new,
+     * and the same hole again draws nothing again.
+     */
     fun setHole(rect: RectF?, radius: Float, full: Boolean = false) {
+        val same = full == fullHole && radius == holeRadius &&
+            (if (rect == null || rect.isEmpty) holeRect.isEmpty else rect == holeRect)
+        if (same) return
         fullHole = full
         if (rect == null) holeRect.setEmpty() else holeRect.set(rect)
         holeRadius = radius

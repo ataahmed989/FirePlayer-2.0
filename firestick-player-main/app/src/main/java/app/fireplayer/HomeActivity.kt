@@ -400,41 +400,122 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         if (full && !videoFull) captionStyler.apply(captions, SubtitlePresets(Prefs(this)).active())
         videoFull = full
         videoRadius = radius
-        layoutVideo()
+        layoutVideo(animateMs)
         applyLiveDim()
+    }
+
+    /*
+     * Moving smoothly (miniature <-> full screen, Android 7 and later, where a SurfaceView follows its view
+     * transforms). The surface keeps its layout while the picture moves, and its transforms (scale and translation
+     * from its top left) show it on the way, so it's never resized frame by frame; the wallpaper's hole follows it,
+     * its corners rounding off or back, and full screen's dimmer fades with it. At the end the surface is laid out
+     * where the picture stopped, untransformed: its one resize, made once the picture is exactly there. (Resized at
+     * the start instead, the surface would flash at the wrong size for a frame: Fire OS sets a resized surface's
+     * place without its transform and only puts the transform back on the next frame.) Captions, full screen's
+     * dimmer and Display size's full-screen picture are the end's: they apply when it's reached.
+     */
+    private val motion = app.fireplayer.live.ui.PictureMotion()
+    /** Where the surface is laid out; null while hidden. While the picture moves, its transforms show it elsewhere. */
+    private var laidAt: LivePicture.Placement? = null
+    private var mover: android.animation.ValueAnimator? = null
+    /** Full screen as it shows: reached once a move there has ended. Captions and the dimmer wait for it. */
+    private var pictureFull = false
+    private val endHole = app.fireplayer.live.ui.PictureMotion.Box()
+    private val holeNow = RectF()
+    private val transformNow = FloatArray(4)
+    /** Screen dimmer's display amount (0 to 1) as last read; it shows as much of it as of full screen. */
+    private var dimDisplay = 0f
+    /** Fast out, slow in: the picture sets off briskly and settles gently into place. */
+    private val moveEasing by lazy { android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f) }
+    private val moveFrame = android.animation.ValueAnimator.AnimatorUpdateListener { showMove(it.animatedFraction) }
+    private val moveEnd = object : android.animation.AnimatorListenerAdapter() {
+        override fun onAnimationEnd(animation: android.animation.Animator) {
+            // A move cancelled for another one: that one carries on from where this one stood.
+            if (mover !== animation) return
+            mover = null
+            layoutVideo()
+        }
     }
 
     /**
      * The surface fits the video's shape inside its target (black bars come from the window behind it). Full screen
      * follows Display size, the VOD player's saved choice ([LivePicture]); a picture bigger than the screen (Fill
      * screen, Zoom) starts above and left of it and the screen crops it.
+     *
+     * With [animateMs] the picture moves there from where it is over that time (see [motion]). Placed again while
+     * it moves (a layout pass, the picture's shape now known), it heads for the new place in the time left.
      */
-    private fun layoutVideo() {
-        val lp = surface.layoutParams as FrameLayout.LayoutParams
+    private fun layoutVideo(animateMs: Long = 0L) {
         val target = when {
             videoFull -> RectF(0f, 0f, root.width.toFloat(), root.height.toFloat())
             else -> videoTarget
         }
         if (target == null || target.isEmpty) {
-            wallpaper.setHole(null, 0f)
-            lp.width = 1; lp.height = 1; lp.leftMargin = 0; lp.topMargin = 0
-            surface.layoutParams = lp
-            surface.visibility = View.INVISIBLE
-            captions.visibility = View.GONE
+            hideVideo()
             return
         }
         val size = player.status().videoSize
         val aspect = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 0f
         val mode = if (videoFull) videoPrefs.displayMode else PictureFit.NORMAL
         val at = LivePicture.place(target.left, target.top, target.width(), target.height(), aspect, videoFull, mode)
-        lp.width = at.width
-        lp.height = at.height
-        lp.leftMargin = at.left
-        lp.topMargin = at.top
-        lp.gravity = Gravity.TOP or Gravity.START
-        surface.layoutParams = lp
+        val radius = if (videoFull) 0f else videoRadius
+        endHole.set(target.left, target.top, target.right, target.bottom)
+        val running = mover
+        // Already on its way there: it carries on undisturbed.
+        if (running != null && motion.endsAt(at, endHole, radius, videoFull)) return
+        val ms = when {
+            animateMs > 0 -> animateMs
+            running != null -> maxOf(running.duration - running.currentPlayTime, app.fireplayer.live.ui.PictureMotion.MIN_RETARGET_MS)
+            else -> 0L
+        }
+        val canMove = ms > 0 && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N &&
+            laidAt != null && surface.visibility == View.VISIBLE && !motion.isAt(at, endHole, radius, videoFull)
+        if (canMove) {
+            startMove(at, radius, ms)
+        } else {
+            stopMove()
+            settleVideo(at, target, radius)
+        }
+    }
+
+    private fun hideVideo() {
+        stopMove()
+        motion.clear()
+        laidAt = null
+        pictureFull = false
+        wallpaper.setHole(null, 0f)
+        resetTransform()
+        if (surface.visibility != View.INVISIBLE) {
+            val lp = surface.layoutParams as FrameLayout.LayoutParams
+            lp.width = 1; lp.height = 1; lp.leftMargin = 0; lp.topMargin = 0
+            surface.layoutParams = lp
+            surface.visibility = View.INVISIBLE
+        }
+        captions.setCues(emptyList())
+        captions.visibility = View.GONE
+        showDimmer()
+    }
+
+    /** The picture at [at] at once (or at the end of a move): laid out there, untransformed, the hole around [target]. */
+    private fun settleVideo(at: LivePicture.Placement, target: RectF, radius: Float) {
+        motion.settle(at, endHole, radius, videoFull)
+        resetTransform()
+        val moved = laidAt != at
+        if (moved || surface.visibility != View.VISIBLE) {
+            val lp = surface.layoutParams as FrameLayout.LayoutParams
+            lp.width = at.width
+            lp.height = at.height
+            lp.leftMargin = at.left
+            lp.topMargin = at.top
+            lp.gravity = Gravity.TOP or Gravity.START
+            surface.layoutParams = lp
+        }
+        laidAt = at
         surface.visibility = View.VISIBLE
-        wallpaper.setHole(target, if (videoFull) 0f else videoRadius, full = videoFull)
+        wallpaper.setHole(target, radius, full = videoFull)
+        pictureFull = videoFull
+        // The full-screen controls' glass shows a copy of the picture: one of it where it is now.
+        if (moved && filmOn) film?.frameChanged()
         // Captions only over the full-screen picture (in the miniature they'd be too small to read), and only over
         // the part of it on screen.
         if (videoFull) {
@@ -449,6 +530,64 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             captions.setCues(emptyList())
             captions.visibility = View.GONE
         }
+        showDimmer()
+    }
+
+    /** The picture sets off from where it is now (mid-move too) towards [at], arriving in [ms]. */
+    private fun startMove(at: LivePicture.Placement, radius: Float, ms: Long) {
+        stopMove()
+        motion.start(at, endHole, radius, videoFull)
+        // Captions come back at full screen's end; none on the way.
+        pictureFull = false
+        captions.setCues(emptyList())
+        captions.visibility = View.GONE
+        surface.pivotX = 0f
+        surface.pivotY = 0f
+        val move = android.animation.ValueAnimator.ofFloat(0f, 1f)
+        move.duration = ms
+        move.interpolator = moveEasing
+        move.addUpdateListener(moveFrame)
+        move.addListener(moveEnd)
+        mover = move
+        // Where it starts, in this very frame (no frame shows anything else).
+        showMove(0f)
+        move.start()
+    }
+
+    private fun stopMove() {
+        val move = mover ?: return
+        mover = null
+        move.cancel()
+    }
+
+    /** One frame of a move, [f] of the way (eased): the surface's transform, the wallpaper's hole and the dimmer. */
+    private fun showMove(f: Float) {
+        val laid = laidAt ?: return
+        motion.at(f)
+        app.fireplayer.live.ui.PictureMotion.transform(laid, motion.picture, transformNow)
+        surface.scaleX = transformNow[0]
+        surface.scaleY = transformNow[1]
+        surface.translationX = transformNow[2]
+        surface.translationY = transformNow[3]
+        val hole = motion.hole
+        holeNow.set(hole.left, hole.top, hole.right, hole.bottom)
+        // Not full screen until the end: the wallpaper shows around the picture all the way.
+        wallpaper.setHole(holeNow, motion.radius, full = false)
+        showDimmer()
+    }
+
+    private fun resetTransform() {
+        surface.scaleX = 1f
+        surface.scaleY = 1f
+        surface.translationX = 0f
+        surface.translationY = 0f
+    }
+
+    /** Full screen's dimmer, as much of it as of full screen shows (all of it there, fading in and out on the way). */
+    private fun showDimmer() {
+        val alpha = dimDisplay * motion.fullness
+        liveDimmer.alpha = alpha
+        liveDimmer.visibility = if (alpha > 0f) View.VISIBLE else View.GONE
     }
 
     /**
@@ -458,8 +597,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
      */
     private fun applyLiveDim() {
         val amounts = dimmer.amounts()
-        liveDimmer.alpha = amounts.display / 100f
-        liveDimmer.visibility = if (videoFull && amounts.display > 0) View.VISIBLE else View.GONE
+        dimDisplay = amounts.display / 100f
+        showDimmer()
         val glass = amounts.glass / 100f
         if (Glass.dim != glass) {
             Glass.dim = glass
@@ -493,7 +632,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
      * come (they have no text to restyle).
      */
     private fun showCues(cues: List<Cue>) {
-        if (!videoFull) { captions.setCues(emptyList()); return }
+        if (!pictureFull) { captions.setCues(emptyList()); return }
         val (pictures, text) = cues.partition { it.bitmap != null }
         captions.setCues(captionStyler.normalize(text) + pictures)
     }
