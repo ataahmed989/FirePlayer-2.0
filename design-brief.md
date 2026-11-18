@@ -154,7 +154,7 @@ details behind a decision that the user has seen but not individually approved. 
 ### 6.2 Library and history
 
 - FirePlayer keeps Continue Watching, My List (a saved-title list, independent of Real-Debrid), Next Episodes,
-  Continue Series, watched marks and resume points keyed by title/episode instead of by URL. Proposed: the last release
+  Continue Watching · Series, watched marks and resume points keyed by title/episode instead of by URL. Proposed: the last release
   used per film or episode (info hash + file index, never the URL).
 - **No syncing of any kind** — no Stremio sync, no FirePlayer-to-FirePlayer sync. Each TV keeps its own history.
   Store it so sync could be added later.
@@ -166,7 +166,7 @@ details behind a decision that the user has seen but not individually approved. 
 - **Home:** idle-rotating header with the PiP/history window, Continue Watching (films and series), My List directly
   below, then Next Episodes, Popular Movies, Popular Shows; MediaFusion rows optional, off.
 - **Movies:** Continue Watching · Films (only when a film is in progress), Top 10 This Week, Popular, New by year
-  (year picker), Featured, genres. **TV Shows:** Continue Series, Next Episodes, Top 10, Popular, New by year,
+  (year picker), Featured, genres. **TV Shows:** Continue Watching · Series, Next Episodes, Top 10, Popular, New by year,
   Featured, genres.
 - **Header:** rotates the page's Top 10 (Home: featured) while idle; while focus is in the page's Continue row it shows
   the focused title; other rows don't change it.
@@ -181,7 +181,7 @@ details behind a decision that the user has seen but not individually approved. 
 ### 6.4 Pressing titles and the title page
 
 - Posters open the title page. **Continue rows go straight to playback** (Home's Continue Watching, Movies' Continue
-  Watching · Films, TV Shows' Continue Series, Glass Home): no title page, no resume question, and the **same file** —
+  Watching · Films, TV Shows' Continue Watching · Series, Glass Home): no title page, no resume question, and the **same file** —
   FirePlayer asks only the add-on that supplied that release for the title's list and picks it (no wait for the other
   add-on). If it's gone: normal search, same release from the other add-on first, then the closest match, with
   "Resumed near …" (proposed).

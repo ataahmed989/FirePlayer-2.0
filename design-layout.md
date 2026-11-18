@@ -369,7 +369,7 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-18 · User: posters open a title page with Play, Play from beginning (once started; restarts the current
   episode on shows), Episodes, More Like This, Sources; layout A (rows on the page). Continue rows go straight to
   playback on the same file (Continue Watching on Home mixes films and series; Movies has films only; TV Shows has
-  Continue Series), like Glass Home. Sources are looked up when a title page opens.
+  Continue Watching · Series), like Glass Home. Sources are looked up when a title page opens.
 - 2026-11-18 · User: Movies/TV Shows header rotates the page's Top 10 while idle and shows the focused title only
   along the Continue row (same on Home). 15 posters per row; hold OK: My List, Mark watched; MediaFusion rows off.
 - 2026-11-18 · User: title rows scroll like the Episodes sheet (chosen tile at the left edge, grows, one per press,
