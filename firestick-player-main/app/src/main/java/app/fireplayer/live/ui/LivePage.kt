@@ -39,7 +39,8 @@ import java.util.concurrent.Executors
  * compact grid below. The column collapses while the grid has focus. First Center on another channel tunes it in the
  * miniature; Center on the playing channel opens full screen; holding Back opens full screen; so does a period
  * without key presses ([LivePrefs.fullScreenAfterSec]). The miniature and full screen are the same player and
- * surface, so going between them never retunes.
+ * surface, so going between them never retunes. Center held on a channel or on a group opens a small window
+ * ([HoldPopup]): a channel's star and Assign favorites, a group's Move to top and Hide category.
  *
  * Full screen: with the controls hidden, Up/Down and Channel +/- change channel (or only Channel +/- when
  * "Channel buttons only" is set, and then Up/Down show the controls); Center shows the controls; Back returns to
@@ -139,6 +140,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val emptyText = t.label(ctx, 18f, t.semibold).apply { maxLines = 3; gravity = Gravity.CENTER }
     private val emptyButton = t.label(ctx, 16f, t.semibold)
     private val notice = t.label(ctx, 15f).apply { maxLines = 2 }
+    /** The small window a held Center opens (a channel in the guide, a group in the column); one at a time. */
+    private val popup = HoldPopup(ctx, t)
+    /** The channel the small window is for, as it stands (its star follows each press). */
+    private var popupChannel: Channel? = null
+    /** Where the selection goes when the small window closes: the held cell, or the group's row (or the one in its place). */
+    private var popupFocusBack: (() -> Unit)? = null
 
     private val logos = LogoCache(t.dp(76)) { guide.invalidate(); refreshControls() }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
@@ -249,6 +256,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
         root.addView(controls, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(notice, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = t.dp(30) })
         notice.visibility = View.GONE
+        root.addView(popup, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.LEFT))
+        popup.onClose = { focusBack ->
+            val back = popupFocusBack
+            popupFocusBack = null
+            popupChannel = null
+            if (focusBack) back?.invoke()
+            // The viewer was busy in it: the guide's wait for full screen starts again.
+            scheduleIdle()
+        }
         applyLook()
     }
 
@@ -305,6 +321,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             content.translationX = target
             narrowDetails(columnOpen)
             narrowGuide(columnOpen)
+            // In the grid the channel names get more room.
+            guide.setWideColumn(!columnOpen)
             sidebarPanel.translationX = if (columnOpen) 0f else hidden
             sidebarPanel.alpha = if (columnOpen) 1f else 0f
             if (!columnOpen) sidebarPanel.visibility = View.INVISIBLE
@@ -342,6 +360,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             .setDuration(SLIDE_MS).setInterpolator(EASE).withLayer()
             .withEndAction { if (!sidebarOpen) sidebarPanel.visibility = View.INVISIBLE }
             .start()
+        // The channel names' column widens in the grid (narrows as the column comes back), in step: drawn, not laid out.
+        guide.setWideColumn(!columnOpen, SLIDE_MS, EASE)
     }
 
     private fun lp(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(top) }
@@ -359,6 +379,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         columnRule.setBackgroundColor(if (Glass.on) 0x1FFFFFFF else 0x14FFFFFF)
         Glass.background(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
+        popup.applyLook()
         guide.glass = Glass.on
         if (film) host.setFilmGlass(true)
         controls.applyLook()
@@ -385,6 +406,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         guide.callbacks = object : GuideView.Callbacks {
             override fun onFocusMoved(channel: Channel, cell: Cell?) = showDetails(channel, cell)
             override fun onPick(channel: Channel, cell: Cell?) = pick(channel)
+            override fun onHold(channel: Channel) = openChannelPopup(channel)
             override fun onLeaveLeft() = openSidebar(focus = true)
             override fun needProgrammes(channels: List<Channel>, from: Long, to: Long) = loadProgrammes(channels, from, to)
             override fun logo(url: String): Bitmap? = logos.get(url)
@@ -407,12 +429,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     }
                 }
             }
+
+            override fun onHold(scope: GuideScope.Group, name: String, row: View) = openGroupPopup(scope, name, row)
         }
         controls.actions = object : LiveControls.Actions {
             override fun onGuide() = toGuide()
             override fun onHistory() = showHistory()
             override fun onCaptions() = chooseCaptions()
-            override fun onFavorite() = toggleFavorite()
+            override fun onFavorite() { toggleFavorite() }
             override fun onPlayPause() = togglePause()
             override fun onGoLive() = goLive()
             override fun onMore(key: String, from: View) {
@@ -432,13 +456,23 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private val dataListener = object : LiveSync.Listener {
-        override fun onLiveDataChanged(playlistId: String) = reload(keepFocus = true)
+        override fun onLiveDataChanged(playlistId: String) {
+            // A change this page made itself (a group moved or hidden) is on screen already: reading everything again
+            // would redraw the column a second time and empty the guide's rows while their listings load.
+            if (ownChanges > 0) { ownChanges--; return }
+            reload(keepFocus = true)
+        }
     }
+
+    /** Changes this page announced ([announce]) that its own listener is still to hear of. */
+    private var ownChanges = 0
 
     /** The tab is showing (activity started, or switched to this tab). */
     fun start() {
         if (started) return
         started = true
+        // Everything is read again below: an announcement heard of while away is no longer to be skipped.
+        ownChanges = 0
         player.addListener(statusListener)
         sync.addListener(dataListener)
         // A channel that was playing comes back in the miniature (not full screen).
@@ -458,6 +492,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun stop() {
         if (!started) return
         started = false
+        popup.close(fade = false, focusBack = false)
+        backClosedPopup = false
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
         player.onScreenStopped(host.videoOwner)
@@ -695,6 +731,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         prefs.lastChannel = channel.key
         playingChannel = channel
+        // A channel change from elsewhere closes a small window still open.
+        popup.close()
         bg { db.noteRecent(channel.key, System.currentTimeMillis()) }
         if (!fullScreen) placeMini()
         return true
@@ -770,6 +808,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     fun toFull() {
         if (player.playingKey == null || fullScreen) return
+        popup.close(fade = false, focusBack = false)
         fullScreen = true
         revealKey = 0
         focusBeforeFull = guide.focusedChannel()?.key
@@ -981,16 +1020,21 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private fun toggleFavorite() {
-        val key = ChannelKey.parse(player.currentKey) ?: return
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return
+    /**
+     * Stars or unstars [target] (the playing channel when null): the full-screen Favorite button, or the star in a
+     * channel's small window ([notice] false there: the star filling is the answer). Returns the new state, or null
+     * when there's no such channel.
+     */
+    private fun toggleFavorite(target: Channel? = null, notice: Boolean = true): Boolean? {
+        val key = target?.key ?: ChannelKey.parse(player.currentKey) ?: return null
+        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: target ?: return null
         val fav = !ch.favorite
-        // Shown at once (the star fills, the guide row follows); stored behind it. The database can be busy for a
-        // while with a guide update, which must not hold up the button.
-        guide.updateChannels(guide.channelList().map { if (it.key == key) it.copy(favorite = fav) else it })
-        playingChannel = ch.copy(favorite = fav)
+        // Shown at once (the star fills, the guide row and the details follow); stored behind it. The database can be
+        // busy for a while with a guide update, which must not hold up the button. Only that row changes in the guide.
+        guide.updateChannel(ch.copy(favorite = fav))
+        if (key.toString() == player.currentKey) playingChannel = ch.copy(favorite = fav)
         refreshControls()
-        showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
+        if (notice) showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
         val s = scope
         writes.execute {
             runCatching { db.setFavorite(key, fav, System.currentTimeMillis()) }
@@ -1007,12 +1051,124 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     loadChannels(focus = keep, enterGrid = false)
                 } else {
                     // Already shown; applied again in case a list arrived in between.
-                    guide.updateChannels(guide.channelList().map { if (it.key == key) it.copy(favorite = fav) else it })
+                    guide.channelList().firstOrNull { it.key == key }?.let { guide.updateChannel(it.copy(favorite = fav)) }
                     playingChannel = playingChannel?.let { if (it.key == key) it.copy(favorite = fav) else it }
                     refreshControls()
                 }
             }
         }
+        return fav
+    }
+
+    // ---- Small windows (Center held) ------------------------------------------------------------------------------
+
+    /** Center held on [channel] in the guide: its star (selected), its full name and Assign favorites, beside its row. */
+    private fun openChannelPopup(channel: Channel) {
+        if (fullScreen || popup.isOpen) return
+        val row = RectF()
+        if (!guide.focusedRowRect(row)) return
+        popupChannel = channel
+        popupFocusBack = { if (!guide.requestFocus()) takeFocus() }
+        // Beside the channel's name, over its programmes, inside the guide.
+        val area = inRoot(guide, RectF(0f, 0f, guide.width.toFloat(), guide.height.toFloat()))
+        area.intersect(0f, 0f, root.width.toFloat(), root.height.toFloat())
+        popup.open(channel.name, listOf(starButton(channel.favorite), HoldPopup.Button("Assign favorites") { popupAssign() }), inRoot(guide, row), area)
+    }
+
+    private fun starButton(favorite: Boolean) = HoldPopup.Button(
+        if (favorite) "Remove from Favorites" else "Add to Favorites",
+        icon = if (favorite) app.fireplayer.R.drawable.ic_star_filled else app.fireplayer.R.drawable.ic_star,
+        selected = favorite,
+    ) { popupStar() }
+
+    /** OK on the star: the favorite flips at once (with a small pop), and the window closes by itself a moment later. */
+    private fun popupStar() {
+        val ch = popupChannel ?: return
+        val fav = toggleFavorite(ch, notice = false) ?: return
+        popupChannel = ch.copy(favorite = fav)
+        popup.update(0, starButton(fav))
+        popup.pop(0)
+        popup.closeAfter(STAR_CLOSE_MS)
+    }
+
+    /** Assign favorites: the window gives way to Assign favorites on this channel's group, the channel selected. */
+    private fun popupAssign() {
+        val ch = popupChannel ?: return
+        // Gone at once (the guide dims under the settings window), focus back on the cell for when that closes.
+        popup.close(fade = false)
+        host.openAssignFavorites(ch.playlistId, ch.groupId, ch.key)
+    }
+
+    /** Center held on a group in the column: its full name, Move to top (selected) and Hide category, beside its row. */
+    private fun openGroupPopup(scope: GuideScope.Group, name: String, row: View) {
+        if (fullScreen || popup.isOpen || row.width == 0) return
+        popupFocusBack = { sidebar.focusScope(scope) }
+        val m = gap.toFloat()
+        val area = RectF(m, m, root.width - m, root.height - m)
+        popup.open(name, listOf(
+            HoldPopup.Button("Move to top") { moveGroupToTop(scope) },
+            HoldPopup.Button("Hide category") { hideGroup(scope) },
+        ), inRoot(row, RectF(0f, 0f, row.width.toFloat(), row.height.toFloat())), area)
+    }
+
+    /**
+     * Move to top: the group becomes the first of its playlist's groups (the order Manage groups › Reorder groups
+     * keeps), shown in the column at once with focus following it; stored behind.
+     */
+    private fun moveGroupToTop(scope: GuideScope.Group) {
+        val moved = sidebar.moveGroupToTop(scope.playlistId, scope.groupId)
+        popup.close()
+        if (!moved) return
+        writes.execute {
+            // The shown groups in the order stored now, this one first (hidden ones keep theirs).
+            val stored = runCatching {
+                db.setGroupOrder(scope.playlistId, GroupEdits.toTop(db.groups(scope.playlistId).map { it.id }, scope.groupId))
+            }.onFailure { Log.w(TAG, "Group order not stored: ${it.javaClass.simpleName}") }.isSuccess
+            main.post { if (!released) announce(scope.playlistId, stored) }
+        }
+    }
+
+    /**
+     * Hide category: the group leaves the column at once and focus goes to the row in its place; the guide showing it
+     * shows that row's channels instead. Stored behind; Manage groups shows it again.
+     */
+    private fun hideGroup(scope: GuideScope.Group) {
+        val landing = sidebar.hideGroup(scope.playlistId, scope.groupId)
+        if (landing != null) popupFocusBack = { sidebar.focusScope(landing) }
+        popup.close()
+        if (landing == null) return
+        showNotice("Hidden. Show it again in Manage groups.")
+        writes.execute {
+            val stored = runCatching { db.setGroupHidden(scope.playlistId, scope.groupId, true) }
+                .onFailure { Log.w(TAG, "Group not hidden: ${it.javaClass.simpleName}") }.isSuccess
+            main.post {
+                if (released) return@post
+                announce(scope.playlistId, stored)
+                // Lists that held its channels lose them (one read before this was stored may still have them).
+                val s = this.scope
+                if (stored && (s == GuideScope.AllPlaylists || s == GuideScope.AllChannels(scope.playlistId))) {
+                    loadChannels(focus = guide.focusedChannel()?.key, enterGrid = false)
+                }
+            }
+        }
+    }
+
+    /**
+     * Tells other open views (the settings windows) about a change made here. This page has it on screen already, so
+     * its own listener lets it pass, unless it wasn't stored: then the page reads what is.
+     */
+    private fun announce(playlistId: String, stored: Boolean) {
+        if (stored && started) ownChanges++
+        sync.changed(playlistId)
+    }
+
+    /** [r], in [v]'s coordinates, in the page's own (where the small window is placed). */
+    private fun inRoot(v: View, r: RectF): RectF {
+        val a = IntArray(2)
+        v.getLocationInWindow(a)
+        val b = IntArray(2)
+        root.getLocationInWindow(b)
+        return RectF(r).apply { offset((a[0] - b[0]).toFloat(), (a[1] - b[1]).toFloat()) }
     }
 
     /**
@@ -1065,8 +1221,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private val idleToFull = Runnable {
         if (!started || fullScreen || !root.isShown) return@Runnable
-        // Not while the viewer is in a dialog, the settings window or on the rail: try again later.
-        if (FireDialog.isShowing(activity) || host.overlayOpen() || host.railHasFocus()) { scheduleIdle(); return@Runnable }
+        // Not while the viewer is in a dialog, the settings window, a small window or on the rail: try again later.
+        if (FireDialog.isShowing(activity) || host.overlayOpen() || popup.isOpen || host.railHasFocus()) { scheduleIdle(); return@Runnable }
         // Not onto a channel that couldn't be played.
         if (player.status().error != null) return@Runnable
         toFull()
@@ -1096,6 +1252,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val code = event.keyCode
 
         if (code == KeyEvent.KEYCODE_BACK) return back(event)
+
+        // Menu over a small window: it closes first (the selection back where it was), then Settings opens as usual.
+        if (code == KeyEvent.KEYCODE_MENU && down && popup.isOpen) popup.close(fade = false)
 
         if (!fullScreen) {
             // Channel +/- in the guide page through channels.
@@ -1161,8 +1320,19 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** A Back press this page took the DOWN of: only its UP acts (a stray UP after a dialog closed doesn't). */
     private var backDownSeen = false
+    /** A Back press that closed a small window: held or released, it does nothing more (no full screen). */
+    private var backClosedPopup = false
 
     private fun back(event: KeyEvent): Boolean {
+        if (popup.isOpen || backClosedPopup) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                popup.close()
+                backClosedPopup = true
+            } else {
+                backClosedPopup = false
+            }
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             // Held Back in the guide: the playing channel goes full screen (design-layout).
             if (!fullScreen && event.repeatCount >= 1 && !backLongPressed && player.playingKey != null && player.status().error == null) {
@@ -1199,6 +1369,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         /** The miniature growing to full screen, and shrinking back. */
         private const val GROW_MS = 280L
         private const val SHRINK_MS = 240L
+        /** A channel's small window stays this long after its star was pressed, so the star is seen to change. */
+        private const val STAR_CLOSE_MS = 450L
         private val EASE = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
         private val PLAY_PAUSE_KEYS = setOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE)
         private val HANDLED_UP = setOf(
