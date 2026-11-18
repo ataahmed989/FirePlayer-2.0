@@ -276,7 +276,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         } + SettingsRow(SettingsCategory.OPEN_A_LINK, R.drawable.ic_link) { openLink() }
         val columns = SettingsCategory.inColumns(rows, settingsColumns(rows.size))
         val side = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        page.addView(side)
+        // Its own width (the columns'): left to match the page, it would only get the title's width, as the page is
+        // as wide as its widest child.
+        page.addView(side, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         // Narrower in two columns, so the second stays clear of the settings window (its left edge is about 644 dp in).
         val width = tokens.dp(if (columns.size > 1) COLUMN_DP else ONE_COLUMN_DP)
         columns.forEachIndexed { i, column ->
