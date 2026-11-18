@@ -375,6 +375,7 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-18 · User (sizing page): posters 6.5 across at 3:4 (121 × 162 dp), Continue Watching wide cards 4.5 across
   (182 × 102 dp), header 195 dp, medium text, chosen card grows 16%, and Home's header slides away once you scroll
   past Continue Watching. Details in design-brief.md §6.3.
+- 2026-11-18 · User: Top 10 numbers use Glass Home's ranked-shelf design (solid white Inter ExtraBold beside each poster).
 - 2026-11-18 · User (sizing page comments): no More Like This button on the title page (it stays a row); TV Shows'
   row is "Continue Watching · Series"; holding OK on a title opens a small window with "+ Add to list" (chosen first)
   and Mark watched; on Continue Watching cards also "Remove".

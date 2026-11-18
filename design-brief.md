@@ -186,6 +186,10 @@ details behind a decision that the user has seen but not individually approved. 
   - Header: 195 dp tall, from y = 44 dp under a page-name/clock line; on Home the live/history window is 330 dp wide
     beside a 496 dp header card. Movies and TV Shows use the same 195 dp header.
   - Text: medium — row titles 16 sp, card captions 12.5 sp, header title 34 sp, facts 12.5 sp.
+  - Top 10 rows use Glass Home's ranked design (`ShelfPage.drawCard`, RANKED): a solid white Inter ExtraBold (800)
+    number, right-aligned in a slot left of each poster (slot = 124/333 of the poster height), tucked about 5 dp behind
+    the poster, baseline just above the poster's bottom, letter-spacing -0.06, text size 230/333 of the poster height
+    ("10" shrunk to fit).
   - Home scrolled down (past Continue Watching): the header and live window slide away and the focused row sits just
     under the page-name line, giving about two and a half rows of posters.
 
