@@ -297,6 +297,50 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Assumption: with the column open, the details' progress bar is shorter (44 dp) so "… min left" fits. Fixed in
     passing: the time and "in …" ran together when the bar was hidden (a programme not on now).
 
+- 2026-11-18 · User: App settings organised into categories on the Settings tab — Playlists & EPG, Live TV,
+  Playback, Remote & skipping, Subtitles & audio, Look, Accounts & services, TiviMate titles, App — each its own
+  window; "Open a link" stays on the Settings tab (a tool, last). The player windows' "App settings" row and Menu open
+  the same category list. Assumption: two columns of five (ten rows don't fit one column on a 540 dp screen).
+- 2026-11-18 · User: Manage groups opens its own window from a playlist's window — hide/show (a switch per group,
+  Show all, Hide all, Hide new groups) and the order — "easy and smooth"; with an "Assign favorites" button: the
+  playlist's categories, then a category's channels; pressing a channel turns it blue with a filled star. The playlist
+  and Manage groups windows are wider (about 44% of the screen) so full names show. Long lists are recycled (353 groups
+  open in 64 ms on the Max, was ~1 s). Assumptions: hidden groups listed last (faded) in Assign favorites; each group
+  shows its count of favorites.
+- 2026-11-18 · User: holding OK on a channel opens a small window — a star (focused), the full channel name and
+  "Assign favorites" (opens Assign favorites at that channel). OK on the star adds or removes the favorite at once;
+  Back or the D-pad past the options closes it. Assumption: the window closes by itself ~0.45 s after the star changes,
+  so the viewer sees it fill.
+- 2026-11-18 · User: holding a channel group acts like holding a channel — a small window with the group's name,
+  "Move to top" and "Hide category" (supersedes "holding a group opens Manage groups"). Assumption: after Hide, a short
+  note says it can be shown again in Manage groups.
+- 2026-11-18 · User: with the groups column and rail slid away (the grid) the channel-names column is wider
+  (320 dp; 256 dp with the column open), changing in step with the slide.
+- 2026-11-18 · User: "as smooth but lean as possible without over using things like the graphics card" — a standing
+  rule: no new blur, shadows or extra layers; short transform/alpha motions; nothing animates while idle.
+- 2026-11-18 · User (concept art): darker backgrounds — glass a dark grey-blue (not bright blue), classic darker; the
+  channel's logo beside its name in the details; a highlighted plate behind every channel logo (guide, details, full
+  screen); one more row so the guide reaches the bottom; Down past the last item goes to the first and Up past the first
+  to the last in the tab rail, the groups column and the channel list (a held key stops at the end); the TV Guide button
+  returns to the guide on the playing channel; the Settings icon is a rounded gear like the other line icons; in full
+  screen, Up / Channel + goes to the next channel down the category's list and Down / Channel − to the previous one.
+  Assumptions: two plates (soft white, or light grey for dark ink on a see-through logo), chosen once per logo; the
+  10th row is partly cut at the screen's edge on purpose.
+- 2026-11-18 · User: Playlists and EPG, better organised — the playlists; "Manage playlists" (Add playlist, Reorder
+  playlists); "Update playlists" with when it last updated; "EPG sources" (N of M loaded, closed by default) opening to
+  "Manage EPG sources" (each playlist's EPG and its programmes, Days to keep EPG, Update interval, Update EPG, Clear EPG).
+  Days to keep EPG stays a fixed 1 day for now.
+- 2026-11-18 · User: a "Live TV buffer" setting (Small, Medium, Large) in Live TV settings and in the main settings'
+  Playback — one saved value. Medium is the buffer live channels always had (15 s / 30 s, start 1.5 s, 3 s after a
+  stall); Small 5 s / 10 s / 1 s / 2 s; Large 30 s / 45 s / 2.5 s / 5 s (kept modest: the Max is short of memory). A
+  change reloads the playing channel once. Films keep their memory-based buffer.
+- 2026-11-18 · User: the idle timer may be longer (owner's choice). Default becomes 1 minute (the user's TV is
+  already set to 1 minute).
+- 2026-11-18 · Found on the Max: a paused Stremio film played behind FirePlayer 2.0 — neither player claimed Android's
+  audio focus, and Play/Pause pressed over the guide went unused, so Android handed it to Stremio's media session. Both
+  players now claim the sound (other apps pause; Alexa pauses or lowers them for a moment); HomeActivity keeps every
+  media button it doesn't use; in the guide Play/Pause pauses or resumes the miniature's channel ("Paused"/"Playing").
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

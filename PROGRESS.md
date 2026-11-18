@@ -126,6 +126,22 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - Note: the Max had little free memory during these tests (swap full, the kernel's reclaimer busy), and the test app
   is a debug build (slower than a release build), so timings vary from run to run.
 
+## 3e. Settings categories, groups and favorites, hold windows, guide polish (November 18)
+
+- [x] Settings tab categories (9 + Open a link, two columns) — on the Max (the columns' width fixed on the TV).
+- [x] Wide, recycled windows: Manage groups (64 ms with 353 groups on the Max), Reorder, Assign favorites (star
+      toggled and undone on the Max), playlist window.
+- [x] Hold a channel: star / full name / Assign favorites — on the Max (favorite added and removed from it).
+- [x] Hold a group: Move to top / Hide category — window seen on the Max after the hold was read like the guide's.
+- [x] Wider channel names in the grid (320 dp) — on the Max.
+- [x] Darker wallpapers, rounded gear — classic and the gear seen on the Max; glass not yet.
+- [x] Logos in the details and on plates; 10th row — seen on the Max. Wrap-around, TV Guide on the playing channel,
+      channel Up = next down the list: built and unit-tested, not yet exercised on the Max.
+- [x] Playlists & EPG reorganised; Live TV buffer (Small/Medium/Large) — built, merged, installed; not yet looked at.
+- [x] Audio focus for live and films; media keys kept; Play/Pause in the guide — on the Max.
+- [~] Settings consistency pass and a review of the whole round (workflow running).
+- [ ] Idle timer default 1 minute (after the consistency pass merges).
+
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
 
 - [ ] Independent VOD catalogs from playlists; Home rail/hero/shelves (Home becomes the launcher destination when it
