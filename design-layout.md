@@ -398,7 +398,8 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Top 10 rows have no See all card; the library's rows (My List, Continue Watching, Next Episodes) show it only past
     15 titles; Cinemeta rows always do.
   - See all opens in place of the rows (Back returns to the card it came from) and closes on a tab switch. Its grid
-    is 6 posters across, the chosen one grows about its middle; at most 1,000 titles.
+    is 6 posters across, the chosen one grows about its middle; at most 300 titles (each poster is a view of its
+    own while the grid is open; reusing a few views would allow more).
   - Genre chips and See all cards are flat fills in both looks (glass in a moving row would show the wrong part of
     the wallpaper). The header and Home's window are glass panels; their frosted picture slides with them while the
     page glides (accepted, to check on the TV).

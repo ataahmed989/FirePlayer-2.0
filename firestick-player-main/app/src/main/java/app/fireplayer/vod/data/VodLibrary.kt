@@ -78,26 +78,45 @@ class VodLibrary(
     /** My List, the latest added first. */
     fun myList(): List<Title> = state { listed.values.filter { it.inList }.sortedByDescending { it.at }.map { it.title } }
 
+    /**
+     * Adds [title] to My List, or takes its id out whichever kind it was added as (the pages ask [inMyList] by id, so a
+     * film and a series sharing an id are both "in the list" and both leave it).
+     */
     fun setInMyList(title: Title, inList: Boolean) {
-        val entry = state {
-            val k = key(title.kind, title.id)
-            if ((listed[k]?.inList == true) == inList) return
-            Listed(title, clock(), inList).also { listed[k] = it }
+        val entries = state {
+            if (inList) {
+                val k = key(title.kind, title.id)
+                if (listed[k]?.inList == true) return
+                listOf(Listed(title, clock(), true).also { listed[k] = it })
+            } else {
+                Kind.entries.mapNotNull { k -> listed[key(k, title.id)]?.takeIf { it.inList } }
+                    .map { Listed(it.title, clock(), false).also { l -> listed[key(l.title.kind, l.title.id)] = l } }
+            }
         }
-        writer.execute { runCatching { store.saveListed(entry) } }
+        if (entries.isEmpty()) return
+        writer.execute { entries.forEach { runCatching { store.saveListed(it) } } }
         changed()
     }
 
     fun isWatched(id: String): Boolean = state { Kind.entries.any { watched[key(it, id)]?.watched == true } }
 
-    /** Marks [title] watched (it leaves Continue Watching) or not watched. */
+    /**
+     * Marks [title] watched (it leaves Continue Watching), or its id not watched whichever kind was marked (as
+     * [isWatched] asks by id).
+     */
     fun setWatched(title: Title, watched: Boolean) {
-        val entry = state {
-            val k = key(title.kind, title.id)
-            if ((this.watched[k]?.watched == true) == watched) return
-            Watched(title.kind, title.id, clock(), watched).also { this.watched[k] = it }
+        val entries = state {
+            if (watched) {
+                val k = key(title.kind, title.id)
+                if (this.watched[k]?.watched == true) return
+                listOf(Watched(title.kind, title.id, clock(), true).also { this.watched[k] = it })
+            } else {
+                Kind.entries.filter { k -> this.watched[key(k, title.id)]?.watched == true }
+                    .map { k -> Watched(k, title.id, clock(), false).also { this.watched[key(k, title.id)] = it } }
+            }
         }
-        writer.execute { runCatching { store.saveWatched(entry) } }
+        if (entries.isEmpty()) return
+        writer.execute { entries.forEach { runCatching { store.saveWatched(it) } } }
         changed()
     }
 

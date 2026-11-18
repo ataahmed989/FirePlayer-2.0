@@ -103,7 +103,10 @@ internal class GridFeed(
     companion object {
         /** Cinemeta's page size. */
         const val PAGE = 50
-        /** At most this many titles in one grid. */
-        const val CAP = 1000
+        /**
+         * At most this many titles in one grid: each is a view of its own, kept while the grid is open (300: 50 rows
+         * of 6, about a third of the memory and layout work of 1,000 on a 2 GB Stick).
+         */
+        const val CAP = 300
     }
 }

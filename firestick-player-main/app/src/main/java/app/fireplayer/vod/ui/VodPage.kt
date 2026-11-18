@@ -101,6 +101,8 @@ class VodPage(
     private var lastLoad = 0L
     /** Focus was asked for before any row showed: it comes in with the first row. */
     private var focusPending = false
+    /** What held focus when it was asked for (the rail's tab): focus moved on from it, the wait ends. */
+    private var pendingFrom: View? = null
     /** The row focus was last in (focus memory for the rail, windows and tab switches). */
     private var lastRow: TitleRow? = null
     /** The row holding focus now, or null. */
@@ -220,6 +222,7 @@ class VodPage(
     fun hide() {
         shown = false
         focusPending = false
+        pendingFrom = null
         if (popup.isOpen) popup.close(fade = false, focusBack = false)
         closeSeeAll(focusBack = false)
         pause()
@@ -307,9 +310,38 @@ class VodPage(
             emptyButton.requestFocus()
             return
         }
-        val row = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: visibleRows().firstOrNull()
-        if (row == null || !row.focusChosen()) focusPending = true
+        val row = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: firstReadyRow()
+        if (row == null || !row.focusChosen()) waitForRows()
     }
+
+    /** Focus asked for before the page's first row is in: it goes there when it comes, unless the viewer moves on. */
+    private fun waitForRows() {
+        focusPending = true
+        pendingFrom = root.rootView.findFocus()
+    }
+
+    /**
+     * Whether focus asked for while loading is still wanted: not once the viewer has moved on from where it was (to
+     * another tab in the rail). Where it was may have gone meanwhile (a window that closed): then it still is.
+     */
+    private fun stillPending(): Boolean {
+        if (!focusPending) return false
+        val from = pendingFrom
+        val now = root.rootView.findFocus()
+        if (from != null && now != null && now !== from && from.isShown) {
+            focusPending = false
+            pendingFrom = null
+        }
+        return focusPending
+    }
+
+    /**
+     * The page's first row with titles, once every row above it has answered (a row answering later would come in
+     * above it, and the page would slide its header away); null while it waits.
+     */
+    private fun firstReadyRow(): TitleRow? =
+        rows.firstOrNull { !it.answered || it.visibility == View.VISIBLE }
+            ?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
 
     /** The page's Back: closes the small window, then See all. False when it's the shell's (to the rail). */
     fun dispatchKey(event: KeyEvent): Boolean {
@@ -349,6 +381,7 @@ class VodPage(
 
     override fun onItemFocused(row: TitleRow, index: Int) {
         focusPending = false
+        pendingFrom = null
         press.cancel()
         if (focusedRow !== row || anchorRow !== row) {
             anchorRow = row
@@ -540,13 +573,15 @@ class VodPage(
         seeAllFrom = null
         viewport.visibility = View.VISIBLE
         if (focusBack) {
-            val row = from?.first
-            val i = from?.second ?: 0
-            if (row != null && row.visibility == View.VISIBLE && row.items.isNotEmpty()) {
-                row.chosen = i.coerceIn(0, row.items.size - 1)
-                row.focusChosen()
-            } else {
-                takeFocus()
+            // Back on the card it was opened from, else the row chosen last, else the first: while the grid still
+            // holds focus (closed first, it would hand focus to the rail's first tab).
+            val origin = from?.first?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
+            if (origin != null && from != null) origin.chosen = from.second.coerceIn(0, origin.items.size - 1)
+            val target = origin
+                ?: lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
+                ?: visibleRows().firstOrNull()
+            if (target == null || !target.focusChosen()) {
+                if (empty.visibility == View.VISIBLE) emptyButton.requestFocus() else host.focusRail()
             }
         }
         sa.close()
@@ -653,6 +688,8 @@ class VodPage(
         if (cards.isEmpty()) {
             hideRow(row)
             checkEmpty()
+            // A row above answering empty: focus asked for may go to one below it now.
+            takePendingFocus()
             return
         }
         // Focus off items that go, before they go.
@@ -669,13 +706,14 @@ class VodPage(
         if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.let { header.follow(it) } ?: header.unfollow()
         checkEmpty()
         updateImages()
-        takePendingFocus(row)
+        takePendingFocus()
     }
 
     private fun showGenres(row: TitleRow, names: List<String>) {
         if (names.isEmpty()) {
             hideRow(row)
             checkEmpty()
+            takePendingFocus()
             return
         }
         if (row.genres == names && row.visibility == View.VISIBLE) return
@@ -686,7 +724,7 @@ class VodPage(
             row.visibility = View.VISIBLE
         }
         checkEmpty()
-        takePendingFocus(row)
+        takePendingFocus()
     }
 
     /** A row with nothing in it goes; focus in it moves to the next row shown, else the one before, else the rail. */
@@ -705,25 +743,45 @@ class VodPage(
         row.bind(emptyList(), seeAll = false)
     }
 
-    /** The first row has come: focus asked for meanwhile goes into it. */
-    private fun takePendingFocus(row: TitleRow) {
+    /**
+     * A row came or went: focus asked for meanwhile goes into the page's first row, once every row above it has
+     * answered (not into whichever row answered first).
+     */
+    private fun takePendingFocus() {
         if (!shown || !resumed) return
-        // Asked for while loading (focus stayed on the rail tab), or nothing has focus at all: never taken from the
-        // rail otherwise.
-        if (!focusPending && root.rootView.findFocus() != null) return
-        focusPending = false
-        row.focusChosen()
+        // Asked for while loading (and the viewer stayed on the rail's tab), or nothing has focus at all: never taken
+        // from the rail otherwise.
+        if (!stillPending() && root.rootView.findFocus() != null) return
+        val row = firstReadyRow() ?: return
+        if (row.focusChosen()) {
+            focusPending = false
+            pendingFrom = null
+        }
     }
 
     private fun checkEmpty() {
-        val nothing = repo == null || (rows.all { it.answered } && rows.none { it.visibility == View.VISIBLE })
+        val inPage = root.findFocus() != null
+        // Genre chips alone are no page (offline, each would open an empty grid): they don't count, and hide with the
+        // rest until the next load brings them back with the titles.
+        val nothing = repo == null ||
+            (rows.all { it.answered } && rows.none { it.visibility == View.VISIBLE && it.style != RowStyle.GENRES })
+        if (nothing) for (r in rows) if (r.style == RowStyle.GENRES) hideRow(r)
         val was = empty.visibility == View.VISIBLE
+        if (!nothing && was && empty.hasFocus()) {
+            // Try again (or a reload): focus moves before the message hides (a hidden view holding focus would hand it
+            // to the rail's first tab). With no row in yet, it waits on this page's tab: the first row takes it, or Try
+            // again if nothing comes.
+            val r = firstReadyRow()
+            if (r == null || !r.focusChosen()) {
+                host.focusRail()
+                waitForRows()
+            }
+        }
         empty.visibility = if (nothing) View.VISIBLE else View.GONE
-        if (nothing && !was && (focusPending || root.findFocus() != null)) {
+        if (nothing && !was && (stillPending() || inPage)) {
             focusPending = false
+            pendingFrom = null
             emptyButton.requestFocus()
-        } else if (!nothing && was && emptyButton.isFocused) {
-            visibleRows().firstOrNull()?.focusChosen()
         }
     }
 

@@ -3,6 +3,7 @@ package app.fireplayer.vod.data
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A small cache of JSON answers on disk (`cache/vod`), so rows show at once when FirePlayer opens and are refreshed in
@@ -13,6 +14,8 @@ import java.security.MessageDigest
  * Plain java.io: works the same in JVM tests. Any thread; nothing is logged.
  */
 class JsonCache(private val dir: File, private val clock: () -> Long) {
+
+    private val writes = AtomicInteger()
 
     /** A stored answer: [data], stored at [at] (ms), fresh for [freshMs]. */
     class Entry(val at: Long, val freshMs: Long, val data: JSONObject) {
@@ -49,6 +52,9 @@ class JsonCache(private val dir: File, private val clock: () -> Long) {
         } catch (t: Throwable) {
             // A cache: losing an entry only means asking the server again.
         }
+        // Kept small while the process lives (days on a TV), not only when it starts: every so many writes (all on
+        // background threads), the folder is trimmed.
+        if (writes.incrementAndGet() % TRIM_EVERY == 0) runCatching { trim() }
     }
 
     fun remove(key: String) {
@@ -76,6 +82,8 @@ class JsonCache(private val dir: File, private val clock: () -> Long) {
         const val MAX_BYTES = 8L shl 20
         const val KEEP_BYTES = 6L shl 20
         const val MAX_AGE_MS = 14 * 24 * 3600_000L
+        /** Writes between two trims (a Cinemeta page is about 45 KB: 64 of them about 3 MB). */
+        const val TRIM_EVERY = 64
 
         fun fileName(key: String): String {
             val digest = MessageDigest.getInstance("SHA-1").digest(key.toByteArray(Charsets.UTF_8))

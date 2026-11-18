@@ -68,7 +68,10 @@ object ImageLoader {
     /** Jobs by memory key, with the targets waiting for each. Main thread only. */
     private val jobs = HashMap<String, Job>()
 
-    /** Addresses that gave no picture (missing, not a picture), with when: not asked for again for a day. */
+    /**
+     * Addresses not to ask for again until a time: a day for one that gave no picture (missing, gone, not a picture),
+     * half a minute after a network failure, a timeout or server trouble (an offline TV doesn't ask on every key press).
+     */
     private val failed = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** Prefetches: bytes to disk only, on one lowest-priority thread, newest first, the oldest dropped past 32. */
@@ -255,7 +258,7 @@ object ImageLoader {
                     } else {
                         result = decode(bytes, w, h, config, cropY)
                         if (result == null) {
-                            failed[url] = System.currentTimeMillis()
+                            block(url, FAILED_FOR_MS)
                         } else if (transform != null) {
                             result = transform.invoke(result)
                         }
@@ -288,7 +291,11 @@ object ImageLoader {
         }
         if (before != key) target.setImage(null, true)
         val job = make()
-        if (!mayAsk(job.url)) return
+        if (!mayAsk(job.url)) {
+            // Failed lately: the next bind asks again once the wait is over.
+            target.imageKey = null
+            return
+        }
         job.waiters += target
         jobs[key] = job
         pool.execute(job)
@@ -309,6 +316,9 @@ object ImageLoader {
             for (t in wanting) t.setImage(bitmap, false)
             return
         }
+        // No picture this time: the targets keep their placeholder and the next bind asks again (a card's bind does
+        // nothing while it holds the key).
+        if (!skipped) for (t in wanting) t.imageKey = null
         // Not decoded because nobody waited at the time, yet someone asks again now: once more, from the disk.
         if (skipped && (wanting.isNotEmpty() || job.warm)) {
             val again = Job(job.key, job.url, job.w, job.h, job.config, job.transform, job.cropY)
@@ -320,12 +330,16 @@ object ImageLoader {
     }
 
     private fun mayAsk(url: String): Boolean {
-        val at = failed[url] ?: return true
-        if (System.currentTimeMillis() - at > FAILED_FOR_MS) {
-            failed.remove(url)
+        val until = failed[url] ?: return true
+        if (System.currentTimeMillis() >= until) {
+            failed.remove(url, until)
             return true
         }
         return false
+    }
+
+    private fun block(url: String, forMs: Long) {
+        failed[url] = System.currentTimeMillis() + forMs
     }
 
     /** The picture's bytes: from disk, else downloaded (and kept on disk). Image threads. */
@@ -346,13 +360,14 @@ object ImageLoader {
         try {
             val code = conn.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
-                // Missing (404 and the like): not asked for again for a while. Server trouble (5xx) may pass.
-                if (code in 400..499) failed[url] = System.currentTimeMillis()
+                // Missing or gone: not asked for again for a day. Anything else (a timeout, too many requests, server
+                // trouble) may pass: half a minute.
+                block(url, if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_GONE) FAILED_FOR_MS else RETRY_MS)
                 return null
             }
             val type = conn.contentType
             if (type != null && type.startsWith("text/")) {
-                failed[url] = System.currentTimeMillis()
+                block(url, FAILED_FOR_MS)
                 return null
             }
             return conn.inputStream.use { input ->
@@ -366,6 +381,10 @@ object ImageLoader {
                 }
                 out.toByteArray()
             }
+        } catch (e: java.io.IOException) {
+            // No connection, or it timed out or broke off: asked again after a short wait.
+            block(url, RETRY_MS)
+            return null
         } finally {
             conn.disconnect()
         }
@@ -411,6 +430,7 @@ object ImageLoader {
     private const val MAX_BYTES = 4 shl 20
     private const val AHEAD_MAX = 32
     private const val FAILED_FOR_MS = 24L * 60 * 60 * 1000
+    private const val RETRY_MS = 30_000L
 }
 
 /** How a picture is fitted to a card (pure, unit-tested). */

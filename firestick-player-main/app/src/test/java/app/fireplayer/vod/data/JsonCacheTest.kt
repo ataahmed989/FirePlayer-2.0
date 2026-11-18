@@ -62,6 +62,19 @@ class JsonCacheTest {
     }
 
     @Test
+    fun theFolderIsTrimmedEverySoManyWrites() {
+        now = System.currentTimeMillis()
+        cache.write("old", JSONObject(), 1000)
+        File(File(dir, "vod"), JsonCache.fileName("old")).setLastModified(now - 20 * 24 * 3600_000L)
+        repeat(JsonCache.TRIM_EVERY - 2) { cache.write("k$it", JSONObject(), 1000) }
+        assertTrue(File(File(dir, "vod"), JsonCache.fileName("old")).exists())
+        // The next write trims: the entry too old goes, the others stay.
+        cache.write("last", JSONObject(), 1000)
+        assertFalse(File(File(dir, "vod"), JsonCache.fileName("old")).exists())
+        assertEquals(JsonCache.TRIM_EVERY - 1, File(dir, "vod").list()!!.size)
+    }
+
+    @Test
     fun trimmingDropsOldThenOldestOverBudget() {
         val day = 24 * 3600_000L
         val files = listOf(

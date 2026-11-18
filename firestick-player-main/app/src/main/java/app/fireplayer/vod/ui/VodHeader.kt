@@ -48,7 +48,8 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
     private val title = t.label(context, VodSizes.HEADER_TITLE_SP, t.bold)
     private val facts = t.label(context, VodSizes.HEADER_FACTS_SP, t.regular, FACTS_COLOR)
     private val story = t.label(context, VodSizes.HEADER_STORY_SP, t.regular, t.textMuted).apply {
-        // Always two lines tall: new words never change its height (nothing is laid out again).
+        // At most two lines, in a box two lines tall (see init): new words never change its height, so they're only
+        // redrawn (a wrapped height would lay the page out again whenever one line became two).
         setLines(2)
         setLineSpacing(t.dpf(2f), 1f)
     }
@@ -65,7 +66,7 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
         })
         words.addView(title, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT))
         words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(6) })
-        words.addView(story, LinearLayout.LayoutParams(t.dp(VodSizes.storyW(cardW)), LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(8) })
+        words.addView(story, LinearLayout.LayoutParams(t.dp(VodSizes.storyW(cardW)), story.lineHeight * 2).apply { topMargin = t.dp(8) })
         addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
             leftMargin = t.dp(VodSizes.HEADER_INSET)
             topMargin = t.dp(VodSizes.headerTextTop())
@@ -129,6 +130,8 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
         rotation.pause()
         main.removeCallbacks(turn)
         main.removeCallbacks(followArt)
+        // The next picture isn't decoded ahead for a hidden, stopped or closed page.
+        main.removeCallbacks(warmNext)
     }
 
     fun resume() {

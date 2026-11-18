@@ -47,13 +47,42 @@ class VodLibraryTest {
     }
 
     @Test
-    fun aFilmAndASeriesWithTheSameIdAreTwoTitles() {
+    fun aFilmAndASeriesWithTheSameIdAreTwoTitlesThatLeaveTogether() {
         val junk = Title(show.id, Kind.MOVIE, "Mirror")
         library.setInMyList(show, true)
+        now += 1
         library.setInMyList(junk, true)
+        // Kept apart, each as its own kind.
+        assertEquals(listOf(junk, show), library.myList())
+        // The pages ask by id: taken out from either card, the id leaves the list whichever kind was added.
         library.setInMyList(junk, false)
-        assertEquals(listOf(show), library.myList())
-        assertTrue(library.inMyList(show.id))
+        assertTrue(library.myList().isEmpty())
+        assertFalse(library.inMyList(show.id))
+        assertEquals(false, store.listed["series|${show.id}"]!!.inList)
+        assertEquals(false, store.listed["movie|${show.id}"]!!.inList)
+    }
+
+    @Test
+    fun takingOutFromTheOtherKindsCardWorks() {
+        // The series is listed; the film card with the same id says "Remove from list" (asked by id) and does it.
+        val junk = Title(show.id, Kind.MOVIE, "Mirror")
+        library.setInMyList(show, true)
+        assertTrue(library.inMyList(junk.id))
+        val before = changes
+        library.setInMyList(junk, false)
+        assertFalse(library.inMyList(show.id))
+        assertEquals(before + 1, changes)
+        assertNull(store.listed["movie|${show.id}"])
+        // Nothing listed under the id: nothing changes, nobody is told.
+        library.setInMyList(junk, false)
+        assertEquals(before + 1, changes)
+        // Watched marks the same way.
+        library.setWatched(show, true)
+        assertTrue(library.isWatched(junk.id))
+        library.setWatched(junk, false)
+        assertFalse(library.isWatched(show.id))
+        assertEquals(false, store.watched["series|${show.id}"]!!.watched)
+        assertNull(store.watched["movie|${show.id}"])
     }
 
     @Test
