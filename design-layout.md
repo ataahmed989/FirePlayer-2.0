@@ -136,8 +136,9 @@ Source checked: app/src/main/java/app/fireplayer/ui/SettingsPanels.kt.
 - Accessibility: text size, contrast/transparency, motion and long-press discoverability.
 - Settings change scope, reset behavior, destructive-action handling and credential validation status.
 - Generated images cannot prove timing, motion or remote behavior; those need an interactive review later.
-- Films and shows: card and header sizes for Home, Movies, TV Shows and the title page (to set with the user from the
-  approved Home concept).
+- Later app pass with Fable (PROGRESS.md §6): glass windows and small/hold windows, colours, larger FirePlayer 2.0
+  logo in the rail, larger and better channel logos, faster loading, fluid motion (groups window shifts when the rail
+  opens instead of a layer on top; Live TV buffering animation), navigation tweaks in the guide and title rows.
 
 ## Architecture questions carried forward
 

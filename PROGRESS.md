@@ -167,6 +167,21 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       Multiview (cap 3); remaining settings outline; Manage groups; Reorder playlists; past programmes (long Left);
       parental PIN UI (ParentalGate groundwork exists); catch-up.
 
+## 6. Later passes (user, 2026-11-18)
+
+- [ ] **In-depth playback pass with Fable.** Start from the eight fixes saved in `player-fixes-wip/` (written, not merged,
+      reviewed or tested), the two playback checks (design-brief.md §6.6) and the film-mode memory plan.
+- [ ] **In-depth app pass with Fable**, to plan and then make:
+  - better appearance: the glass look's windows, small windows included, and the colours used; a larger FirePlayer 2.0
+    logo in the rail's tab window; better-looking and larger logos (channels);
+  - better-looking small windows when holding a group, a channel or a title;
+  - faster loading;
+  - fluid motion instead of jumps: e.g. from the channel groups window to the tab window, the groups window should shift
+    across (as it does when pressing Left from the channels window) instead of the tab window opening as a layer on top;
+    a buffering animation on the Live TV player;
+  - responsive navigation tweaks in the TV guide and in the Movies and TV Shows title rows.
+- [ ] Glass Home integration (small changes; shows FirePlayer 2.0's Continue Watching); FirePlayer 2.0 replaces 1.0.
+
 ## Contracts that must keep working (checked at every increment)
 
 - Package `app.fireplayer`; ContinueProvider authority `app.fireplayer.continue` and its columns/URIs (untouched).
