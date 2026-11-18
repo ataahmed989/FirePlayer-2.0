@@ -1,9 +1,11 @@
 package app.fireplayer.player
 
+import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.Format
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
@@ -20,12 +22,21 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
  * than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't quite the TV's. When the screen's times
  * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again, until they fit again
  * (see [FramePacer]).
+ *
+ * It also counts the frames lost that Media3 doesn't ([counts]): frames the pacer held a refresh longer or put on the
+ * refresh of the frame before (that one isn't sent at all: the screen would only have shown it in place of the frame
+ * before), and frames the decoder never gave ([FrameGaps]).
  */
 @OptIn(UnstableApi::class)
-class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaCodecVideoRenderer(builder) {
+class PacedVideoRenderer(
+    builder: Builder,
+    private val vsync: VsyncFix,
+    private val counts: FrameCounts,
+) : MediaCodecVideoRenderer(builder) {
 
     // On the playback thread.
     private val pacer = FramePacer()
+    private val gaps = FrameGaps()
 
     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
         val periodNs = vsync.tvPeriodNs
@@ -48,6 +59,7 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
     ) {
         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
         pacer.reset()
+        gaps.reset()
         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
         if (getConfiguration().tunneling) return
         val looper = Looper.myLooper() ?: return
@@ -58,8 +70,37 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
         }
     }
 
+    override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
+        super.onOutputFormatChanged(format, mediaFormat)
+        // A frame's length as the film states it, to tell a gap in its times by.
+        gaps.statedFrameUs = if (format.frameRate > 0f) (1_000_000.0 / format.frameRate).toLong() else 0L
+    }
+
+    override fun onPositionReset(positionUs: Long, joining: Boolean) {
+        super.onPositionReset(positionUs, joining)
+        // A jump: the frames after it don't follow on from those before.
+        gaps.reset()
+    }
+
     override fun renderOutputBufferV21(codec: MediaCodecAdapter, index: Int, presentationTimeUs: Long, releaseTimeNs: Long) {
-        super.renderOutputBufferV21(codec, index, presentationTimeUs, paced(releaseTimeNs))
+        val decoded = decoderCounters
+        val missing = gaps.frame(presentationTimeUs, decoded.droppedBufferCount, decoded.skippedOutputBufferCount)
+        if (missing > 0) counts.neverDecoded += missing
+        val at = paced(releaseTimeNs)
+        when (pacer.move) {
+            FramePacer.SAME -> {
+                // It would only take the place of the frame before on the screen: given back to the decoder at once
+                // instead, and counted by Media3 as a frame skipped.
+                counts.sameRefresh++
+                skipOutputBuffer(codec, index, presentationTimeUs)
+                gaps.skippedHere()
+                return
+            }
+            FramePacer.LATER -> counts.shownTwice++
+            // A refresh further on with no frame missing before it: the frame before held for an extra refresh.
+            FramePacer.FOLLOWED -> if (gaps.between == 0) counts.shownTwice++
+        }
+        super.renderOutputBufferV21(codec, index, presentationTimeUs, at)
     }
 
     private fun paced(releaseTimeNs: Long): Long = pacer.paced(releaseTimeNs, vsync.unaligned, vsync.tvPeriodNs, vsync.modes)

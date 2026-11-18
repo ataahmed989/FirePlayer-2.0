@@ -72,7 +72,13 @@ class BufferWait(val fraction: Float, val slowLine: Boolean, val atMs: Long)
 @OptIn(UnstableApi::class)
 object PlayerFactory {
 
-    class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
+    class Built(
+        val player: ExoPlayer,
+        val assHandler: AssHandler?,
+        val bufferWait: () -> BufferWait?,
+        /** The memory the film's loaded part holds now, in bytes (for the FirePlayerDiag log). */
+        val filmBytes: () -> Long = { 0L },
+    )
 
     /**
      * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
@@ -244,6 +250,8 @@ object PlayerFactory {
         embeddedCues: EmbeddedCues? = null,
         /** Where damaged stretches of a film the player went past are noted, so the viewer can be told. */
         damageSkips: DamageSkips? = null,
+        /** Where the video renderer counts the frames lost that Media3 doesn't (see [PacedVideoRenderer]). */
+        frameCounts: FrameCounts = FrameCounts(),
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
@@ -252,7 +260,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap, frameCounts)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -315,7 +323,7 @@ object PlayerFactory {
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
-            return Built(player, null) { loadControl.wait }
+            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes })
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -336,7 +344,7 @@ object PlayerFactory {
             .build()
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
-        return Built(player, assHandler) { loadControl.wait }
+        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes })
     }
 }
 
@@ -459,6 +467,9 @@ private class FilmLoadControl(
     /** The latest wait before playing, read by the spinner on the main thread. */
     @Volatile var wait: BufferWait? = null
         private set
+
+    /** The memory the film's loaded part holds now, in bytes: any thread (Media3's allocator answers under its lock). */
+    val allocatedBytes: Long get() = inner.allocator.totalBytesAllocated.toLong()
 
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
@@ -699,6 +710,7 @@ private class TvRenderersFactory(
     private val displaySwitch: DisplaySwitch,
     private val vsync: VsyncFix,
     private val speechTap: SpeechTap,
+    private val frameCounts: FrameCounts,
 ) : DefaultRenderersFactory(context) {
     /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
     override fun buildVideoRenderers(
@@ -727,6 +739,7 @@ private class TvRenderersFactory(
                 .setEventListener(eventListener)
                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
             vsync,
+            frameCounts,
         )
     }
 
