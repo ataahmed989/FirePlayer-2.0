@@ -7,9 +7,13 @@ import app.fireplayer.live.Programme
  * loaded time range with no holes and no overlaps, so the D-pad always has somewhere to go.
  */
 class Cell(val start: Long, val stop: Long, val programme: Programme?) {
-    /** The title drawn last time, ellipsized for [cachedWidth] pixels (drawing reuses it while the width holds). */
+    /**
+     * The title drawn last time, ellipsized for [cachedWidth] pixels in the semibold face when [cachedBold] (drawing
+     * reuses it while both hold, so a frame allocates nothing).
+     */
     var cachedText: CharSequence? = null
     var cachedWidth = -1
+    var cachedBold = false
 
     fun contains(t: Long) = t in start until stop
     override fun toString() = "Cell($start-$stop ${programme?.title ?: "-"})"
@@ -71,5 +75,84 @@ object GuideCells {
         // Left: back until the cell's start (or now) is showing.
         while (w > earliest && maxOf(cell.start, earliest) < w) w -= SLOT_MS
         return maxOf(w, earliest)
+    }
+
+    /** The x (pixels) of time [t] in a grid whose time window starts at [windowStart] on [gridLeft]. */
+    fun xOf(t: Long, windowStart: Long, gridLeft: Float, pxPerMin: Float): Float = gridLeft + (t - windowStart) / 60_000f * pxPerMin
+
+    /**
+     * The left edge of a cell starting at [start] as drawn: clipped to the grid's left edge, then inset by half the
+     * gap between cells. The focus highlight uses the same edges, so at rest it covers its cell exactly.
+     */
+    fun cellLeft(start: Long, windowStart: Long, gridLeft: Float, pxPerMin: Float, gap: Float): Float =
+        maxOf(xOf(start, windowStart, gridLeft, pxPerMin), gridLeft) + gap / 2
+
+    /** The right edge of a cell ending at [stop] as drawn: clipped to [right], inset by half the gap. */
+    fun cellRight(stop: Long, windowStart: Long, gridLeft: Float, right: Float, pxPerMin: Float, gap: Float): Float =
+        minOf(xOf(stop, windowStart, gridLeft, pxPerMin), right) - gap / 2
+}
+
+/**
+ * The guide's white focus highlight gliding from one cell to the next (pure arithmetic, unit-tested). Rects are in the
+ * grid's content coordinates (x as at rest in the current time window, y from the first row), so both ends move with
+ * the rows while they scroll. The end is the focused cell as it is now, passed in every frame ([update]): listings
+ * arriving or the guide's width changing mid-glide still land the highlight on its cell.
+ *
+ * A new glide starts from wherever the highlight is drawn ([begin] with the last [update]), so presses in quick
+ * succession chain smoothly instead of jumping back to a cell.
+ */
+class FocusGlide {
+    private var fromLeft = 0f
+    private var fromTop = 0f
+    private var fromRight = 0f
+    private var fromBottom = 0f
+    private var hasFrom = false
+
+    /** Eased progress: 0 where the glide began, 1 on the focused cell. */
+    var fraction = 1f
+
+    /** The highlight's rect, from the last [update]. */
+    var left = 0f
+        private set
+    var top = 0f
+        private set
+    var right = 0f
+        private set
+    var bottom = 0f
+        private set
+
+    /** On its way between two cells (both ends drawn differently from the focused cell alone). */
+    val moving get() = hasFrom && fraction < 1f
+
+    /** Starts a glide from this rect; the animation then runs [fraction] from 0 to 1. */
+    fun begin(l: Float, t: Float, r: Float, b: Float) {
+        fromLeft = l; fromTop = t; fromRight = r; fromBottom = b
+        hasFrom = true
+        fraction = 0f
+    }
+
+    /** No glide: the highlight sits on the focused cell. */
+    fun clear() {
+        hasFrom = false
+        fraction = 1f
+    }
+
+    /** The time window moved by [dx] pixels of content: the start moves with what it was drawn over. */
+    fun shiftX(dx: Float) {
+        fromLeft += dx
+        fromRight += dx
+    }
+
+    /** Works out the highlight for this frame, gliding towards the focused cell's rect. */
+    fun update(toLeft: Float, toTop: Float, toRight: Float, toBottom: Float) {
+        if (!moving) {
+            left = toLeft; top = toTop; right = toRight; bottom = toBottom
+            return
+        }
+        val f = fraction.coerceIn(0f, 1f)
+        left = fromLeft + (toLeft - fromLeft) * f
+        top = fromTop + (toTop - fromTop) * f
+        right = fromRight + (toRight - fromRight) * f
+        bottom = fromBottom + (toBottom - fromBottom) * f
     }
 }

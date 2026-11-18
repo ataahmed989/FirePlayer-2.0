@@ -2,6 +2,7 @@ package app.fireplayer.live.ui
 
 import app.fireplayer.live.Programme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -69,5 +70,89 @@ class GuideCellsTest {
     @Test fun slotStart() {
         assertEquals(base, GuideCells.slotStart(base + 29 * min))
         assertEquals(base + 30 * min, GuideCells.slotStart(base + 30 * min))
+    }
+
+    // ---- Cell edges and the focus glide ------------------------------------------------------------------------------
+
+    private val gridLeft = 512f
+    private val right = 1872f
+    private val pxPerMin = 9.2f
+    private val gap = 6f
+
+    @Test fun cellEdgesFollowTheTimeAndClipToTheGrid() {
+        // A cell inside the window: its times to pixels, half a gap in from each end.
+        assertEquals(gridLeft + 30 * pxPerMin + gap / 2, GuideCells.cellLeft(base + 30 * min, base, gridLeft, pxPerMin, gap), 0.01f)
+        assertEquals(gridLeft + 60 * pxPerMin - gap / 2, GuideCells.cellRight(base + 60 * min, base, gridLeft, right, pxPerMin, gap), 0.01f)
+        // On air since before the window: it starts at the grid's left edge.
+        assertEquals(gridLeft + gap / 2, GuideCells.cellLeft(base - 90 * min, base, gridLeft, pxPerMin, gap), 0.01f)
+        // Running past the right edge: it ends there.
+        assertEquals(right - gap / 2, GuideCells.cellRight(base + 600 * min, base, gridLeft, right, pxPerMin, gap), 0.01f)
+        // Wholly before the window: no width left.
+        val l = GuideCells.cellLeft(base - 60 * min, base, gridLeft, pxPerMin, gap)
+        val r = GuideCells.cellRight(base - 30 * min, base, gridLeft, right, pxPerMin, gap)
+        assertTrue(r - l < 1f)
+    }
+
+    @Test fun glideRunsFromTheOldCellToTheNewOne() {
+        val g = FocusGlide()
+        // Settled: the highlight is the focused cell.
+        g.update(100f, 10f, 300f, 36f)
+        assertRect(g, 100f, 10f, 300f, 36f)
+        assertFalse(g.moving)
+        // Down a row to a cell further right.
+        g.begin(100f, 10f, 300f, 36f)
+        assertTrue(g.moving)
+        g.update(200f, 68f, 500f, 94f)
+        assertRect(g, 100f, 10f, 300f, 36f)
+        g.fraction = 0.5f
+        g.update(200f, 68f, 500f, 94f)
+        assertRect(g, 150f, 39f, 400f, 65f)
+        g.fraction = 1f
+        g.update(200f, 68f, 500f, 94f)
+        assertRect(g, 200f, 68f, 500f, 94f)
+        assertFalse(g.moving)
+    }
+
+    @Test fun aNewGlideStartsWhereTheHighlightIsDrawn() {
+        val g = FocusGlide()
+        g.begin(0f, 0f, 100f, 26f)
+        g.fraction = 0.4f
+        g.update(200f, 0f, 300f, 26f)
+        val l = g.left; val r = g.right
+        // Another press mid-glide: it carries on from there, no jump back to either cell.
+        g.begin(g.left, g.top, g.right, g.bottom)
+        g.update(400f, 0f, 500f, 26f)
+        assertRect(g, l, 0f, r, 26f)
+        g.fraction = 1f
+        g.update(400f, 0f, 500f, 26f)
+        assertRect(g, 400f, 0f, 500f, 26f)
+    }
+
+    @Test fun glideStartMovesWithTheTimeWindow() {
+        val g = FocusGlide()
+        // The highlight at x 1700..1850 on screen; Right moves the window half an hour on, so the content shifts left
+        // by that many pixels and is drawn shifted right by the same while it slides back (screen = content + slide).
+        val shift = 30 * pxPerMin
+        g.begin(1700f, 10f, 1850f, 36f)
+        g.shiftX(-shift)
+        g.update(1500f, 10f, 1700f, 36f)
+        assertEquals(1700f, g.left + shift, 0.01f)
+        assertEquals(1850f, g.right + shift, 0.01f)
+    }
+
+    @Test fun clearedGlideSitsOnTheTarget() {
+        val g = FocusGlide()
+        g.begin(0f, 0f, 10f, 10f)
+        g.clear()
+        g.update(50f, 60f, 70f, 80f)
+        assertRect(g, 50f, 60f, 70f, 80f)
+        assertFalse(g.moving)
+    }
+
+    private fun assertRect(g: FocusGlide, l: Float, t: Float, r: Float, b: Float) {
+        assertEquals(l, g.left, 0.01f)
+        assertEquals(t, g.top, 0.01f)
+        assertEquals(r, g.right, 0.01f)
+        assertEquals(b, g.bottom, 0.01f)
     }
 }
