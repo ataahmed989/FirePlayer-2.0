@@ -139,8 +139,12 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       channel Up = next down the list: built and unit-tested, not yet exercised on the Max.
 - [x] Playlists & EPG reorganised; Live TV buffer (Small/Medium/Large) — built, merged, installed; not yet looked at.
 - [x] Audio focus for live and films; media keys kept; Play/Pause in the guide — on the Max.
-- [~] Settings consistency pass and a review of the whole round (workflow running).
-- [ ] Idle timer default 1 minute (after the consistency pass merges).
+- [x] Settings consistency pass (37 items) and the round's review (15 confirmed bugs fixed) — merged.
+- [x] Remote: Menu button opens + one Channel ▲▼ choice row — on the Max (Live settings and Remote & skipping).
+- [x] Idle timer default 1 minute.
+- [x] Slim rail strip, blue playlist in use, 8 bigger rows — on the Max. Group window's Manage groups — on the Max.
+- [x] Wrap-around (channel list), TV Guide on the playing channel, Channel + down the list, Playlists & EPG, Live TV
+      buffer, darker glass — on the Max.
 
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
 

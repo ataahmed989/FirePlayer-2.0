@@ -341,6 +341,20 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   players now claim the sound (other apps pause; Alexa pauses or lowers them for a moment); HomeActivity keeps every
   media button it doesn't use; in the guide Play/Pause pauses or resumes the miniature's channel ("Paused"/"Playing").
 
+- 2026-11-18 · User: Remote is "Menu button opens", then one "Channel ▲▼" row that opens the same small list of
+  choices (D-pad + channel buttons / Channel buttons only) — no ticked rows or note. Under every Remote header that is
+  about TV (Live FirePlayer Settings, Settings › Live TV, Settings › Remote & skipping). The rule for every window: a
+  setting with a few options is one row showing its value, opening the small choice window.
+- 2026-11-18 · User: Live TV page after TiviMate (the user's photos): a slim flat rail strip (58 dp) flush with the left
+  edge; the playlist in use in blue in the groups column; bigger, calmer lists (groups 16 sp, rows 39 dp, column 224 dp;
+  channel names 15.5 sp, programmes 15 sp), exactly 8 channel rows (35 dp) under the unchanged 368 x 207 miniature.
+  Glass background darker again (same grey-blue).
+- 2026-11-18 · User: the group's held window has "Manage groups" under Move to top and Hide category (Down reaches it);
+  it opens Manage groups for that playlist on the held group. "Hide category" stays the user's wording.
+- 2026-11-18 · Settings consistency pass (user: headers with icons everywhere, consistent option layouts) and a review of
+  the round: 15 confirmed bugs fixed (e.g. a paused live channel no longer goes full screen on a frozen frame; a hidden
+  group can't come back through TV Guide; Play/Pause reaches live while a window has focus).
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

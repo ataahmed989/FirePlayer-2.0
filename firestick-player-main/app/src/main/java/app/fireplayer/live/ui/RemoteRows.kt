@@ -16,6 +16,8 @@ fun channelButtonsRow(panel: SidePanel, context: Context): Unit = with(panel) {
         CHANNEL_ROW,
         listOf("D-pad + channel buttons", "Channel buttons only"),
         if (only) 1 else 0,
+        // Short, so the row's value fits beside its label; the list says it in full.
+        valueText = if (only) "Channel only" else "D-pad + channel",
     ) { prefs.channelButtonsOnly = it == 1 }
 }
 
