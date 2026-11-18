@@ -267,6 +267,9 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - 2026-11-18 · User: the classic (non-glass) look has its own background — the user's dark blue-grey fog
   (`wallpaper_classic`). Supersedes "Classic shows the same blue wallpaper behind its dark panels". The glass look
   keeps the blue fog, and only glass builds the blurred wallpaper. The user will say which wallpapers to use elsewhere.
+- 2026-11-18 · User: the glass look's background is a blurred version of "Foggy Blue Beach with Light Spiral" — the
+  user's own `Wallpapers/Foggy-Blue-Beach-Light-Spiral-Blurred.png` (`wallpaper_glass`); the blue fog is retired.
+  Glass shapes blur it once more ([StillGlass]); nothing is blurred per frame.
 
 ## Concept references (local preview artifacts)
 

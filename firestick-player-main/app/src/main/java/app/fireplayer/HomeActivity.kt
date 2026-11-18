@@ -52,8 +52,8 @@ import app.fireplayer.update.Updater
  * old home menu had — Open a link, Subtitle style and the same Settings windows as the player — beside the new
  * Playlists, EPG and Live TV settings.
  *
- * Both looks share this layout; glass shows the blue fog wallpaper blurred ([GlassSource.Host]) and classic the
- * original dark surfaces over its own dark background (user's).
+ * Both looks share this layout, each over its own background (the user's): glass shows the blurred beach wallpaper,
+ * blurred again behind glass shapes ([GlassSource.Host]); classic the original dark surfaces over the dark fog.
  */
 class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
 
@@ -371,7 +371,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
     /** Gives the shell the look Settings now has (the settings window redraws its own). */
     private fun applyLook() {
         lookOn = Glass.on
-        // Classic has its own dark background; glass blurs the blue fog.
+        // Each look has its own background.
         wallpaper.glassLook = Glass.on
         // The rail's and Settings tab's glass blur the wallpaper (never the film, never dimmed), even when the look
         // changes over full screen; the live page re-makes its controls over the film itself.

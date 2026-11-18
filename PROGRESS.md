@@ -106,7 +106,8 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - [x] Code review of the first Fire TV fixes: 15 confirmed findings fixed. Second review (settings work): 26 confirmed
       findings fixed (window close callbacks from sub-windows, live language defaults, key-check errors, group
       choices in their own table — live.db v6 — and others); upgrade checked on the Max (groups and order kept).
-- [x] Classic look background: the user's dark fog (glass keeps the blue fog) — on the Max.
+- [x] Backgrounds (user's): classic — dark blue-grey fog; glass — the foggy beach with its light spiral, blurred.
+      Both seen on the Max.
 - [ ] Opening Manage groups takes ~1 s with 353 groups (side window isn't recycled); switches/moves are instant.
 
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started

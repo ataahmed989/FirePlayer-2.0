@@ -19,8 +19,8 @@ import app.fireplayer.ui.StillGlass
 import java.util.concurrent.Executors
 
 /**
- * The stationary background shared by every tab (independent of the featured title): the blue fog with the glass
- * look, and the user's dark background with the classic look ([glassLook]). It is decoded and scaled once per look,
+ * The stationary background shared by every tab (independent of the featured title), one per look ([glassLook]),
+ * both the user's: glass — the foggy blue beach with its light spiral, blurred; classic — the dark blue-grey fog. It is decoded and scaled once per look,
  * off the main thread; with glass, the same pass builds the blurred pictures glass shows ([StillGlass]), so glass on
  * these screens never copies or blurs anything per frame.
  *
@@ -41,7 +41,7 @@ class WallpaperView(context: Context) : View(context) {
     /** Called once the glass look's wallpaper and its glass are ready (main thread). */
     var onReady: ((StillGlass) -> Unit)? = null
 
-    /** Which background: the glass look's blue fog (true) or the classic look's own (false). */
+    /** Which background: the glass look's (true) or the classic look's (false). */
     var glassLook: Boolean = false
         set(v) {
             if (field == v) return
@@ -80,7 +80,7 @@ class WallpaperView(context: Context) : View(context) {
         val glassLook = glassLook
         val serial = ++loadSerial
         worker.execute {
-            val decoded = BitmapFactory.decodeResource(res, if (glassLook) R.drawable.wallpaper_blue_fog else R.drawable.wallpaper_classic) ?: return@execute
+            val decoded = BitmapFactory.decodeResource(res, if (glassLook) R.drawable.wallpaper_glass else R.drawable.wallpaper_classic) ?: return@execute
             // Centre-cropped to the screen once, so drawing is a plain copy.
             val scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val sx = w.toFloat() / decoded.width
