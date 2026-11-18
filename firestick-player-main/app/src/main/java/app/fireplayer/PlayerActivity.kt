@@ -77,6 +77,7 @@ import app.fireplayer.player.NextPick
 import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.SpeechTap
 import app.fireplayer.player.PictureFit
+import app.fireplayer.player.PlaybackDiag
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.ThreadBeat
@@ -235,6 +236,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var delayPanelOpen = false
 
     private var player: ExoPlayer? = null
+    // The frames shown and lost, and the FirePlayerDiag log (see PlaybackDiag): one for the screen, across its players.
+    private val diagMade = lazy { PlaybackDiag(this) }
+    private val diag by diagMade
+    // Picture & sound's "Dropped" value while it's on screen, kept up to date once a second.
+    private var droppedFact: TextView? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
     private var vsyncFix: VsyncFix? = null
     // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
@@ -791,6 +797,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         super.onDestroy()
         barWatch?.release()
         liveSettings?.release()
+        if (diagMade.isInitialized()) diag.release()
         if (stale) return
         io.execute { titleBook?.close() }
         // One replaced by a newer player leaves the screen's mode to that one.
@@ -1016,6 +1023,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             speechTap = speechTap,
             embeddedCues = embeddedCues,
             damageSkips = damageSkips,
+            frameCounts = diag.counts,
         )
         vsyncFix = vsync.also { it.start() }
         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
@@ -1030,6 +1038,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
+        diag.newPlayer()
+        diag.filmBytes = built.filmBytes
+        p.addAnalyticsListener(diag)
         p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -1130,6 +1141,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         frameRateMatcher.unwatch()
         threadBeat = null
         p.removeListener(this)
+        if (diagMade.isInitialized()) diag.playerGone()
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
         p.release()
@@ -2304,6 +2316,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             tellDamageSkip()
             // The pods' data rates firm up as the film loads.
             chipTicks++
+            if (chipTicks % FRAME_COUNT_TICKS == 0) countFrames()
             if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
             // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
             if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
@@ -4744,7 +4757,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (spec.width > 0 && spec.height > 0) "${spec.width}×${spec.height}" else null,
             spec.fps.takeIf { it > 0 }?.let { fpsLabel(it).replace(" FPS", " fps") },
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
-        pairs += "Range" to fact(spec.hdr ?: "Not stated by the file")
+        // On a TV that reports no HDR the Fire TV turns HDR into SDR: said, so the row doesn't claim what isn't seen.
+        pairs += "Range" to fact(spec.rangeLine(hdrScreen()))
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
                 (if (spec.videoHow == MediaSpec.How.MEASURED) over(video?.id) else "stated by the file")
@@ -4771,12 +4785,49 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
             )
         }
-        (p as? ExoPlayer)?.videoDecoderCounters?.let { c ->
-            c.ensureUpdated()
-            val shown = c.renderedOutputBufferCount
-            if (shown > 0) pairs += "Dropped" to fact("${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames")
+        droppedFact = null
+        droppedLine()?.let { line ->
+            // Kept, so countFrames can bring it up to date while the window is open.
+            pairs += "Dropped" to fact(line).also {
+                it.maxLines = 5
+                droppedFact = it
+            }
         }
         facts(pairs)
+    }
+
+    /**
+     * Picture & sound's "Dropped": the last minute's lost frames by kind ([PlaybackDiag]: dropped by Media3 as too late,
+     * the frame before shown twice, put on the refresh of the frame before, never decoded), then Media3's own count of
+     * dropped frames since the film started. Null before a frame has been shown.
+     */
+    private fun droppedLine(): String? {
+        val c = player?.videoDecoderCounters ?: return null
+        c.ensureUpdated()
+        val shown = c.renderedOutputBufferCount
+        if (shown <= 0) return null
+        return "Last minute: ${diag.tally.minuteLine()}\n" +
+            "In all: ${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames dropped"
+    }
+
+    /**
+     * From [postPlayTick], once a second: the frames shown and lost since the last second ([PlaybackDiag], which also
+     * writes its log line every 10 s), added to how the copy playing has played ([CopyHealth]), and Picture & sound's
+     * "Dropped" brought up to date while it's open.
+     */
+    private fun countFrames() {
+        val p = player ?: return
+        diag.second(p)
+        // Frames dropped while the film catches up after a jump are the jump's, not the copy's (as with its waits).
+        val lost = if (SystemClock.elapsedRealtime() - jumpedAt < JUMP_WAIT_MS) 0L else diag.tally.addedLost
+        val shown = diag.tally.addedRendered
+        if (lost > 0 || shown > 0) {
+            healthFor(p.currentMediaItem?.localConfiguration?.uri)
+            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown)
+        }
+        val v = droppedFact ?: return
+        if (!v.isAttachedToWindow) droppedFact = null
+        else if (panel.isOpen) droppedLine()?.let { v.text = it }
     }
 
     // What was measured of each copy played, kept so copies can be compared later: by provider and id, no login.
@@ -5991,6 +6042,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val CHIP_REFRESH_TICKS = 15
         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
         const val KEEP_QUALITY_TICKS = 150
+        /** The frames shown and lost are counted this often (play ticks of 200 ms: once a second; see countFrames). */
+        const val FRAME_COUNT_TICKS = 5
         /** A wait to load this soon after a jump is the jump's. */
         const val JUMP_WAIT_MS = 3_000L
         // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.

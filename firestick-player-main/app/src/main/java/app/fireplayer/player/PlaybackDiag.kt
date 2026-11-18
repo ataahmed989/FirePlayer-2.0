@@ -2,11 +2,13 @@ package app.fireplayer.player
 
 import android.app.ActivityManager
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Debug
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.view.Display
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
 import androidx.media3.common.Player
@@ -28,13 +30,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - Events, one line each: the video decoder chosen (and released), the picture's and the sound's format, the film
  *   stopping to load and going on, Media3's batches of dropped frames.
  * - Once every [LOG_EVERY_S] seconds while the film plays, one line: the frames shown and lost in those seconds and over
- *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh,
- *   the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
+ *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh and
+ *   the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
  *
- * Never a link, a name or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats and times.
+ * Never a link, a title or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats, times
+ * and the decoder's name.
  *
- * [second] comes from the player screen's tick once a second, on the main thread. The memory and heat are read on a
- * thread of its own, as reading the app's memory takes a while.
+ * [second] comes from the player screen's tick once a second, on the main thread, and only adds up counts there. The
+ * TV, the memory and the heat are read on a thread of its own, as reading the app's memory takes a while: at most one
+ * line at a time, so a slow read can't pile up.
  */
 @OptIn(UnstableApi::class)
 class PlaybackDiag(context: Context) : AnalyticsListener {
@@ -47,6 +51,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     /** The last minute's frames, kept from [second]. */
     val tally = FrameTally()
 
+    /** The memory the film's loaded part holds now, in bytes: set with each new player ([PlayerFactory.Built.filmBytes]). */
+    var filmBytes: () -> Long = NO_BYTES
+
     // On the main thread.
     private var counters: DecoderCounters? = null
     private var seconds = 0
@@ -54,6 +61,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var readyOnce = false
     private var waitingSince = 0L
     private var jumpedAt = 0L
+    // The video decoder in use, by its name ("OMX.MTK.VIDEO.DECODER.HEVC"). Media3 tells its listeners on the main thread.
+    private var decoder = "none"
 
     private val busy = AtomicBoolean(false)
     private var reader: ExecutorService? = null
@@ -63,14 +72,16 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         readyOnce = false
         waitingSince = 0L
         counters = null
+        decoder = "none"
     }
 
-    /**
-     * Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line.
-     * [filmBytes] is the memory the film's loaded part holds, [refreshHz] the TV's refresh rate, [hdrScreen] whether
-     * the TV reports HDR.
-     */
-    fun second(player: ExoPlayer, filmBytes: Long, refreshHz: Float, hdrScreen: Boolean) {
+    /** The player was let go: nothing of it is held on to here. */
+    fun playerGone() {
+        filmBytes = NO_BYTES
+    }
+
+    /** Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line. */
+    fun second(player: ExoPlayer) {
         val c = player.videoDecoderCounters
         if (c != null) {
             c.ensureUpdated()
@@ -105,10 +116,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             .append(" same=").append(tally.minute(FrameTally.SAME))
             .append(" never=").append(tally.minute(FrameTally.NEVER)).append(']')
             .append(" ahead=").append(player.totalBufferedDuration).append("ms")
-            .append(" buf=").append(mb(filmBytes))
+            .append(" buf=").append(mb(filmBytes()))
             .append(' ').append(video(player.videoFormat))
-            .append(" tv=").append(String.format(Locale.US, "%.3fHz", refreshHz))
-            .append(" tvHdr=").append(if (hdrScreen) 1 else 0)
+            .append(" decoder=").append(decoder)
         sinceLog.fill(0)
         // The rest is read on its own thread; one at a time, a line left out if the one before hasn't finished.
         if (!busy.compareAndSet(false, true)) return
@@ -134,9 +144,21 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private fun lastDropped(): Long = counters?.droppedBufferCount?.toLong() ?: 0L
     private fun lastRendered(): Long = counters?.renderedOutputBufferCount?.toLong() ?: 0L
 
-    /** The app's memory, the system's, and the heat: "java=270MB native=60MB gfx=118MB pss=448MB avail=412MB low=0 heat=0". */
+    /**
+     * The TV, the app's memory, the system's, and the heat:
+     * "tv=23.976Hz tvHdr=none java=270.0MB native=60.0MB gfx=118.0MB pss=448.0MB avail=412.0MB low=0 heat=0 headroom=0.41".
+     */
     private fun system(): String {
-        val out = StringBuilder(160)
+        val out = StringBuilder(200)
+        runCatching {
+            val display = (app.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).getDisplay(Display.DEFAULT_DISPLAY)
+            out.append("tv=").append(String.format(Locale.US, "%.3fHz", display.refreshRate))
+            if (Build.VERSION.SDK_INT >= 24) {
+                @Suppress("DEPRECATION")
+                val types = display.hdrCapabilities?.supportedHdrTypes
+                out.append(" tvHdr=").append(hdrTypes(types))
+            }
+        }
         runCatching {
             val m = Debug.MemoryInfo()
             Debug.getMemoryInfo(m)
@@ -148,7 +170,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
                 m.getMemoryStat("summary.native-heap")?.toLongOrNull()?.let { nativeKb = it }
                 m.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { graphicsKb = it }
             }
-            out.append("java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
+            out.append(" java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
             if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
             out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
         }
@@ -156,7 +178,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val mi = ActivityManager.MemoryInfo()
             am.getMemoryInfo(mi)
-            out.append(" avail=").append(mb(mi.availMem)).append(" low=").append(if (mi.lowMemory) 1 else 0)
+            out.append(" avail=").append(mb(mi.availMem)).append(" threshold=").append(mb(mi.threshold))
+                .append(" low=").append(if (mi.lowMemory) 1 else 0)
         }
         runCatching {
             val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -183,10 +206,12 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         initializedTimestampMs: Long,
         initializationDurationMs: Long,
     ) {
+        decoder = decoderName
         Log.i(TAG, "decoder video $decoderName started in ${initializationDurationMs}ms")
     }
 
     override fun onVideoDecoderReleased(eventTime: AnalyticsListener.EventTime, decoderName: String) {
+        if (decoder == decoderName) decoder = "none"
         Log.i(TAG, "decoder video $decoderName released")
     }
 
@@ -243,8 +268,23 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         const val LOG_EVERY_S = 10
         private const val HEADROOM_AHEAD_S = 10
         private const val AFTER_JUMP_MS = 3_000L
+        private val NO_BYTES: () -> Long = { 0L }
 
         private fun mb(bytes: Long): String = String.format(Locale.US, "%.1fMB", bytes / 1_048_576.0)
+
+        /** The HDR types a TV reports (Display.HdrCapabilities' numbers), "HDR10,HLG"; "none" when it reports none. */
+        fun hdrTypes(types: IntArray?): String {
+            if (types == null || types.isEmpty()) return "none"
+            return types.joinToString(",") {
+                when (it) {
+                    1 -> "DV"
+                    2 -> "HDR10"
+                    3 -> "HLG"
+                    4 -> "HDR10+"
+                    else -> "type$it"
+                }
+            }
+        }
 
         /** "video=3840x2160@23.976 mime=video/hevc codecs=hvc1.2.4.L153.B0 hdr=HDR10 bits=10": no ids, no labels. */
         fun video(f: Format?): String {

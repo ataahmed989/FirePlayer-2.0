@@ -10,10 +10,10 @@ import kotlin.math.abs
  * cleaner picture, whatever the frame size says (the frame often includes black bars). Between codecs, newer ones
  * need less data for the same picture: a rule of thumb ([EFFICIENCY]) is used then, and the reason says so. HDR comes
  * first when the screen shows it and the HDR copy isn't starved of data. On a screen without HDR it's the other way
- * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so a copy not known to be HDR
- * comes first when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies
- * close in picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is
- * listed but never recommended.
+ * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so an SDR copy comes first
+ * when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies close in
+ * picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but
+ * never recommended.
  *
  * The data is weighed against the frame it has to fill ([perPixel], bits for each pixel of each frame): a copy with
  * too little for its frame ([STARVED]; a 4K film under about 6 GB) loses to a smaller-framed copy that has enough and
@@ -35,7 +35,7 @@ object CopyRank {
 
     /**
      * An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data; on a
-     * screen that doesn't, a copy not known to be HDR wins over an HDR one the same way.
+     * screen that doesn't, an SDR copy wins over an HDR one the same way.
      */
     const val HDR_FLOOR = 0.7
 
@@ -154,9 +154,10 @@ object CopyRank {
             measured.filter { isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
                 .maxByOrNull { effective(it) }?.let { best = it }
         }
-        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR.
+        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR. Only a copy known to
+        // be SDR: one whose file doesn't say may be HDR too.
         if (!hdrScreen && isHdr(copies[best])) {
-            measured.filter { !isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
+            measured.filter { copies[it].hdr == "SDR" && effective(it) >= effective(best) * HDR_FLOOR }
                 .maxByOrNull { effective(it) }?.let { best = it }
         }
         val others = all.sortedByDescending { effective(it) }
@@ -238,11 +239,9 @@ object CopyRank {
             if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
             if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
         } else {
-            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so it's no
-            // reason to pick a copy; what's said is which one the TV shows as it was made.
-            if (!isHdr(a) && isHdr(b)) {
-                reasons += (if (a.hdr == "SDR") "SDR" else "no HDR stated") + ", as this TV shows (the other's ${b.hdr} is turned into SDR)"
-            }
+            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so neither is a
+            // reason to pick a copy. What's said instead is which one the TV shows as it was made.
+            if (a.hdr == "SDR" && isHdr(b)) reasons += "SDR, as this TV shows it (the other's ${b.hdr} is turned into SDR)"
             if (isHdr(a) && !isHdr(b)) costs += "${a.hdr} shown as SDR on this TV"
         }
         if (a.width > 0 && b.width > 0 && abs(a.width - b.width) >= 320) {
