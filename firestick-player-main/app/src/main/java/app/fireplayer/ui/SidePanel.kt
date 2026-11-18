@@ -997,6 +997,9 @@ class SidePanel(private val activity: Activity) {
             "Hide or show" to R.drawable.ic_head_look,
             "Order" to R.drawable.ic_head_list,
             "Updates" to R.drawable.ic_head_app,
+            // The Settings tab's Live TV window, beside its Remote and Playback.
+            "Full screen" to R.drawable.ic_fullscreen,
+            "Guide" to R.drawable.ic_guide,
             "Customs" to R.drawable.ic_head_star,
             "Downloaded before" to R.drawable.ic_head_download,
             "Search results" to R.drawable.ic_head_search,

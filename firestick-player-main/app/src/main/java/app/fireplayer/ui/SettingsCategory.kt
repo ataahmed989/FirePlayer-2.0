@@ -10,11 +10,15 @@ enum class SettingsCategory(val title: String, val settings: List<String>) {
     PLAYLISTS_EPG(
         "Playlists & EPG",
         listOf(
-            "Add playlist", "Update all playlists", "Reorder playlists",
-            "EPG sources", "Past days to keep EPG", "Update interval", "Update EPG", "Clear EPG",
+            "Manage playlists", "Add playlist", "Reorder playlists", "Update playlists",
+            "EPG sources", "Manage EPG sources", "Days to keep EPG", "Update interval", "Update EPG", "Clear EPG",
         ),
     ),
-    LIVE_TV("Live TV", listOf("Channel changing buttons", "Hide controls after", "Full screen after no key presses")),
+    // Live TV buffer is in Playback's window too (user): the same row, one saved value.
+    LIVE_TV(
+        "Live TV",
+        listOf("Channel changing buttons", "Hide controls after", "Full screen after no key presses", "Live TV buffer"),
+    ),
     PLAYBACK(
         "Playback",
         listOf(

@@ -1436,4 +1436,9 @@ class LivePrefs(context: Context) {
     var epgUpdateHours: Int
         get() = sp.getInt("epg_update_h", 24)
         set(v) = sp.edit().putInt("epg_update_h", v).apply()
+
+    /** Live TV buffer: how much of a channel is loaded ahead. Default Medium, the buffer live TV always had. */
+    var liveBuffer: app.fireplayer.player.LiveBuffer
+        get() = app.fireplayer.player.LiveBuffer.named(sp.getString("live_buffer", null))
+        set(v) = sp.edit().putString("live_buffer", v.name).apply()
 }
