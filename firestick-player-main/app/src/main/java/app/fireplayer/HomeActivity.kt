@@ -797,7 +797,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
         }
         val back = currentFocus
         if (rail.selected == NavRail.Tab.SETTINGS) return openPanel(title, back ?: settingsRows.first(), render)
-        panel.open(title, { if (back != null && back.isShown) back.requestFocus() else focusPage() }, render)
+        panel.open(title, { if (back != null && back.isShown) back.requestFocus() else focusPage() }, render = render)
     }
 
     companion object {

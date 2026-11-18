@@ -774,7 +774,7 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun show(title: String, onClose: (() -> Unit)?, sub: Boolean, render: SidePanel.() -> Unit) {
-        if (sub) panel.openSub(title, render) else panel.open(title, onClose, render)
+        if (sub) panel.openSub(title, render = render) else panel.open(title, onClose, render = render)
     }
 
     private fun epgValue(s: LiveDb.EpgStatus?): String = when {
