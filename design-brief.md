@@ -269,3 +269,18 @@ but unproven cause: FramePacer flip-flopping under timing jitter (simulation 13â
 6. Mask HDR10+ data before decoding when the display lacks HDR10+.
 7. Lost frames count in CopyHealth (over 2% for 10 minutes = troubled); honest "Range" row on SDR screens.
 8. Build the styled-subtitle (libass) renderer only for films with an SSA/ASS track.
+
+Added after a second playback check (4K Dolby Vision remux, 79 Mb/s, 86 GB; the Stick again out of memory with
+FirePlayer 1.0 at 397 MB and 123 MB of its film buffer in swap; Stremio's server holding 112 MB; download ~55-63 Mb/s
+on excellent 5 GHz Wi-Fi):
+
+- **Film mode memory (user):** instead of shrinking the buffer when memory is short, FirePlayer 2.0 makes room before a
+  film or episode starts from Home, Movies or TV Shows: stop Live TV and release its decoder, drop page images, glass
+  caches and in-memory guide data, and trim the graphics cache (Glass Home's HardwareRenderer trick). The film buffer
+  stays at fix 3's tier. Sources come from the add-ons directly, so Stremio's server is not needed. Returning from the
+  film shows the page at once from a snapshot while posters reload from the disk cache.
+- **Background release (fix 11):** after a while in the background (not at once), release image and glass caches,
+  keeping a snapshot so coming back stays instant.
+- **Glass Home:** no changes now (its open/return speed was tuned); small integration changes later (e.g. trimming as
+  soon as a FirePlayer film starts).
+- **Second download connection (fix 12):** test first whether Real-Debrid limits speed per connection.
