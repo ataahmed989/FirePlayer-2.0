@@ -471,11 +471,13 @@ class VodPage(
         if (!inList && sa != null && sa.isOpen && sa.spec?.source is Source.MyList) sa.remove(title.id)
     }
 
+    /** Mark watched also takes the title out of Continue Watching (until it's played again): at once, like Remove. */
     private fun toggleWatched(title: Title) {
         val r = repo ?: return
         popup.close()
         val watched = !r.isWatched(title.id)
         r.setWatched(title, watched)
+        if (watched) dropFromContinue(title.id)
         showNotice(if (watched) "Marked as watched" else "Marked as not watched")
     }
 
@@ -484,13 +486,18 @@ class VodPage(
         val r = repo ?: return
         popup.close()
         r.removeFromContinueWatching(title.id)
+        dropFromContinue(title.id)
+    }
+
+    /** [id] has left Continue Watching: its cards go from the continue rows (and their See all) now. */
+    private fun dropFromContinue(id: String) {
         for (row in rows) {
             if (!row.spec.continueRow && row.spec.source !is Source.ContinueWatching) continue
-            if (row.cards.none { it.title.id == title.id }) continue
-            showCards(row, row.cards.filter { it.title.id != title.id }, row.hasSeeAll, mine = true)
+            if (row.cards.none { it.title.id == id }) continue
+            showCards(row, row.cards.filter { it.title.id != id }, row.hasSeeAll, mine = true)
         }
         val sa = seeAll
-        if (sa != null && sa.isOpen && sa.spec?.continueRow == true) sa.remove(title.id)
+        if (sa != null && sa.isOpen && sa.spec?.continueRow == true) sa.remove(id)
     }
 
     /** [v]'s rectangle as drawn (grown, moved), in the page's coordinates. */
@@ -783,7 +790,7 @@ class VodPage(
     }
 
     private fun pictureOf(row: TitleRow, card: Card): String? =
-        if (row.style == RowStyle.WIDE) card.title.background ?: card.title.poster else card.title.poster
+        if (row.style == RowStyle.WIDE) wideArt(card) else card.title.poster
 
     // ---- Clock and notices -------------------------------------------------------------------------------------------
 

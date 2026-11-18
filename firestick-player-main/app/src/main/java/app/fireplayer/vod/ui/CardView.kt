@@ -22,6 +22,7 @@ import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.data.VodArt
 import kotlin.math.ceil
 
 /**
@@ -148,7 +149,7 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         if (imageKey != null || bitmap != null) ImageLoader.release(this)
     }
 
-    private fun pictureOf(c: Card): String? = if (kind == Kind.WIDE) c.title.background ?: c.title.poster else c.title.poster
+    private fun pictureOf(c: Card): String? = if (kind == Kind.WIDE) wideArt(c) else c.title.poster
 
     override fun setImage(bitmap: Bitmap?, fromMemory: Boolean) {
         fader?.cancel()
@@ -355,3 +356,9 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         }
     }
 }
+
+/**
+ * A wide card's picture: the title's backdrop at the wide cards' size (metahub `background/small` or TMDB `w780`, about
+ * a third of the header's), else its poster.
+ */
+internal fun wideArt(c: Card): String? = VodArt.backgroundAt(c.title.background, VodArt.Size.SMALL) ?: c.title.poster

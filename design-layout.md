@@ -407,6 +407,17 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Top 10 numbers use Inter ExtraBold on Android 8 and later (bundled with its OFL licence); older Android has
     Figtree Bold.
 
+- 2026-11-18 · Films & Shows step 1, data and the two halves joined (rows from Cinemeta and TMDB, library in vod.db).
+  Assumptions, all reversible:
+  - Mark watched also takes a title out of Continue Watching until it is played again; the rows drop it at once, as
+    with Remove.
+  - A TMDB key that TMDB refused counts as no key (Top 10 rows hide, the header uses Cinemeta Popular) until the key
+    changes or a day passes.
+  - Next Episodes stays empty in this step; a Genres row's chips come from Cinemeta's manifest (a built-in list when it
+    can't be read).
+  - Wide Continue Watching cards use the smaller backdrop (metahub background/small, TMDB w780); the header keeps the
+    medium one.
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png
