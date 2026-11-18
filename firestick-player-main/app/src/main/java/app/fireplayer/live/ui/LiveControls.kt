@@ -311,6 +311,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
      * [focus] in the extra row (a window opened from it closed) comes back to that row, as in the VOD player.
      */
     fun showControls(focus: View? = null) {
+        animate().cancel()
         visibility = VISIBLE
         controlsShown = true
         top.visibility = VISIBLE
@@ -327,8 +328,18 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         if (catchUpShown && !moreShown) btnPlay.requestFocus()
     }
 
-    /** Only the channel and programme at the top (after a channel change): nothing takes focus. */
-    fun showInfo() {
+    /**
+     * Only the channel and programme at the top (after a channel change): nothing takes focus. With [fadeInAfter], they
+     * fade in after that many ms (the picture growing to full screen first) instead of showing at once.
+     */
+    fun showInfo(fadeInAfter: Long = -1L) {
+        animate().cancel()
+        if (fadeInAfter >= 0 && visibility != VISIBLE) {
+            alpha = 0f
+            animate().alpha(1f).setStartDelay(fadeInAfter).setDuration(Tokens.FADE_MS).withLayer().start()
+        } else {
+            alpha = 1f
+        }
         visibility = VISIBLE
         controlsShown = false
         top.visibility = VISIBLE
@@ -340,6 +351,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     }
 
     fun hideAll() {
+        animate().cancel()
+        alpha = 1f
         visibility = GONE
         controlsShown = false
         showMainRow(focusRow = false, animate = false)

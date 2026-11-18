@@ -165,9 +165,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val openInset = railSpace + columnW + gap
     private val closedInset = gap
 
-    /** The content's left edge (px), animated between [openInset] and [closedInset]. */
-    private var inset = 0f
-    private var insetAnim: android.animation.ValueAnimator? = null
+    /**
+     * How far the content sits right of its place in the grid while the column is open. The content is laid out once,
+     * at the grid's place, and slides by this much as a whole (a transform: nothing is laid out again frame by frame).
+     */
+    private val shift = openInset - closedInset
+    /** True while the content, column and rail slide: the miniature is already on its way to where the slide ends. */
+    private var sliding = false
+    /** Bumped by every change of layout or screen: a motion waiting for its first frame starts only if still current. */
+    private var motionSerial = 0
 
     init {
         build()
@@ -192,30 +198,32 @@ class LivePage(private val activity: Activity, private val host: Host) {
         detailStar.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
         head.addView(detailStar, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
         details.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Full width, one line each: a new channel's text only redraws them (nothing is laid out again as focus moves).
         detailTitle.maxLines = 1
         detailTitle.ellipsize = android.text.TextUtils.TruncateAt.END
-        details.addView(detailTitle, lp(top = 2))
+        details.addView(detailTitle, wide(top = 2))
         detailMeta.maxLines = 1
         detailMeta.ellipsize = android.text.TextUtils.TruncateAt.END
         detailMeta.alpha = 0.85f
-        details.addView(detailMeta, lp(top = 2))
+        details.addView(detailMeta, wide(top = 2))
         val timeRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(detailTime)
-            addView(detailBar, LinearLayout.LayoutParams(t.dp(96), t.dp(10)).apply { leftMargin = t.dp(12); rightMargin = t.dp(12) })
-            addView(detailLeft)
+            // Each has its own space before it: with the bar hidden (a programme not on now) the time and "in …" keep theirs.
+            addView(detailBar, LinearLayout.LayoutParams(t.dp(96), t.dp(10)).apply { leftMargin = t.dp(12) })
+            addView(detailLeft, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(12) })
         }
         details.addView(timeRow, lp(top = 8))
-        details.addView(detailDesc, lp(top = 8))
-        details.addView(detailNext, lp(top = 6))
+        details.addView(detailDesc, wide(top = 8))
+        details.addView(detailNext, wide(top = 6))
         topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(18) })
         content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
         content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
         guideLayer.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            leftMargin = openInset; topMargin = t.dp(14); rightMargin = gap; bottomMargin = t.dp(4)
+            leftMargin = closedInset; topMargin = t.dp(14); rightMargin = gap; bottomMargin = t.dp(4)
         })
-        inset = openInset.toFloat()
+        content.translationX = shift.toFloat()
         root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Nothing to show yet: a way to add a playlist.
@@ -241,45 +249,98 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     // ---- The column and the rail: open (column focused) or in the grid -------------------------------------------
 
-    private fun applyInset(px: Float) {
-        inset = px
-        val lp = content.layoutParams as ViewGroup.MarginLayoutParams
-        if (lp.leftMargin == px.toInt()) return
-        lp.leftMargin = px.toInt()
-        content.layoutParams = lp
+    /**
+     * The details' and the guide's right edges: [shift] in from the content's (narrow, so they end at the screen's
+     * margin while the content sits [shift] to the right) or none (the grid). A layout pass when they change: once per
+     * slide, never during one.
+     */
+    private fun narrowDetails(on: Boolean) {
+        rightMargin(details, if (on) shift else 0)
+        // Narrow, the progress bar is shorter, so the time and "… min left" still fit beside it.
+        val bar = detailBar.layoutParams as LinearLayout.LayoutParams
+        val w = t.dp(if (on) 44 else 96)
+        val m = t.dp(if (on) 8 else 12)
+        if (bar.width != w) {
+            bar.width = w
+            bar.leftMargin = m
+            detailBar.layoutParams = bar
+            val left = detailLeft.layoutParams as LinearLayout.LayoutParams
+            left.leftMargin = m
+            detailLeft.layoutParams = left
+        }
+    }
+    private fun narrowGuide(on: Boolean) = rightMargin(guide, if (on) shift else 0)
+
+    private fun rightMargin(v: View, px: Int) {
+        val lp = v.layoutParams as ViewGroup.MarginLayoutParams
+        if (lp.rightMargin == px) return
+        lp.rightMargin = px
+        v.layoutParams = lp
     }
 
     /**
      * Column open (with the tab rail) or the grid (both slid away, content full width). One motion: the column and rail
-     * slide out to the left as the content slides left; the miniature moves with it (placed again on every layout).
+     * slide out to the left as the content slides left, and the miniature moves with it.
+     *
+     * The content slides as a whole (its translation), so nothing is laid out frame by frame. The details take their
+     * open width when the column starts to open and their grid width when it has closed, so their text never runs
+     * off the screen; the guide is the grid's width while it moves (running past the screen's edge, which hides it) and
+     * ends at the screen's margin once open.
      */
     private fun layoutFor(columnOpen: Boolean, animate: Boolean) {
-        val target = (if (columnOpen) openInset else closedInset).toFloat()
-        host.setRailShown(columnOpen, if (animate) SLIDE_MS else 0L)
-        insetAnim?.cancel()
+        val target = if (columnOpen) shift.toFloat() else 0f
+        val serial = ++motionSerial
+        content.animate().cancel()
         sidebarPanel.animate().cancel()
+        sliding = false
         val hidden = -(railSpace + columnW).toFloat()
         if (columnOpen) sidebarPanel.visibility = View.VISIBLE
         if (!animate || !root.isShown) {
-            applyInset(target)
+            host.setRailShown(columnOpen, 0L)
+            content.translationX = target
+            narrowDetails(columnOpen)
+            narrowGuide(columnOpen)
             sidebarPanel.translationX = if (columnOpen) 0f else hidden
             sidebarPanel.alpha = if (columnOpen) 1f else 0f
             if (!columnOpen) sidebarPanel.visibility = View.INVISIBLE
             return
         }
-        insetAnim = android.animation.ValueAnimator.ofFloat(inset, target).apply {
-            duration = SLIDE_MS
-            interpolator = EASE
-            addUpdateListener { applyInset(it.animatedValue as Float) }
-            start()
+        if (columnOpen) narrowDetails(true) else narrowGuide(false)
+        sliding = true
+        onNextFrame {
+            if (serial != motionSerial || released) return@onNextFrame
+            slide(columnOpen, target, hidden)
         }
+    }
+
+    /**
+     * Runs [action] in the next frame, before it's drawn. A motion started there begins with that frame, after the
+     * slow one this frame may be (a layout, focus moving, something drawn for the first time): it then plays from its
+     * start instead of jumping ahead over the slow frame (on a Fire TV, up to a third of a slide).
+     */
+    private fun onNextFrame(action: () -> Unit) = android.view.Choreographer.getInstance().postFrameCallback { action() }
+
+    private fun slide(columnOpen: Boolean, target: Float, hidden: Float) {
+        host.setRailShown(columnOpen, SLIDE_MS)
+        // The miniature heads for where the slot will be when the slide ends, in step with it (same time and easing).
+        placeMini(SLIDE_MS, dx = target - content.translationX)
+        content.animate().translationX(target).setDuration(SLIDE_MS).setInterpolator(EASE)
+            .withEndAction {
+                sliding = false
+                if (columnOpen) narrowGuide(true) else narrowDetails(false)
+                // Exactly in place (a no-op unless something moved the slot meanwhile).
+                if (!fullScreen && rectOf(videoSlot) != placedAt) placeMini()
+            }
+            .start()
+        // The column fades as one picture (a layer drawn once), not drawn again into a new layer every frame.
         sidebarPanel.animate().translationX(if (columnOpen) 0f else hidden).alpha(if (columnOpen) 1f else 0f)
-            .setDuration(SLIDE_MS).setInterpolator(EASE)
+            .setDuration(SLIDE_MS).setInterpolator(EASE).withLayer()
             .withEndAction { if (!sidebarOpen) sidebarPanel.visibility = View.INVISIBLE }
             .start()
     }
 
     private fun lp(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(top) }
+    private fun wide(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(top) }
 
     /** Panels get the look's surface (glass over the blurred wallpaper, or the original dark panel). */
     fun applyLook() {
@@ -303,7 +364,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // The slot moves when the column opens or closes (its parent moves, not the slot within it): every layout pass
         // compares where it is on screen with where the video was put.
         root.viewTreeObserver.addOnGlobalLayoutListener {
-            if (fullScreen || !root.isShown) return@addOnGlobalLayoutListener
+            // Mid-slide the slot is on its way; the miniature already heads for where it ends.
+            if (fullScreen || sliding || !root.isShown) return@addOnGlobalLayoutListener
             if (player.currentKey == null) {
                 if (placeholder != true) placeMini()
                 return@addOnGlobalLayoutListener
@@ -662,7 +724,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         layoutFor(columnOpen = false, animate = true)
     }
 
-    private fun placeMini(animateMs: Long = 0L) {
+    /** The miniature in its slot; with [dx], where the slot will be once the content has slid that much further. */
+    private fun placeMini(animateMs: Long = 0L, dx: Float = 0f) {
         val playing = player.currentKey != null
         if (playlists.isEmpty() || !playing) {
             placedAt = null
@@ -671,6 +734,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             return
         }
         val r = rectOf(videoSlot) ?: return
+        r.offset(dx, 0f)
         placedAt = r
         showSlotPlaceholder(false)
         host.placeVideo(r, t.dpf(12f), false, animateMs)
@@ -709,15 +773,22 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
         guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         activity.currentFocus?.clearFocus()
-        // The picture grows from the miniature to the whole screen while the guide fades away under it.
         guideLayer.animate().cancel()
-        guideLayer.animate().alpha(0f).setDuration(GROW_MS * 3 / 4).setInterpolator(EASE)
-            .withEndAction { if (fullScreen) guideLayer.visibility = View.INVISIBLE }.start()
         host.setChromeVisible(false)
         placedAt = null
-        host.placeVideo(null, 0f, true, GROW_MS)
         refreshControls()
-        controls.showInfo()
+        // The channel and programme fade in as the picture nears full screen (not over the guide fading away).
+        controls.showInfo(fadeInAfter = GROW_MS / 2)
+        // The picture grows from the miniature to the whole screen while the guide fades away under it, from the next
+        // frame (see onNextFrame). The guide fades as one picture (a layer drawn once), not drawn again into a new
+        // screen-sized layer every frame.
+        val serial = ++motionSerial
+        onNextFrame {
+            if (serial != motionSerial || !fullScreen || released) return@onNextFrame
+            guideLayer.animate().alpha(0f).setDuration(GROW_MS * 3 / 4).setInterpolator(EASE).withLayer()
+                .withEndAction { if (fullScreen) guideLayer.visibility = View.INVISIBLE }.start()
+            host.placeVideo(null, 0f, true, GROW_MS)
+        }
         main.removeCallbacks(hideControls)
         main.postDelayed(hideControls, INFO_MS)
     }
@@ -731,14 +802,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
         host.setChromeVisible(true)
         // Back to the grid: the column and rail stay away; the picture shrinks into the miniature as the guide fades in.
         sidebarOpen = false
-        val moved = inset != closedInset.toFloat()
         layoutFor(columnOpen = false, animate = false)
         guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         guideLayer.animate().cancel()
         guideLayer.visibility = View.VISIBLE
-        guideLayer.animate().alpha(1f).setDuration(SHRINK_MS).setInterpolator(EASE).start()
-        // The miniature's place is known now, or after the layout the move above causes.
-        if (moved) shrinkPending = true else placeMini(SHRINK_MS)
+        // The guide fades in and the picture shrinks into the miniature from the next frame (see onNextFrame). The
+        // slot's place is known then (the content only slid back, a transform), unless the page hasn't been laid out
+        // yet: then the shrink waits for the layout.
+        // (Back in full screen by then: that leaves the guide hidden. A slide started meanwhile places the picture
+        // again itself.)
+        onNextFrame {
+            if (fullScreen || released) return@onNextFrame
+            guideLayer.animate().alpha(1f).setDuration(SHRINK_MS).setInterpolator(EASE).withLayer().start()
+            if (rectOf(videoSlot) == null) shrinkPending = true else placeMini(SHRINK_MS)
+        }
         // Back to where the guide was, unless the channel changed in full screen: then to that channel.
         val playing = ChannelKey.parse(player.currentKey)
         if (zappedInFull && playing != null) guide.focusChannel(playing)

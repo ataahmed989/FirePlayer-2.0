@@ -271,6 +271,32 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   user's own `Wallpapers/Foggy-Blue-Beach-Light-Spiral-Blurred.png` (`wallpaper_glass`); the blue fog is retired.
   Glass shapes blur it once more ([StillGlass]); nothing is blurred per frame.
 
+- 2026-11-18 · User: Live TV page redesign after the user's four concepts (direction, not exact layouts; the
+  user's backgrounds and font stay). More compact, less free space; a larger miniature than in the concepts
+  (368 × 207 dp, the details beside it); the playlist name header slightly larger than the groups (16.5 sp vs
+  14.5 sp). No panels: the column, details and guide sit on the look's wallpaper. Grid (guide focused): the tab rail
+  and groups column slide away and the content takes the full width; column open: rail, column, then the content.
+  Guide: header 26 dp, rows 29 dp, channel column 256 dp; flat rounded cells (classic dark grey; glass a faint white
+  with a rim); a ▶ after the playing channel's name; the focus highlight glides from cell to cell.
+- 2026-11-18 · User: smoother motion ("more fluid … from a miniature player to a larger player … better sliding").
+  One motion for the column, the rail and the content (220 ms, fast out, slow in), with the miniature moving in step;
+  the picture grows to full screen (280 ms) and shrinks back (240 ms) while the guide fades. Measured on the Max and
+  fixed:
+  - Opening the column rebuilt the app's window (44–193 ms stall): Android picked the keyboard-resize mode again
+    whenever a scrolling list showed or hid. HomeActivity now states adjustPan (text boxes pan above the keyboard).
+  - The slide no longer lays the screen out every frame: the content moves as a whole and is laid out once (the
+    details take their open width as the column starts to open, the guide its open width when the slide ends).
+  - The guide and the column fade as layers drawn once, not into a new screen-sized layer every frame.
+  - The wallpaper around the live picture is four strips and a rounded outline for the corners (was the whole screen
+    drawn through a rounded cut-out, then a shape the graphics re-drew into a texture every frame).
+  - Result (warm, under the TV's memory pressure): column open/close about 4–13 ms per frame after the first (was
+    20–55 ms, and a 193 ms first frame); shrink about 10–15 ms (was ~25 ms every frame); grow about 10–14 ms.
+  - A slow first frame (focus moving, a layout, something drawn the first time) made the slide jump ahead on some
+    runs (screen recording). Motions now start on the frame after the key press, so they play from the beginning;
+    full screen's channel and programme fade in halfway through the grow instead of appearing over the guide.
+  - Assumption: with the column open, the details' progress bar is shorter (44 dp) so "… min left" fits. Fixed in
+    passing: the time and "in …" ran together when the bar was hidden (a programme not on now).
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

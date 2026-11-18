@@ -663,7 +663,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host {
             if (!shown) host.visibility = View.INVISIBLE
             return
         }
-        host.animate().translationX(to).setDuration(animateMs).setInterpolator(android.view.animation.DecelerateInterpolator(1.6f))
+        // The same easing as the column and the content sliding with it (one motion).
+        host.animate().translationX(to).setDuration(animateMs).setInterpolator(moveEasing)
             .withEndAction { if (!shown) host.visibility = View.INVISIBLE }.start()
     }
 

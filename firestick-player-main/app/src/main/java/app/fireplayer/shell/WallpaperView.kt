@@ -3,14 +3,13 @@ package app.fireplayer.shell
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Region
-import android.os.Build
+import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -28,16 +27,32 @@ import java.util.concurrent.Executors
  * place in between while the picture grows or shrinks. The live picture is a SurfaceView behind the window, so
  * everything drawn here stays outside the hole; its rounded corners are the wallpaper drawn over the corners of the
  * video.
+ *
+ * The wallpaper around the hole is four plain strips (above, below, left and right of it), and its rounded corners
+ * are a thick rounded outline of the picture whose inner edge is the hole's (the rest of it lies over the strips, the
+ * same picture): on a Fire TV's graphics that costs far less, every frame the hole moves, than the whole screen drawn
+ * through a rounded cut-out, or any shape the graphics would have to draw into a picture of its own first.
  */
 class WallpaperView(context: Context) : View(context) {
 
     private var picture: Bitmap? = null
+        set(v) {
+            field = v
+            // The hole's corners are filled with the picture, in place (it's the screen's size, drawn at 0, 0).
+            cornerPaint.shader = v?.let { BitmapShader(it, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
+        }
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val black = Paint().apply { color = Color.BLACK }
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { style = Paint.Style.STROKE }
+    private val blackRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.BLACK }
     private val holeRect = RectF()
     private var holeRadius = 0f
-    private val holePath = Path()
+    /** The corners' outline: its rectangle, corner radius and width (none while the hole's corners are square). */
+    private val ring = RectF()
+    private var ringRadius = 0f
+    private var ringWidth = 0f
     private var fullHole = false
-    private val dst = Rect()
+    private val band = Rect()
 
     /** Called once the glass look's wallpaper and its glass are ready (main thread). */
     var onReady: ((StillGlass) -> Unit)? = null
@@ -72,8 +87,14 @@ class WallpaperView(context: Context) : View(context) {
         fullHole = full
         if (rect == null) holeRect.setEmpty() else holeRect.set(rect)
         holeRadius = radius
-        holePath.reset()
-        if (!holeRect.isEmpty) holePath.addRoundRect(holeRect, radius, radius, Path.Direction.CW)
+        // An outline as wide as the corners' radius (a pixel at least) reaches past each corner of the hole's box.
+        val k = if (holeRect.isEmpty) 0f else minOf(radius, holeRect.width() / 2, holeRect.height() / 2)
+        ringWidth = if (k > 0f) maxOf(k, 2f) else 0f
+        if (ringWidth > 0f) {
+            val half = ringWidth / 2
+            ring.set(holeRect.left - half, holeRect.top - half, holeRect.right + half, holeRect.bottom + half)
+            ringRadius = k + half
+        }
         invalidate()
     }
 
@@ -111,19 +132,33 @@ class WallpaperView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         if (fullHole) return
-        val save = canvas.save()
-        if (!holeRect.isEmpty) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) canvas.clipOutPath(holePath)
-            else @Suppress("DEPRECATION") canvas.clipPath(holePath, Region.Op.DIFFERENCE)
-        }
         val bmp = picture
-        if (bmp == null) {
-            canvas.drawColor(Color.BLACK)
-        } else {
-            dst.set(0, 0, width, height)
-            canvas.drawBitmap(bmp, null, dst, paint)
+        val w = width
+        val h = height
+        if (holeRect.isEmpty) {
+            if (bmp == null) canvas.drawColor(Color.BLACK) else canvas.drawBitmap(bmp, 0f, 0f, paint)
+            return
         }
-        canvas.restoreToCount(save)
+        val l = Math.round(holeRect.left).coerceIn(0, w)
+        val t = Math.round(holeRect.top).coerceIn(0, h)
+        val r = Math.round(holeRect.right).coerceIn(l, w)
+        val b = Math.round(holeRect.bottom).coerceIn(t, h)
+        strip(canvas, bmp, 0, 0, w, t)
+        strip(canvas, bmp, 0, b, w, h)
+        strip(canvas, bmp, 0, t, l, b)
+        strip(canvas, bmp, r, t, w, b)
+        if (ringWidth > 0f) {
+            val p = if (bmp == null) blackRing else cornerPaint
+            p.strokeWidth = ringWidth
+            canvas.drawRoundRect(ring, ringRadius, ringRadius, p)
+        }
+    }
+
+    /** The wallpaper over one strip (the picture is the screen's size, so it's the same rectangle of it). */
+    private fun strip(canvas: Canvas, bmp: Bitmap?, left: Int, top: Int, right: Int, bottom: Int) {
+        if (right <= left || bottom <= top) return
+        band.set(left, top, right, bottom)
+        if (bmp == null) canvas.drawRect(band, black) else canvas.drawBitmap(bmp, band, band, paint)
     }
 
     override fun onDetachedFromWindow() {

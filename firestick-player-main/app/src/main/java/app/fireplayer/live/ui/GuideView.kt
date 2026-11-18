@@ -485,9 +485,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (oldw > 0 && h == oldh) {
-            // Only the width changed: the groups column sliding in or out animates it every frame. The rows, the
-            // scroll and glide in progress and the request de-duplication stay as they are (cells are worked out
-            // from the width as they're drawn); listings are checked once, after it settles.
+            // Only the width changed (the groups column opened or closed). The rows, the scroll and glide in progress
+            // and the request de-duplication stay as they are (cells are worked out from the width as they're
+            // drawn); listings are checked once, after it settles.
             removeCallbacks(widthSettled)
             postDelayed(widthSettled, WIDTH_SETTLE_MS)
             return

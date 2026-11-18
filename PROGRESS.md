@@ -110,6 +110,22 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       Both seen on the Max.
 - [ ] Opening Manage groups takes ~1 s with 353 groups (side window isn't recycled); switches/moves are instant.
 
+## 3d. Live TV page redesign (user concepts, November 18)
+
+- [x] Layout: compact page, 368 × 207 dp miniature with details beside it, flat guide on the wallpaper; rail and
+      groups column slide away in the grid; playlist headers larger than groups — on the Max, classic.
+- [x] Guide look (26 dp header, 29 dp rows, flat cells, ▶ on the playing channel) and a gliding focus — on the Max.
+- [x] Smoothness, measured on the Max with frame stats and system traces: no window rebuild when the column opens
+      (adjustPan), no per-frame layout in the slide, layer fades, cheaper wallpaper around the picture. Column
+      open/close ~4–13 ms per frame (was 20–55 ms plus a 193 ms first frame); shrink ~10–15 ms (was ~25 ms).
+- [x] Column-open details: the time and "… min left" fit; time and "in …" spaced when the bar is hidden.
+- [~] Motions start on the frame after the key press (no jump ahead over a slow first frame); full screen's info fades
+      in during the grow. Built and unit-tested; not yet watched on the Max (the TV connection ended).
+- [ ] Glass look of the redesign: not yet checked on the Max.
+- [ ] Going full screen sometimes re-binds the groups column's rows (~10 ms on one frame); cause not found yet.
+- Note: the Max had little free memory during these tests (swap full, the kernel's reclaimer busy), and the test app
+  is a debug build (slower than a release build), so timings vary from run to run.
+
 ## 4. Catalogs, Home, navigation (handoff step 4) — not started
 
 - [ ] Independent VOD catalogs from playlists; Home rail/hero/shelves (Home becomes the launcher destination when it
