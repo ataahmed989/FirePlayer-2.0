@@ -185,6 +185,24 @@ class Rows(private val context: Context) {
         valueColors: ColorStateList? = null,
     ): LinearLayout {
         val row = base()
+        fill(row, label, value, trailingIcon, labelLines, asSwitch, valueColors)
+        return row
+    }
+
+    /**
+     * What [build] puts in a row, put into [row] (an empty row from [base]): a row whose words change
+     * ([SidePanel.updateRow], a long list's row shown for another entry) gets them without a new row being made.
+     * Returns the label.
+     */
+    fun fill(
+        row: LinearLayout,
+        label: String,
+        value: String?,
+        trailingIcon: Int?,
+        labelLines: Int = 1,
+        asSwitch: Boolean = true,
+        valueColors: ColorStateList? = null,
+    ): TextView {
         val labelView = text(label).apply {
             if (labelLines > 1) {
                 isSingleLine = false
@@ -229,7 +247,7 @@ class Rows(private val context: Context) {
             row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
         }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
-        return row
+        return labelView
     }
 
     /** How a [badge] looks: set (blue), not set (faded gray), refused (soft red), or being checked (gray). */

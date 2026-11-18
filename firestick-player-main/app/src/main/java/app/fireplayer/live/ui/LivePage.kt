@@ -78,6 +78,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
          * runs after it closes (the Settings button: focus back to it, the controls' timer again).
          */
         fun openPlayerSettings(onClosed: (() -> Unit)? = null)
+        /**
+         * Assign favorites over this page (from the guide): [groupId]'s channels, with [channel] selected, and Back goes
+         * to [playlistId]'s groups; with no [groupId], the groups. Focus comes back where it was when it closes.
+         */
+        fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?)
         /** The settings window on the right, where the full-screen extra row's windows open. */
         val sidePanel: SidePanel
         /** Display size or the screen dimmer changed: the full-screen picture is laid out and dimmed again. */

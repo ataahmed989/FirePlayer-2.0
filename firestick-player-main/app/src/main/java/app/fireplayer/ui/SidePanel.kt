@@ -15,9 +15,10 @@ import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 
 /**
- * The see-through settings window on the right third of the screen.
+ * The see-through settings window on the right third of the screen (or wider: [open]'s wide, for long names).
  * Each window is drawn by a render function; [refresh] redraws it in place
  * and keeps the focused row and scroll position.
+ * A window of hundreds of rows is a long list instead ([longList]): only the rows on screen are made.
  */
 class SidePanel(private val activity: Activity) {
 
@@ -26,6 +27,20 @@ class SidePanel(private val activity: Activity) {
     private val scroll: CenterScrollView = activity.findViewById(R.id.panel_scroll)
     private val list: LinearLayout = activity.findViewById(R.id.panel_list)
     private val rows = Rows(activity)
+
+    // About a third of the screen, as in the design; wide windows (a playlist's groups and channels) show long names.
+    private val normalWidth = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
+    private val wideWidth = (activity.resources.displayMetrics.widthPixels * 0.44f).toInt()
+    private var wide = false
+
+    /** The long list shown in place of [scroll] by a window that has one ([longList]); made the first time. */
+    private var long: LongListView? = null
+    private var longShown = false
+    /** What the window being drawn gave [longList]. */
+    private var pendingLong: LongList? = null
+    /** The long list's entry last selected, by its key, and where it was. */
+    private var lastEntry: String? = null
+    private var lastEntryIndex = -1
 
     private var renderer: (SidePanel.() -> Unit)? = null
     private var onClose: (() -> Unit)? = null
@@ -37,31 +52,56 @@ class SidePanel(private val activity: Activity) {
         private set
     private var sessions = 0
 
-    /** Windows a sub-window was opened from ([openSub]): Back returns to them, to the row it was opened from. */
-    private class Parent(val title: String, val render: SidePanel.() -> Unit, val onClose: (() -> Unit)?, val session: Int, val key: Pair<String, Int>?)
+    /**
+     * Windows a sub-window was opened from ([openSub]): Back returns to them, as wide as they were, to the row it was
+     * opened from ([key]; in a long list, its entry: [entry], else the one at [entryIndex]).
+     */
+    private class Parent(
+        val title: String,
+        val render: SidePanel.() -> Unit,
+        val onClose: (() -> Unit)?,
+        val session: Int,
+        val key: Pair<String, Int>?,
+        val wide: Boolean,
+        val entry: String?,
+        val entryIndex: Int,
+    )
     private val parents = ArrayList<Parent>()
 
     /** The row last selected, by what it says: the one to come back to after a small window over this one. */
     private var lastKey: Pair<String, Int>? = null
 
     init {
-        // About a third of the screen, as in the design.
-        val width = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
-        root.layoutParams = root.layoutParams.apply { this.width = width }
+        root.layoutParams = root.layoutParams.apply { this.width = normalWidth }
         root.viewTreeObserver.addOnGlobalFocusChangeListener { _, now ->
             if (now == null || !isOpen) return@addOnGlobalFocusChangeListener
             val rows = focusables()
             val i = rows.indexOf(now)
             if (i >= 0) lastKey = rowKey(rows, i)
         }
+        // While the window holds the selection itself (its rows being replaced, a long list's row not laid out yet),
+        // the arrows are used up here, so focus can't wander out of it.
+        root.setOnKeyListener { _, keyCode, _ ->
+            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+        }
     }
 
-    fun open(titleText: String, onClose: (() -> Unit)? = null, render: SidePanel.() -> Unit) {
+    /** Wide (about 44% of the screen) or the usual third. Set once as a window opens, never while it moves. */
+    private fun setWide(on: Boolean) {
+        wide = on
+        val width = if (on) wideWidth else normalWidth
+        if (root.layoutParams.width != width) root.layoutParams = root.layoutParams.apply { this.width = width }
+    }
+
+    /** Opens a window; [wide] for one whose rows have long names (a playlist's groups or channels). */
+    fun open(titleText: String, onClose: (() -> Unit)? = null, wide: Boolean = false, render: SidePanel.() -> Unit) {
         parents.clear()
         this.onClose = onClose
         renderer = render
         session = ++sessions
         title.text = titleText
+        setWide(wide)
         Glass.background(root, Glass.Kind.PANEL)
         root.visibility = View.VISIBLE
         root.alpha = 0f
@@ -77,17 +117,25 @@ class SidePanel(private val activity: Activity) {
      * A window opened from a row of this one (a playlist from the list, a status's settings): Back ([back]) comes back
      * to this window as it was, on that row. Closing ([close]) closes them all.
      */
-    fun openSub(titleText: String, render: SidePanel.() -> Unit) {
+    fun openSub(titleText: String, wide: Boolean = false, render: SidePanel.() -> Unit) {
         // Only from an open window (a late answer mustn't bring a closed one back without its close callback).
         val current = renderer
         if (!isOpen || current == null) return
         val rows = focusables()
         val i = rows.indexOfFirst { it.hasFocus() }
-        parents += Parent(title.text.toString(), current, onClose, session, if (i >= 0) rowKey(rows, i) else lastKey)
+        // A long list's row is noted by its entry (the one selected, or the one focus is on its way to).
+        val shownList = long?.takeIf { longShown }
+        val entry = shownList?.let { it.currentKey() ?: lastEntry }
+        val entryIndex = shownList?.let { l -> l.currentIndex().takeIf { it >= 0 } ?: lastEntryIndex } ?: -1
+        parents += Parent(
+            title.text.toString(), current, onClose, session, if (i >= 0) rowKey(rows, i) else lastKey, this.wide,
+            entry, entryIndex,
+        )
         onClose = null
         renderer = render
         session = ++sessions
         title.text = titleText
+        setWide(wide)
         scroll.scrollTo(0, 0)
         rebuild(focusIndex = 0)
     }
@@ -115,8 +163,9 @@ class SidePanel(private val activity: Activity) {
         onClose = parent.onClose
         session = parent.session
         title.text = parent.title
+        setWide(parent.wide)
         scroll.scrollTo(0, 0)
-        rebuild(focusIndex = 0, key = parent.key)
+        rebuild(focusIndex = parent.entryIndex.coerceAtLeast(0), key = parent.key, entry = parent.entry)
     }
 
     fun close() {
@@ -127,6 +176,9 @@ class SidePanel(private val activity: Activity) {
         root.animate().cancel()
         root.visibility = View.GONE
         list.removeAllViews()
+        if (longShown) hideLong()
+        lastEntry = null
+        lastEntryIndex = -1
         renderer = null
         val callback = onClose
         onClose = null
@@ -146,6 +198,14 @@ class SidePanel(private val activity: Activity) {
      */
     fun refresh() {
         if (!isOpen) return
+        long?.takeIf { longShown }?.let { l ->
+            // A long list: the same entry, found by its key; its rows stay where they are.
+            val dialog = FireDialog.isShowing(activity)
+            val entry = if (dialog) lastEntry else l.currentKey() ?: lastEntry
+            val index = if (dialog) lastEntryIndex else l.currentIndex().takeIf { it >= 0 } ?: lastEntryIndex
+            rebuild(index.coerceAtLeast(0), entry = entry, keepPlace = true)
+            return
+        }
         val rows = focusables()
         val index = rows.indexOfFirst { it.hasFocus() }
         // A small window (a list of choices) has the selection: the row that opened it is kept by what it says.
@@ -153,18 +213,18 @@ class SidePanel(private val activity: Activity) {
         rebuild(if (index >= 0) index else 0, key)
     }
 
-    private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null) {
+    private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null, entry: String? = null, keepPlace: Boolean = false) {
         val started = android.os.SystemClock.elapsedRealtime()
         try {
-            rebuildRows(focusIndex, key)
+            rebuildRows(focusIndex, key, entry, keepPlace)
         } finally {
-            // Long windows (a playlist's 350 groups) are where a redraw costs; noted so it can be measured on the TV.
+            // Long windows are where a redraw costs; noted so it can be measured on the TV.
             val ms = android.os.SystemClock.elapsedRealtime() - started
-            if (ms > 60) android.util.Log.i("FirePlayerPanel", "Window redrawn: ${list.childCount} rows in $ms ms")
+            if (ms > 60) android.util.Log.i("FirePlayerPanel", "Window redrawn: ${if (longShown) "a long list of ${long?.list?.size}" else "${list.childCount} rows"} in $ms ms")
         }
     }
 
-    private fun rebuildRows(focusIndex: Int, key: Pair<String, Int>?) {
+    private fun rebuildRows(focusIndex: Int, key: Pair<String, Int>?, entry: String?, keepPlace: Boolean) {
         // A small window open over this one keeps the selection; the row is only noted, to come back to when it closes.
         val behind = FireDialog.isShowing(activity)
         // Park focus on the window itself while its rows are replaced, so it can't wander off.
@@ -172,7 +232,15 @@ class SidePanel(private val activity: Activity) {
         if (!behind) root.requestFocus()
         val y = scroll.scrollY
         list.removeAllViews()
+        pendingLong = null
         renderer?.invoke(this)
+        val entries = pendingLong
+        pendingLong = null
+        if (entries != null) {
+            showLong(entries, entry, focusIndex, keepPlace, behind)
+            return
+        }
+        if (longShown) hideLong()
         RowGroups.apply(list)
         scroll.scrollTo(0, y)
         val focusRows = focusables()
@@ -187,8 +255,42 @@ class SidePanel(private val activity: Activity) {
             row.requestFocus()
             // The new row is already the selected one: show it white at once instead of fading in from dark.
             row.jumpDrawablesToCurrentState()
+            root.isFocusable = false
         }
-        root.isFocusable = false
+        // A window with nothing to press (only a note) keeps the selection itself, so it can't wander out to the page
+        // under it; its arrows are used up and Back still goes back.
+    }
+
+    /**
+     * The window's rows as a long list ([longList]), in place of the scrolling list. Focus stays parked on the window
+     * until the row it goes to is laid out (in the coming frame, before it's drawn), then lands there.
+     */
+    private fun showLong(entries: LongList, entry: String?, focusIndex: Int, keepPlace: Boolean, behind: Boolean) {
+        val view = long ?: LongListView(activity, rows).also { v ->
+            long = v
+            v.visibility = View.GONE
+            v.onFocused = { key, index ->
+                lastEntry = key
+                lastEntryIndex = index
+            }
+            (root as ViewGroup).addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        if (!longShown) {
+            longShown = true
+            scroll.visibility = View.GONE
+            view.visibility = View.VISIBLE
+        }
+        // With no row to go to, the window keeps the selection itself (see rebuildRows).
+        view.show(entries, entry, focusIndex, keepPlace, behind) { took -> if (took) root.isFocusable = false }
+    }
+
+    private fun hideLong() {
+        longShown = false
+        long?.let {
+            it.clear()
+            it.visibility = View.GONE
+        }
+        scroll.visibility = View.VISIBLE
     }
 
     /** A row by what it says (its label) and which of the rows saying that it is. */
@@ -218,17 +320,44 @@ class SidePanel(private val activity: Activity) {
      */
     fun updateRow(row: View, label: String, value: String?) {
         val target = row as? LinearLayout ?: return
-        val fresh = rows.build(label, value, null)
         target.removeAllViews()
-        while (fresh.childCount > 0) {
-            val child = fresh.getChildAt(0)
-            fresh.removeViewAt(0)
-            target.addView(child)
-        }
+        rows.fill(target, label, value, null)
         target.refreshDrawableState()
     }
 
+    // ---- Long lists ------------------------------------------------------------------------------------------------
+
+    /**
+     * This window's rows are [entries], a long list (a playlist's groups, a group's channels): only the rows on screen
+     * are made, so it opens at once and scrolls smoothly however many there are. They look and move like the other
+     * windows' rows. The window is the list alone: a few fixed rows at the top are simply its first entries.
+     */
+    fun longList(entries: LongList) {
+        pendingLong = entries
+    }
+
+    /** [count] of the long list's entries from [index] changed: their rows are shown again in place. */
+    fun changed(index: Int, count: Int = 1) {
+        long?.takeIf { longShown }?.changed(index, count)
+    }
+
+    /** Moves focus to the long list's entry at [index] (gliding there, or jumping when it's far off). */
+    fun focusEntry(index: Int) {
+        long?.takeIf { longShown }?.focusEntry(index)
+    }
+
+    /** Moves focus to the long list's entry with [key], if it has one. */
+    fun focusEntry(key: String) {
+        val l = long?.takeIf { longShown } ?: return
+        val i = l.indexOf(key)
+        if (i >= 0) l.focusEntry(i)
+    }
+
+    /** The long list's entry selected (or about to be), or -1. */
+    val focusedEntry: Int get() = long?.takeIf { longShown }?.currentIndex() ?: -1
+
     fun focusRow(index: Int) {
+        long?.takeIf { longShown }?.let { it.focusSomething(); return }
         val focusRows = focusables()
         if (index in focusRows.indices) focusRows[index].requestFocus()
     }
@@ -240,39 +369,12 @@ class SidePanel(private val activity: Activity) {
      * heading's name, [headingIcon]). The rows under it form one card ([RowGroups]).
      */
     fun header(text: String, icon: Int? = headingIcon(text)) {
-        val line = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            // In line with the rows' labels inside their card.
-            setPadding(rows.dp(12), 0, 0, 0)
-        }
-        if (icon != null) {
-            line.addView(ImageView(activity).apply {
-                setImageResource(icon)
-                imageTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(activity, R.color.heading_icon))
-            }, LinearLayout.LayoutParams(rows.dp(13), rows.dp(13)).apply { marginEnd = rows.dp(7) })
-        }
-        line.addView(TextView(activity).apply {
-            this.text = text.uppercase()
-            typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
-            letterSpacing = 0.1f
-            setTextColor(ContextCompat.getColor(activity, R.color.heading))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        list.addView(line, rows.listParams(top = 12, bottom = 4))
+        list.addView(HeadingLine(activity, rows).apply { set(text, icon) }, rows.listParams(top = 12, bottom = 4))
     }
 
     /** A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. */
     fun message(text: String, accent: Boolean = false) {
-        val tv = TextView(activity).apply {
-            this.text = text
-            setTextColor(ContextCompat.getColor(activity, if (accent) R.color.accent else R.color.text_muted))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setLineSpacing(2f * rows.density, 1f)
-        }
-        list.addView(tv, rows.listParams(top = 4, bottom = 4))
+        list.addView(noteText(activity, rows, accent).apply { this.text = text }, rows.listParams(top = 4, bottom = 4))
     }
 
     /**
