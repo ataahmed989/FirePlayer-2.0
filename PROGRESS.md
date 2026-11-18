@@ -153,13 +153,19 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       (Samsung Input Signal Plus). Causes and the eight approved fixes: design-brief.md §6.6.
 - [ ] Player fixes 1–8 in FirePlayer 2.0.
 
-## 4. Films, shows, Home, navigation (handoff step 4) — planned, not built
+## 4. Films, shows, Home, navigation (handoff step 4) — step 1 built and checked on the TV
 
 - [x] Plan agreed with the user (design-brief.md §6): add-on sources, title page, Continue rows, playback stages,
       Sources panel, no sync, best source per TV.
 - [x] Card and header sizes, chosen by the user on the sizing page (design-brief.md §6.3).
-- [ ] Build: Cinemeta/TMDB catalogs, Home/Movies/TV Shows rows, title page, add-on source finder, Sources panel,
-      Continue Watching in-process (ContinueProvider untouched); Home becomes the launcher destination when it works.
+- [x] Step 1 (merge 34ee70d): Cinemeta/TMDB rows on Home, Movies and TV Shows; header rotation; EpisodesSheet-style
+      scrolling with the sliver; Home's header slides away; hold window; See all grid. 576 unit tests pass.
+      Checked on the Max (fp-next-29): every page and row loads, See all loads more as it scrolls and Back returns
+      to its card, Back from a row goes to the rail; gfxinfo 1.1% janky frames (50th 5 ms, 99th 19 ms), 170 MB.
+      Open: Top 10 shows only once a TMDB key is entered in 2.0 (Accounts & services); Cinemeta's film lists carry
+      a few shorts and a series (e.g. "Cyberpunk: Edgerunners", 27 min) — filter waits on the user.
+- [ ] Step 2: title page (layout A). Step 3: add-on source finder, Sources panel, playback, Continue Watching
+      in-process (ContinueProvider untouched); Home becomes the launcher destination when it works.
 
 ## 5. Across-tab live window, PiP, Multiview, settings (handoff step 5) — not started
 
