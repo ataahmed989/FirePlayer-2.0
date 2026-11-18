@@ -413,33 +413,36 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
                 }
             }
             h.row.setOnFocusChangeListener { _, has ->
-                if (!has) return@setOnFocusChangeListener
+                // A press that began on this row ends with it: its release elsewhere picks nothing.
+                if (!has) { press.cancel(); return@setOnFocusChangeListener }
                 main.removeCallbacks(showPending)
                 pendingScope = scopeOf(item)
                 if (pendingScope != null && !quietFocus) main.postDelayed(showPending, 350)
             }
-            // Center held on a group: its small window, instead of picking it on release (the long press is used up)
-            // or previewing it.
+            // Center held on a group: its small window, instead of picking it on release or previewing it. The press is
+            // read here, as the guide reads it ([PressHold]: the remote's repeats while held), not by Android's
+            // long-click timer, which the guide doesn't use and which a quick hold could miss.
             val entry = item as? Item.Entry
             val group = entry?.scope as? GuideScope.Group
-            if (entry != null && group != null) {
-                h.row.setOnLongClickListener { row ->
+            h.row.setOnLongClickListener(null)
+            h.row.isLongClickable = false
+            h.row.setOnKeyListener { row, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
                     main.removeCallbacks(showPending)
-                    callbacks?.onHold(group, entry.label, row)
-                    true
-                }
-            } else {
-                h.row.setOnLongClickListener(null)
-                h.row.isLongClickable = false
-            }
-            h.row.setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                when (keyCode) {
-                    // Center picks on release; held, a group's small window opens. Neither waits for the preview.
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                        main.removeCallbacks(showPending)
-                        false
+                    when (event.action) {
+                        KeyEvent.ACTION_DOWN -> {
+                            val held = press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)
+                            if (held && entry != null && group != null) callbacks?.onHold(group, entry.label, row)
+                        }
+                        // A short press: the row's own action (pick the scope, or fold/unfold a playlist).
+                        KeyEvent.ACTION_UP -> if (press.up(event.isCanceled)) row.performClick()
                     }
+                    return@setOnKeyListener true
+                }
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                // Any other key between a press and its release: that release picks nothing.
+                press.cancel()
+                when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         val s = scopeOf(item)
                         if (item is Item.Head && !item.expanded) { toggle(item); true }
@@ -466,6 +469,9 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             }
         }
     }
+
+    /** Center on a row: picks on release, or (on a group) opens its small window when held. One key at a time. */
+    private val press = PressHold(android.view.ViewConfiguration.getLongPressTimeout().toLong())
 
     private companion object {
         /** A wrap to a row far away glides only this many rows (the rest is a jump). */
