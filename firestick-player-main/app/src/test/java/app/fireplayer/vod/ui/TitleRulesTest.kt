@@ -18,6 +18,8 @@ import app.fireplayer.vod.data.Callouts
 import app.fireplayer.vod.playTarget
 import app.fireplayer.vod.ui.TitleFixtures.NOW
 import app.fireplayer.vod.ui.TitleFixtures.THIS_YEAR
+import app.fireplayer.vod.ui.TitleButtons.Which
+import app.fireplayer.vod.ui.TitleRules.Dir
 import app.fireplayer.vod.ui.TitleRules.Part
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -84,7 +86,7 @@ class TitleRulesTest {
 
             val seasons = TitleRules.seasonOrder(d.seasons)
             val pills = e.getJSONArray("season_pills").let { a -> (0 until a.length()).map { a.getString(it) } }
-            assertEquals(case, pills, if (TitleRules.showsPills(seasons)) seasons.map { TitleRules.seasonLabel(it.number) } else emptyList<String>())
+            assertEquals(case, pills, if (TitleRules.showsSeasonPicker(seasons)) seasons.map { TitleRules.seasonLabel(it.number) } else emptyList<String>())
 
             val all = seasons.flatMap { it.episodes }
             assertEquals(case, e.getInt("episodes_total"), all.size)
@@ -286,8 +288,8 @@ class TitleRulesTest {
         val order = TitleRules.seasonOrder(listOf(s0, s2, s1))
         assertEquals(listOf(1, 2, 0), order.map { it.number })
         assertEquals(listOf("Season 1", "Season 2", "Specials"), order.map { TitleRules.seasonLabel(it.number) })
-        assertTrue(TitleRules.showsPills(listOf(s1, s0)))
-        assertFalse(TitleRules.showsPills(listOf(s1)))
+        assertTrue(TitleRules.showsSeasonPicker(listOf(s1, s0)))
+        assertFalse(TitleRules.showsSeasonPicker(listOf(s1)))
         assertEquals(2, TitleRules.openingSeason(order, s2.episodes[0]))
         assertEquals(1, TitleRules.openingSeason(order, null))
         assertEquals(0, TitleRules.openingSeason(listOf(s0), null))
@@ -321,31 +323,102 @@ class TitleRulesTest {
     // ---- The D-pad map ----
 
     @Test
-    fun downAndUpBetweenTheParts() {
-        val show = TitleRules.Parts(pills = true, episodes = true, more = true)
-        // Down from the buttons skips the pills (reached going Up).
-        assertEquals(Part.EPISODES, TitleRules.down(Part.BUTTONS, show))
-        assertEquals(Part.EPISODES, TitleRules.down(Part.PILLS, show))
-        assertEquals(Part.MORE, TitleRules.down(Part.EPISODES, show))
-        assertNull(TitleRules.down(Part.MORE, show))
-        assertEquals(Part.EPISODES, TitleRules.up(Part.MORE, show))
-        assertEquals(Part.PILLS, TitleRules.up(Part.EPISODES, show))
-        assertEquals(Part.BUTTONS, TitleRules.up(Part.PILLS, show))
-        assertNull(TitleRules.up(Part.BUTTONS, show))
-        // One season: no pills; Up from the cards to the buttons.
-        val one = show.copy(pills = false)
-        assertEquals(Part.BUTTONS, TitleRules.up(Part.EPISODES, one))
-        // A film: More Like This right under the buttons, and back.
-        val film = TitleRules.Parts(pills = false, episodes = false, more = true)
-        assertEquals(Part.MORE, TitleRules.down(Part.BUTTONS, film))
-        assertEquals(Part.BUTTONS, TitleRules.up(Part.MORE, film))
-        assertNull(TitleRules.down(Part.BUTTONS, film.copy(more = false)))
+    fun aShowsPartsAreJoinedAsTheyAreLaidOut() {
+        val show = TitleRules.Parts(season = true, episodes = true, more = true)
+        fun go(from: Part, dir: Dir, has: TitleRules.Parts = show) = TitleRules.next(from, dir, has, isShow = true)
+        // The column: Right to the episodes, Down (past its last row) to More Like This under it; Left is the rail's.
+        assertEquals(Part.EPISODES, go(Part.BUTTONS, Dir.RIGHT))
+        assertEquals(Part.MORE, go(Part.BUTTONS, Dir.DOWN))
+        assertNull(go(Part.BUTTONS, Dir.UP))
+        assertNull(go(Part.BUTTONS, Dir.LEFT))
+        assertTrue(TitleRules.toRail(Part.BUTTONS, Dir.LEFT, isShow = true))
+        // The season dropdown sits above the pods: Down to them, Left to the column, nothing above or right of it.
+        assertEquals(Part.EPISODES, go(Part.SEASON, Dir.DOWN))
+        assertEquals(Part.BUTTONS, go(Part.SEASON, Dir.LEFT))
+        assertNull(go(Part.SEASON, Dir.UP))
+        assertNull(go(Part.SEASON, Dir.RIGHT))
+        // The pods: Up to the dropdown, Left (from the first) to the column, Down to More Like This.
+        assertEquals(Part.SEASON, go(Part.EPISODES, Dir.UP))
+        assertEquals(Part.BUTTONS, go(Part.EPISODES, Dir.LEFT))
+        assertEquals(Part.MORE, go(Part.EPISODES, Dir.DOWN))
+        assertNull(go(Part.EPISODES, Dir.RIGHT))
+        // More Like This under them all: Up to the pods; Left from its first poster is the rail's.
+        assertEquals(Part.EPISODES, go(Part.MORE, Dir.UP))
+        assertNull(go(Part.MORE, Dir.DOWN))
+        assertNull(go(Part.MORE, Dir.LEFT))
+        assertTrue(TitleRules.toRail(Part.MORE, Dir.LEFT, isShow = true))
+        for (p in listOf(Part.SEASON, Part.EPISODES)) assertFalse(TitleRules.toRail(p, Dir.LEFT, isShow = true))
+        for (d in listOf(Dir.UP, Dir.DOWN, Dir.RIGHT)) for (p in Part.values()) assertFalse(TitleRules.toRail(p, d, isShow = true))
+
+        // One season: no dropdown, nothing above the pods.
+        val one = show.copy(season = false)
+        assertNull(go(Part.EPISODES, Dir.UP, one))
+        // Episodes not known yet: Right from the column does nothing; with seasons but no pods, the dropdown.
+        val none = TitleRules.Parts(season = false, episodes = false, more = true)
+        assertNull(go(Part.BUTTONS, Dir.RIGHT, none))
+        assertEquals(Part.SEASON, go(Part.BUTTONS, Dir.RIGHT, none.copy(season = true)))
+        assertEquals(Part.MORE, go(Part.SEASON, Dir.DOWN, none.copy(season = true)))
+        assertEquals(Part.BUTTONS, go(Part.MORE, Dir.UP, none))
+        // No More Like This: nothing under the column or the pods.
+        assertNull(go(Part.BUTTONS, Dir.DOWN, show.copy(more = false)))
+        assertNull(go(Part.EPISODES, Dir.DOWN, show.copy(more = false)))
+    }
+
+    @Test
+    fun aFilmsMoreLikeThisIsBesideTheColumn() {
+        val film = TitleRules.Parts(season = false, episodes = false, more = true)
+        fun go(from: Part, dir: Dir, has: TitleRules.Parts = film) = TitleRules.next(from, dir, has, isShow = false)
+        assertEquals(Part.MORE, go(Part.BUTTONS, Dir.RIGHT))
+        assertNull(go(Part.BUTTONS, Dir.DOWN))
+        assertNull(go(Part.BUTTONS, Dir.RIGHT, film.copy(more = false)))
+        // Left from its first poster comes back to the column, never the rail; nothing is above or under it.
+        assertEquals(Part.BUTTONS, go(Part.MORE, Dir.LEFT))
+        assertFalse(TitleRules.toRail(Part.MORE, Dir.LEFT, isShow = false))
+        assertNull(go(Part.MORE, Dir.UP))
+        assertNull(go(Part.MORE, Dir.DOWN))
+        assertTrue(TitleRules.toRail(Part.BUTTONS, Dir.LEFT, isShow = false))
+    }
+
+    @Test
+    fun theActionColumnIsStackedWithTheCirclesSideBySide() {
+        val all: (Which) -> Boolean = { true }
+        fun step(from: Which, dir: Dir, can: (Which) -> Boolean = all) = TitleRules.buttonStep(from, dir, can)
+        // Down the column: Resume, Play from beginning, Sources, then (+); (⋯) is beside (+).
+        assertEquals(Which.RESTART, step(Which.PLAY, Dir.DOWN))
+        assertEquals(Which.SOURCES, step(Which.RESTART, Dir.DOWN))
+        assertEquals(Which.MY_LIST, step(Which.SOURCES, Dir.DOWN))
+        assertEquals(Which.MORE, step(Which.MY_LIST, Dir.RIGHT))
+        assertEquals(Which.MY_LIST, step(Which.MORE, Dir.LEFT))
+        // And back up: both circles go to Sources.
+        assertEquals(Which.SOURCES, step(Which.MY_LIST, Dir.UP))
+        assertEquals(Which.SOURCES, step(Which.MORE, Dir.UP))
+        assertEquals(Which.RESTART, step(Which.SOURCES, Dir.UP))
+        assertEquals(Which.PLAY, step(Which.RESTART, Dir.UP))
+        // Presses that leave the column: Up from Play (nowhere), Down from the circles, Left and Right off its sides.
+        assertNull(step(Which.PLAY, Dir.UP))
+        assertNull(step(Which.MY_LIST, Dir.DOWN))
+        assertNull(step(Which.MORE, Dir.DOWN))
+        assertNull(step(Which.MORE, Dir.RIGHT))
+        assertNull(step(Which.MY_LIST, Dir.LEFT))
+        for (w in listOf(Which.PLAY, Which.RESTART, Which.SOURCES)) {
+            assertNull(step(w, Dir.LEFT))
+            assertNull(step(w, Dir.RIGHT))
+        }
+        // No resume point: Play from beginning is gone, and passed by both ways.
+        val noRestart: (Which) -> Boolean = { it != Which.RESTART }
+        assertEquals(Which.SOURCES, step(Which.PLAY, Dir.DOWN, noRestart))
+        assertEquals(Which.PLAY, step(Which.SOURCES, Dir.UP, noRestart))
+        // A film that isn't out: Play dimmed, no Sources; only the circles take focus.
+        val circles: (Which) -> Boolean = { it == Which.MY_LIST || it == Which.MORE }
+        assertNull(step(Which.MY_LIST, Dir.UP, circles))
+        assertEquals(Which.MORE, step(Which.MY_LIST, Dir.RIGHT, circles))
+        assertEquals(Which.MY_LIST, step(Which.PLAY, Dir.DOWN, circles))
     }
 
     @Test
     fun backAndTheGlide() {
         assertTrue(TitleRules.backLeaves(Part.BUTTONS))
-        for (p in listOf(Part.PILLS, Part.EPISODES, Part.MORE)) assertFalse(TitleRules.backLeaves(p))
+        for (p in listOf(Part.SEASON, Part.EPISODES, Part.MORE)) assertFalse(TitleRules.backLeaves(p))
         assertTrue(TitleRules.glided(Part.MORE, isShow = true))
         assertFalse(TitleRules.glided(Part.MORE, isShow = false))
         assertFalse(TitleRules.glided(Part.EPISODES, isShow = true))

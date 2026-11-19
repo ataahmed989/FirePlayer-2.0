@@ -17,16 +17,17 @@ import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.ImageTarget
 
 /**
- * The title page's header block (design-brief.md §6.4, layout A), at fixed sizes so new words only redraw it: the
- * title (its logo, or its name in 32 sp, 24 sp when long), the facts line with at most one callout chip beside it,
- * three lines of story, one cast line, the source line (kept empty until step 3 fills it, its height reserved so the
- * buttons never move), then the buttons ([TitleButtons]). Its text styles are the page headers' ([VodSizes]); while an
- * episode card is chosen it shows that episode's facts and overview instead ([follow]), the title and backdrop staying.
- * A story that changes once shown (TMDB's overview arriving after Cinemeta's) fades out and in, with the page headers'
- * text fade ([VodSizes.HEADER_TEXT_FADE_MS]).
+ * The title page's text block (Design-References/redesign-2026-11-19, concept 3), at fixed sizes so new words only
+ * redraw it: the large title (its logo, or its name in 40 sp, 28 sp when long), the compact facts line with at most
+ * one callout chip beside it, two lines of story, and the source line (one compact line: which source Play would
+ * start, or the wait for the add-ons; its height reserved, so nothing under it moves). The cast is in ⋯ › Details;
+ * the buttons are the page's action column ([TitleButtons]), under this block. While an episode is chosen it shows
+ * that episode's facts and overview instead ([follow]), the title and backdrop staying. A story that changes once
+ * shown (TMDB's overview arriving after Cinemeta's) fades out and in, with the page headers' text fade
+ * ([VodSizes.HEADER_TEXT_FADE_MS]).
  */
 @SuppressLint("ViewConstructor")
-class TitleHeader(context: Context, private val t: Tokens, buttonsListener: TitleButtons.Listener) : LinearLayout(context) {
+class TitleHeader(context: Context, private val t: Tokens) : LinearLayout(context) {
 
     /** The title's logo, drawn whole inside its box, at its left and bottom. */
     class TitleLogo(context: Context) : View(context), ImageTarget {
@@ -63,13 +64,11 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
     val logo = TitleLogo(context)
     private val name = t.label(context, VodSizes.TITLE_NAME).apply { gravity = Gravity.BOTTOM or Gravity.START }
     private val factsRow = FrameLayout(context)
-    private val facts = t.label(context, VodSizes.FACTS).apply { gravity = Gravity.CENTER_VERTICAL }
+    private val facts = t.label(context, VodSizes.TITLE_FACTS).apply { gravity = Gravity.CENTER_VERTICAL }
     private val callout: TextView = Buttons.infoChip(context, t, VodSizes.CALLOUT, VodSizes.CALLOUT_PAD)
-    private val story = t.label(context, VodSizes.STORY).apply { setLines(VodSizes.STORY_LINES) }
-    private val cast = t.label(context, VodSizes.CAST)
-    /** Where step 3 says which add-on answered; empty now, its height kept. */
+    private val story = t.label(context, VodSizes.TITLE_STORY).apply { setLines(VodSizes.STORY_LINES) }
+    /** Which source Play would start, or the wait for the add-ons; empty until then, its height kept. */
     val source = t.label(context, VodSizes.SOURCE)
-    val buttons = TitleButtons(context, t, buttonsListener)
 
     private val factsW = t.dp(VodSizes.tabHeaderW())
     private var showFacts = ""
@@ -81,7 +80,7 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
 
     init {
         orientation = VERTICAL
-        // Glass pads and the circles' names draw outside the views.
+        // The callout's glass pad draws outside its view.
         clipChildren = false
         clipToPadding = false
         // Everything starts at the content's x (screen 94 dp), where the rows' cards do.
@@ -100,12 +99,10 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
 
         val textW = t.dp(VodSizes.TITLE_TEXT_W)
         addView(story, LayoutParams(textW, story.lineHeight * VodSizes.STORY_LINES).apply { topMargin = t.dp(VodSizes.STORY_GAP) })
-        addView(cast, LayoutParams(textW, cast.lineHeight).apply { topMargin = t.dp(VodSizes.CAST_GAP) })
         addView(source, LayoutParams(factsW, source.lineHeight).apply { topMargin = t.dp(VodSizes.SOURCE_GAP) })
-        addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.BUTTONS_GAP_ABOVE) })
     }
 
-    /** The name in the title box: 32 sp, or 24 sp on one line (cut short) when it's wider than the box at 32 sp. */
+    /** The name in the title box: 40 sp, or 28 sp on one line (cut short) when it's wider than the box at 40 sp. */
     fun showName(text: String) {
         if (name.visibility == VISIBLE && name.text.toString() == text) return
         val full = name.paint.let { p ->
@@ -130,32 +127,29 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
         logo.visibility = VISIBLE
     }
 
-    /** The title's facts, its callout (or none), story and cast line. While following an episode, kept for later. */
-    fun show(factsLine: String, calloutText: String?, storyText: String, castLine: String) {
+    /** The title's facts, its callout (or none) and story. While following an episode, kept for later. */
+    fun show(factsLine: String, calloutText: String?, storyText: String) {
         showFacts = factsLine
         showStory = storyText
         showCallout = calloutText
-        if (cast.text.toString() != castLine) cast.text = castLine
         if (!following) applyTitleText(fadeStory = true)
     }
 
     /** The story as it shows for the title (kept when a later answer has none; an episode without an overview shows it). */
     val storyShown: String get() = showStory
 
-    /** An episode card is chosen: its facts and overview; the callout and cast line hide (their room kept). */
+    /** An episode is chosen: its facts and overview; the callout hides. */
     fun follow(factsLine: String, overview: String) {
         following = true
         setFacts(factsLine)
         setStory(overview, fade = false)
         callout.visibility = INVISIBLE
-        cast.visibility = INVISIBLE
     }
 
     /** Back to the title's own words. */
     fun unfollow() {
         if (!following) return
         following = false
-        cast.visibility = VISIBLE
         applyTitleText(fadeStory = false)
     }
 
@@ -214,11 +208,7 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
         if (source.text.toString() != t) source.text = t
     }
 
-    /** The buttons' top in this block, px (where the page glides to on a show). */
-    fun buttonsTop(): Int = buttons.top
-
     fun applyLook() {
         app.fireplayer.ui.Glass.background(callout, app.fireplayer.ui.Glass.Kind.CHIP)
-        buttons.applyLook()
     }
 }

@@ -79,30 +79,84 @@ class VodSizesTitleTest {
         // The two caption lines fit under the still, with their gaps.
         val lines = VodSizes.EPISODE_CAPTION_GAP + VodSizes.EPISODE_TITLE.lineSp + VodSizes.EPISODE_LINE_GAP + VodSizes.EPISODE_META.lineSp
         assertTrue(VodSizes.pictureH(RowStyle.EPISODE) + lines <= VodSizes.EPISODE_ITEM_H)
-        // Season pills are chips: as step 1's genre row, without the title line.
+        // Season chips (the rows' SEASONS style): as step 1's genre row.
         near(37.44f, VodSizes.stripH(RowStyle.SEASONS))
-        near(47.44f, VodSizes.pillsBandH())
-        near(178.08f, VodSizes.episodesBandH())
     }
 
     @Test
-    fun theHeaderBlockHoldsItsLinesAndButtons() {
-        val buttons = VodSizes.titleButtonsTop()
-        // Title box, facts row, three lines of story, the cast and source lines, then the buttons and the circles' names.
-        near(34f, VodSizes.TITLE_TOP)
-        near(106f, VodSizes.titleFactsTop())
-        near(136f, VodSizes.titleStoryTop())
-        near(52.8f, VodSizes.titleStoryH())
-        near(244.2f, buttons)
-        val labelRoom = 4f + 11f * TextStyle.LINE + 2f
-        assertTrue(buttons + VodSizes.BUTTON_H + labelRoom <= VodSizes.TITLE_HEADER_H)
-        // The widest button row (a show mid-episode) fits the content's width.
-        val perChar = 6.9f
-        val widest = (24 * perChar + 2 * VodSizes.BUTTON_PAD + VodSizes.BUTTON_ICON + VodSizes.BUTTON_ICON_GAP) +
-            (19 * perChar + 2 * VodSizes.BUTTON_PAD + VodSizes.BUTTON_ICON + VodSizes.BUTTON_ICON_GAP) +
-            (8 * perChar + 2 * VodSizes.BUTTON_PAD + VodSizes.BUTTON_ICON + VodSizes.BUTTON_ICON_GAP) +
-            (7 * perChar + 2 * VodSizes.BUTTON_PAD) + 2 * VodSizes.BUTTON_H + 5 * VodSizes.BUTTON_GAP
-        assertTrue(widest < VodSizes.tabHeaderW())
+    fun theTextBlockHoldsItsLines() {
+        // The title box, the facts row, two lines of story, then the source line, and 8 dp under it.
+        near(30f, VodSizes.TITLE_TOP)
+        near(122f, VodSizes.titleFactsTop())
+        near(150f, VodSizes.titleStoryTop())
+        near(37.6f, VodSizes.titleStoryH())
+        near(193.6f, VodSizes.titleSourceTop())
+        near(VodSizes.TITLE_HEADER_H - 8f, VodSizes.titleSourceTop() + VodSizes.SOURCE.lineSp)
+        // The facts and story are the page headers' styles a size up; a name at its large size fits the title box.
+        assertEquals(VodSizes.FACTS.copy(sp = 14f), VodSizes.TITLE_FACTS)
+        assertEquals(VodSizes.STORY.copy(sp = 14f), VodSizes.TITLE_STORY)
+        assertTrue(VodSizes.TITLE_NAME.lineSp <= VodSizes.TITLE_BOX_H && VodSizes.LOGO_W <= VodSizes.TITLE_BOX_W)
+    }
+
+    @Test
+    fun theStageHoldsTheColumnAndThePodsBesideIt() {
+        // The column starts at the content's x; the pods a gap after it, at screen x 334.
+        near(276f, VodSizes.stageX())
+        near(334f, VodSizes.RAIL + VodSizes.stageX())
+        // About two pods and part of a third fit from there to the screen's right edge, also with the first one grown.
+        val room = VodSizes.SCREEN_W - (VodSizes.RAIL + VodSizes.stageX())
+        val third = room - 2 * VodSizes.podPitch()
+        assertTrue(third > 0.2f * VodSizes.POD_W && third < 0.5f * VodSizes.POD_W)
+        assertTrue(third - VodSizes.podExtra() > 0.15f * VodSizes.POD_W)
+        // A pod: a 16:9 still and its base, which holds its two lines.
+        near(VodSizes.POD_W * 9f / 16f, VodSizes.POD_PICTURE_H, 0.5f)
+        near(200f, VodSizes.podH())
+        val lines = VodSizes.POD_TEXT_TOP + VodSizes.POD_TITLE.lineSp + VodSizes.POD_LINE_GAP + VodSizes.POD_META.lineSp
+        assertTrue(lines + 6f <= VodSizes.POD_BASE_H)
+        // The chosen pod grows about its middle: its growth and ring stay inside the room above and below, and the
+        // ring inside the gap left of it (where the pods' box cuts).
+        val grows = VodSizes.podH() * VodSizes.POD_GROW / 2f + VodSizes.RING
+        assertTrue(grows <= VodSizes.POD_ROOM)
+        assertTrue(VodSizes.RING < VodSizes.POD_GAP)
+        near(220f, VodSizes.podsBandH())
+        // The season dropdown's row ends above that room; the first button is level with the pods' top.
+        assertTrue(VodSizes.SEASON_TOP + VodSizes.SEASON_H <= VodSizes.STAGE_ROW_TOP - VodSizes.POD_ROOM)
+        // The column with all its buttons ends about level with the pods, its widest pill inside it.
+        near(204f, VodSizes.actionsH())
+        assertTrue(kotlin.math.abs(VodSizes.actionsH() - VodSizes.podH()) <= 8f)
+        // A focused pill (grown 1.04) stays clear of the pods' box.
+        assertTrue(VodSizes.ACTIONS_W * 0.02f < VodSizes.STAGE_GAP - VodSizes.POD_GAP)
+        // A pill's words at about 0.55 of their size a letter: "Resume S2 E5 · 12m left" fits at the buttons' size beside
+        // its icon, a long "Resume S12 E15 · 1h 12m left" a size down; the wait for an add-on (no icon) a size down too.
+        near(166f, VodSizes.pillTextW(icon = true))
+        near(188f, VodSizes.pillTextW(icon = false))
+        assertTrue(23 * 0.55f * VodSizes.BUTTON.sp <= VodSizes.pillTextW(icon = true))
+        assertTrue(26 * 0.55f * VodSizes.BUTTON_LONG.sp <= VodSizes.pillTextW(icon = true))
+        assertTrue(29 * 0.55f * VodSizes.BUTTON_LONG.sp <= VodSizes.pillTextW(icon = false))
+    }
+
+    @Test
+    fun theSeasonListShowsSixRowsAndGlidesTheRest() {
+        // Up to six rows show; fewer seasons make a shorter window.
+        near(2 * 8f + 2 * 34f + 4f, VodSizes.seasonListH(2))
+        near(2 * 8f + 6 * 34f + 5 * 4f, VodSizes.seasonListH(6))
+        near(VodSizes.seasonListH(6), VodSizes.seasonListH(30))
+        // Under the dropdown, a long list still ends inside the screen.
+        val top = VodSizes.TITLE_HEADER_H + VodSizes.SEASON_TOP + VodSizes.SEASON_H + VodSizes.SEASON_LIST_GAP
+        assertTrue(top + VodSizes.seasonListH(30) <= VodSizes.SCREEN_H - VodSizes.SEASON_LIST_INSET)
+        // A short list never moves.
+        assertEquals(0, VodSizes.seasonListFirst(3, 0, 4))
+        assertEquals(0, VodSizes.seasonListFirst(5, 0, 6))
+        // A long one moves only as far as the chosen row needs, and never past its ends.
+        assertEquals(0, VodSizes.seasonListFirst(5, 0, 12))
+        assertEquals(1, VodSizes.seasonListFirst(6, 0, 12))
+        assertEquals(1, VodSizes.seasonListFirst(3, 1, 12))
+        assertEquals(0, VodSizes.seasonListFirst(0, 1, 12))
+        assertEquals(6, VodSizes.seasonListFirst(11, 4, 12))
+        // Opened on season 9 of 12 (asked for with that row in the middle): rows 6 to 11 show.
+        assertEquals(5, VodSizes.seasonListFirst(8, 8 - VodSizes.SEASON_LIST_ROWS / 2, 12))
+        assertEquals(0, VodSizes.seasonListFirst(1, 1 - VodSizes.SEASON_LIST_ROWS / 2, 12))
+        assertEquals(6, VodSizes.seasonListFirst(11, 11 - VodSizes.SEASON_LIST_ROWS / 2, 12))
     }
 
     @Test
@@ -118,12 +172,12 @@ class VodSizesTitleTest {
         assertEquals(200, VodSizes.episodeWindow(200, 150, 0))
         assertEquals(100, VodSizes.episodeWindow(100, 95, 80))
         // The Play target far into the season: held from the start.
-        assertTrue(VodSizes.episodeWindow(200, 120, 0) > 120 + VodSizes.EPISODE_BIND_AFTER)
+        assertTrue(VodSizes.episodeWindow(200, 120, 0) > 120 + VodSizes.POD_BIND_AFTER)
     }
 
     @Test
     fun theHeaderStartsWhereTheRowsDo() {
-        // The text column and the buttons start at the content's x (screen 94 dp), as the rows' strips (PAGE_X) do.
+        // The text block and the action column start at the content's x (screen 94 dp), as the rows' strips (PAGE_X) do.
         assertEquals(VodSizes.PAGE_X, VodSizes.titleTextX())
         assertEquals(VodSizes.CONTENT_SCREEN_X, VodSizes.RAIL + VodSizes.titleTextX())
         // The facts row (the tab headers' width) then ends 24 dp from the screen's right edge; the title box inside it.
@@ -132,40 +186,46 @@ class VodSizesTitleTest {
     }
 
     @Test
-    fun aFilmsMoreLikeThisFitsUnderTheButtons() {
-        val end = VodSizes.TITLE_HEADER_H + VodSizes.bandH(RowStyle.POSTER)
-        near(533.92f, end)
+    fun aFilmsMoreLikeThisFitsBesideTheColumn() {
+        // Its posters start level with the first button, and its band ends on screen.
+        near(VodSizes.STAGE_ROW_TOP, VodSizes.filmMoreTop() + VodSizes.stripTop() + VodSizes.cardTop(RowStyle.POSTER))
+        val end = VodSizes.TITLE_HEADER_H + VodSizes.filmMoreTop() + VodSizes.bandH(RowStyle.POSTER)
         assertTrue(end <= VodSizes.SCREEN_H)
+        // The stage holds the band, and the whole column with the circles' names.
+        assertTrue(VodSizes.filmStageH() >= VodSizes.filmMoreTop() + VodSizes.bandH(RowStyle.POSTER))
+        assertTrue(VodSizes.filmStageH() >= VodSizes.STAGE_ROW_TOP + VodSizes.actionsH() + VodSizes.CIRCLE_NAME_ROOM)
+        assertTrue(VodSizes.TITLE_HEADER_H + VodSizes.STAGE_ROW_TOP + VodSizes.actionsH() + VodSizes.CIRCLE_NAME_ROOM <= VodSizes.SCREEN_H)
     }
 
     @Test
     fun aShowGlidesUpForMoreLikeThis() {
-        val buttons = VodSizes.titleButtonsTop()
-        // With season pills: More Like This' title starts just above the screen's bottom (cut there, a hint).
-        val moreTop = VodSizes.TITLE_HEADER_H + VodSizes.pillsBandH() + VodSizes.episodesBandH()
-        near(527.52f, moreTop)
-        assertTrue(moreTop < VodSizes.SCREEN_H && moreTop + VodSizes.ROW_TITLE_STYLE.lineSp > VodSizes.SCREEN_H)
+        // More Like This starts under the stage: its title shows above the screen's bottom (a hint), its posters don't.
+        val moreTop = VodSizes.TITLE_HEADER_H + VodSizes.showStageH()
+        near(504f, moreTop)
+        assertTrue(moreTop + VodSizes.ROW_TITLE_STYLE.lineSp < VodSizes.SCREEN_H)
+        assertTrue(moreTop + VodSizes.stripTop() + VodSizes.cardTop(RowStyle.POSTER) >= VodSizes.SCREEN_H)
         val moreBottom = moreTop + VodSizes.bandH(RowStyle.POSTER)
-        val g = VodSizes.glide(moreBottom, buttons)
-        // Glided: the buttons 14 dp from the top, the text above them gone, More Like This wholly on screen.
-        near(buttons - VodSizes.GLIDE_KEEP_TOP, g)
+        val rowTop = VodSizes.TITLE_HEADER_H + VodSizes.SEASON_TOP
+        val g = VodSizes.glide(moreBottom, rowTop)
+        // Glided: More Like This wholly on screen, and all the text above the season dropdown's row gone.
         assertTrue(moreBottom - g <= VodSizes.SCREEN_H)
+        assertTrue(g >= rowTop - VodSizes.GLIDE_KEEP_TOP)
         assertTrue(VodSizes.titleSourceTop() + VodSizes.SOURCE.lineSp - g <= 0.01f)
-        // One season (no pills): the same glide.
-        val oneBottom = VodSizes.TITLE_HEADER_H + VodSizes.episodesBandH() + VodSizes.bandH(RowStyle.POSTER)
-        near(buttons - VodSizes.GLIDE_KEEP_TOP, VodSizes.glide(oneBottom, buttons))
         // A page with nothing below never glides past its own top.
         assertEquals(0f, VodSizes.glide(100f, 10f))
     }
 
     @Test
     fun theTitlePagesPicturesStayInBudget() {
-        // The backdrop at half the screen in ARGB (its fade baked in), an episode still at its shown size in RGB_565.
+        // The backdrop at half the screen in ARGB (its fade baked in); a pod's still at its shown size in RGB_565, and
+        // the handful bound at once (the one before the chosen pod, it, and the ones after) well under 2 MB.
         assertEquals(2_073_600, VodSizes.TITLE_ART_W * VodSizes.TITLE_ART_H * 4)
-        assertEquals(148_512, Math.ceil(VodSizes.WIDE_W * 2.0).toInt() * Math.ceil(VodSizes.WIDE_H * 2.0).toInt() * 2)
-        // The logo is kept whole inside 400 x 155 px, never enlarged.
-        assertEquals(400 to 155, ImageFit.inside(800, 310, VodSizes.LOGO_DECODE_W, VodSizes.LOGO_DECODE_H))
-        assertEquals(400 to 80, ImageFit.inside(500, 100, VodSizes.LOGO_DECODE_W, VodSizes.LOGO_DECODE_H))
+        val still = Math.ceil(VodSizes.POD_W * 2.0).toInt() * Math.ceil(VodSizes.POD_PICTURE_H * 2.0).toInt() * 2
+        assertEquals(312_576, still)
+        assertTrue(still * (2 + VodSizes.POD_BIND_AFTER) < 2_000_000)
+        // The logo is kept whole inside 800 x 180 px (the title box's 440 x 84 dp on the TV is 880 x 168), never enlarged.
+        assertEquals(800 to 180, ImageFit.inside(1600, 360, VodSizes.LOGO_DECODE_W, VodSizes.LOGO_DECODE_H))
+        assertEquals(800 to 160, ImageFit.inside(1000, 200, VodSizes.LOGO_DECODE_W, VodSizes.LOGO_DECODE_H))
         assertEquals(200 to 50, ImageFit.inside(200, 50, VodSizes.LOGO_DECODE_W, VodSizes.LOGO_DECODE_H))
         assertEquals(1 to 1, ImageFit.inside(0, 50, 400, 155))
     }

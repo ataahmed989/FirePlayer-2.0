@@ -323,50 +323,102 @@ internal object VodSizes {
     val RECENT_NOW = TextStyle(12f, Weight.REGULAR, Ink.MUTED)
     val RECENT_EMPTY = TextStyle(13f, Weight.REGULAR, Ink.MUTED)
 
-    // ---- The title page (design-brief.md §6.4, layout A) ----
+    // ---- The title page (Design-References/redesign-2026-11-19: concept 3 without its Episodes button) ----
 
-    /** The header block: title box, facts row, story, cast line, source line, buttons (fixed, so words only redraw). */
-    const val TITLE_TOP = 34f
+    /** The text block: the title box, the facts row and its callout, the story, the source line (fixed, so words only redraw). */
+    const val TITLE_TOP = 30f
     const val TITLE_BOX_W = 560f
-    const val TITLE_BOX_H = 64f
+    const val TITLE_BOX_H = 84f
     /** The logo fits inside this box (left and bottom aligned in the title box); decoded at most this size, px. */
-    const val LOGO_W = 320f
-    const val LOGO_DECODE_W = 400
-    const val LOGO_DECODE_H = 155
-    val TITLE_NAME = TextStyle(32f, Weight.BOLD)
-    /** A name too wide for the title box at 32 sp: one line at 24 sp, cut short. */
-    val TITLE_NAME_LONG = TextStyle(24f, Weight.BOLD)
+    const val LOGO_W = 440f
+    const val LOGO_DECODE_W = 800
+    const val LOGO_DECODE_H = 180
+    val TITLE_NAME = TextStyle(40f, Weight.BOLD)
+    /** A name too wide for the title box at 40 sp: one line at 28 sp, cut short. */
+    val TITLE_NAME_LONG = TextStyle(28f, Weight.BOLD)
     const val FACTS_GAP = 8f
     const val FACTS_ROW_H = 22f
+    /** The facts and the story: the page headers' styles ([FACTS], [STORY]), a size up. */
+    val TITLE_FACTS = FACTS.copy(sp = 14f)
+    val TITLE_STORY = STORY.copy(sp = 14f)
     val CALLOUT = TextStyle(11.5f, Weight.SEMIBOLD)
     const val CALLOUT_PAD = 9f
     const val CALLOUT_GAP = 10f
-    const val STORY_GAP = 8f
-    const val STORY_LINES = 3
+    const val STORY_GAP = 6f
+    const val STORY_LINES = 2
     const val TITLE_TEXT_W = 520f
-    const val CAST_GAP = 6f
-    val CAST = TextStyle(12.5f, Weight.REGULAR, Ink.MUTED)
     const val SOURCE_GAP = 6f
     val SOURCE = TextStyle(12f, Weight.REGULAR, Ink.MUTED)
-    const val BUTTONS_GAP_ABOVE = 14f
-
-    // Buttons (ui/Buttons.kt draws them; these are the title page's).
-    const val BUTTON_H = 34f
-    val BUTTON = TextStyle(12.5f, Weight.SEMIBOLD)
-    const val BUTTON_PAD = 16f
-    const val BUTTON_GAP = 10f
-    const val BUTTON_ICON = 14f
-    const val BUTTON_ICON_GAP = 6f
-    const val CIRCLE_ICON = 16f
-    const val PILL_PROGRESS_H = 2f
-    const val PILL_PROGRESS_BOTTOM = 5f
-    /** The fixed header block's height, and the gap under it (the rows start right under the buttons' labels). */
-    const val TITLE_HEADER_H = 302f
+    /** The text block's height (its lines, and 8 dp under the source line), and the gap under it. */
+    const val TITLE_HEADER_H = 216f
     const val TITLE_HEADER_GAP = 0f
-    /** Under the season pills, before the episode cards. */
-    const val PILLS_GAP = 10f
 
-    // Episode cards: a 16:9 still at the wide cards' size, two caption lines under it.
+    // The stage under the text block: the action column on the left; right of it a show's season dropdown, the
+    // "Episodes" heading and the episode pods, or a film's More Like This.
+    /** The action column: Play / Resume, Play from beginning and Sources (pills as wide as it), then (+) and (⋯). */
+    const val ACTIONS_W = 216f
+    const val BUTTON_H = 42f
+    val BUTTON = TextStyle(13f, Weight.SEMIBOLD)
+    /** A pill's words when they'd be cut short at that size ("Resume S12 E15 · 1h 12m left", the wait for the add-ons). */
+    val BUTTON_LONG = TextStyle(11.5f, Weight.SEMIBOLD)
+    const val BUTTON_PAD = 14f
+    const val BUTTON_GAP = 12f
+    const val BUTTON_ICON = 15f
+    const val BUTTON_ICON_GAP = 7f
+    const val CIRCLE_ICON = 18f
+    const val PILL_PROGRESS_H = 2f
+    const val PILL_PROGRESS_BOTTOM = 6f
+    /** The circles' names hang under them while one is chosen: their room under the column. */
+    const val CIRCLE_NAME_ROOM = 20f
+    /** From the column to what's right of it. */
+    const val STAGE_GAP = 24f
+    /** The first button's top in the stage; the pods (and a film's posters) start level with it. */
+    const val STAGE_ROW_TOP = 56f
+    /** The season dropdown and the heading beside it: their top in the stage, their height, the gap between them. */
+    const val SEASON_TOP = 6f
+    const val SEASON_H = 34f
+    val SEASON = TextStyle(13.5f, Weight.SEMIBOLD)
+    const val SEASON_PAD = 16f
+    const val SEASON_ICON = 14f
+    const val SEASON_ICON_GAP = 8f
+    const val SEASON_HEADING_GAP = 14f
+    /** "Episodes": a heading (never a button), the row titles' colour. */
+    val EPISODES_HEADING = ROW_TITLE_STYLE.copy(sp = 19f)
+
+    // The season dropdown's list: a small glass window under the dropdown; more seasons than fit scroll inside it.
+    const val SEASON_LIST_W = 176f
+    const val SEASON_LIST_PAD = 8f
+    const val SEASON_LIST_ROW_H = 34f
+    const val SEASON_LIST_ROW_GAP = 4f
+    const val SEASON_LIST_ROWS = 6
+    const val SEASON_LIST_GAP = 6f
+    const val SEASON_LIST_INSET = 12f
+    const val SEASON_LIST_MS = 120L
+
+    // Episode pods: a 16:9 still over an information base ("E1 · A Shadow of the Past", "1h 7m · Sep 1, 2022"), about
+    // two and part of a third across beside the column; the chosen one grows a little, with the cards' white ring.
+    const val POD_W = 264f
+    const val POD_PICTURE_H = 148f
+    const val POD_BASE_H = 52f
+    const val POD_GAP = GAP
+    const val POD_GROW = 0.06f
+    const val POD_TEXT_SIDE = 12f
+    const val POD_TEXT_TOP = 9f
+    const val POD_LINE_GAP = 3f
+    val POD_TITLE = TextStyle(13.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
+    val POD_META = TextStyle(12f, Weight.REGULAR, Ink.OWN, 0xFFA9B1BA.toInt())
+    /** Room above and below the pods for the chosen one's growth and its ring. */
+    const val POD_ROOM = 10f
+    /**
+     * Under that room, before a show's More Like This: its title then shows above the screen's bottom (a hint) while
+     * its posters start just below it (so they hold no pictures until the page glides up).
+     */
+    const val STAGE_BOTTOM = 22f
+    /** Pictures bound after the chosen pod (one fewer with focus in More Like This); posters (6 on a show). */
+    const val POD_BIND_AFTER = 3
+    const val POSTER_BIND_AFTER = 7
+
+    // Episode cards as the rows draw them (CardView's EPISODE kind): a 16:9 still, two caption lines under it.
     const val EPISODE_ITEM_H = 138f
     const val EPISODE_CAPTION_GAP = 6f
     const val EPISODE_LINE_GAP = 2f
@@ -378,7 +430,7 @@ internal object VodSizes {
     const val WATCHED_MARK = "✓"
     const val NEW_BADGE = "NEW"
 
-    /** Gliding up on a show keeps the buttons this far from the top (no cut line of text above them). */
+    /** Gliding up on a show keeps the season dropdown's row this far from the top (no cut line of text above it). */
     const val GLIDE_KEEP_TOP = 14f
     /** The backdrop: decoded at half the screen (px), the preview smaller; its crossfade. */
     const val TITLE_ART_W = 960
@@ -393,14 +445,11 @@ internal object VodSizes {
     const val TITLE_FADE_BOTTOM_TO = 0.60f
     /** The logo is used if it's ready this soon after opening; otherwise the name, for the whole visit. */
     const val LOGO_WAIT_MS = 300L
-    /** The season pills' settle and the header's follow delay (the Episodes sheet's 160 ms). */
+    /** The header's follow delay once focus rests on an episode (the Episodes sheet's 160 ms). */
     const val SETTLE_MS = 160L
     const val MLT_CARDS = 15
-    /** Pictures bound after the chosen card: episodes (4 with focus in More Like This), posters (6 on a show). */
-    const val EPISODE_BIND_AFTER = 5
-    const val POSTER_BIND_AFTER = 7
     /**
-     * A long season's episode row (a daily show's 200) holds its cards this many at a time, and this many more once
+     * A long season's episode row (a daily show's 200) holds its pods this many at a time, and this many more once
      * focus comes within [EPISODE_AHEAD] of the last one held ([episodeWindow]).
      */
     const val EPISODE_WINDOW = 40
@@ -527,24 +576,68 @@ internal object VodSizes {
 
     // ---- The title page's layout (the page reads real view positions; these say where they come out) ----
 
-    /** The header block's left edge in the page: the content's x, where the rows' strips start ([PAGE_X]). */
+    /** The text block's and the action column's left edge in the page: the content's x ([PAGE_X]). */
     fun titleTextX(): Float = PAGE_X
 
     /** The facts row's top: under the title box. */
     fun titleFactsTop(): Float = TITLE_TOP + TITLE_BOX_H + FACTS_GAP
 
-    /** The story's top and height: three 13 sp lines with their 2 dp gaps (Figtree's line is 1.2 x its size). */
+    /** The story's top and height: two 14 sp lines with their 2 dp gaps (Figtree's line is 1.2 x its size). */
     fun titleStoryTop(): Float = titleFactsTop() + FACTS_ROW_H + STORY_GAP
-    fun titleStoryH(): Float = STORY_LINES * (STORY.lineSp + STORY.lineGap)
+    fun titleStoryH(): Float = STORY_LINES * (TITLE_STORY.lineSp + TITLE_STORY.lineGap)
 
-    fun titleCastTop(): Float = titleStoryTop() + titleStoryH() + CAST_GAP
-    fun titleSourceTop(): Float = titleCastTop() + CAST.lineSp + SOURCE_GAP
-    fun titleButtonsTop(): Float = titleSourceTop() + SOURCE.lineSp + BUTTONS_GAP_ABOVE
+    fun titleSourceTop(): Float = titleStoryTop() + titleStoryH() + SOURCE_GAP
+
+    /** Where the stage's right part starts in the page (pods, the season dropdown, a film's posters). */
+    fun stageX(): Float = PAGE_X + ACTIONS_W + STAGE_GAP
+
+    /** The room for a pill's words in the column: between its padding, after its icon when it has one. */
+    fun pillTextW(icon: Boolean): Float = ACTIONS_W - 2 * BUTTON_PAD - if (icon) BUTTON_ICON + BUTTON_ICON_GAP else 0f
+
+    /** The action column with all it can hold: three pills and the circles, [BUTTON_GAP] apart. */
+    fun actionsH(): Float = 4 * BUTTON_H + 3 * BUTTON_GAP
+
+    /** A pod: its still and its base; from one pod's left edge to the next one's; how far the next ones make room. */
+    fun podH(): Float = POD_PICTURE_H + POD_BASE_H
+    fun podPitch(): Float = POD_W + POD_GAP
+    fun podExtra(): Float = POD_W * POD_GROW
+
+    /** The pods' band in the stage: the pods and [POD_ROOM] above and below them. */
+    fun podsBandH(): Float = podH() + 2 * POD_ROOM
+
+    /** A show's stage: down to the room under the pods, then [STAGE_BOTTOM] (More Like This starts under it). */
+    fun showStageH(): Float = STAGE_ROW_TOP + podH() + POD_ROOM + STAGE_BOTTOM
+
+    /** A film's More Like This in the stage: its band's top, so its posters start level with the first button. */
+    fun filmMoreTop(): Float = (STAGE_ROW_TOP - stripTop() - cardTop(RowStyle.POSTER)).coerceAtLeast(0f)
+
+    /** A film's stage: its More Like This band, or the whole action column and the circles' names if that's taller. */
+    fun filmStageH(): Float = maxOf(filmMoreTop() + bandH(RowStyle.POSTER), STAGE_ROW_TOP + actionsH() + CIRCLE_NAME_ROOM)
+
+    /** The season list's height with [seasons] in it: at most [SEASON_LIST_ROWS] rows show, the rest scroll. */
+    fun seasonListH(seasons: Int): Float {
+        val rows = seasons.coerceIn(1, SEASON_LIST_ROWS)
+        return 2 * SEASON_LIST_PAD + rows * SEASON_LIST_ROW_H + (rows - 1) * SEASON_LIST_ROW_GAP
+    }
 
     /**
-     * How many of a season's [total] episode cards the row holds with card [at] chosen and [have] held now: never fewer
+     * The first row showing in the season list with row [at] chosen, [first] showing first now and [count] rows in
+     * all: it moves only as far as [at] needs to be inside the [SEASON_LIST_ROWS] that show.
+     */
+    fun seasonListFirst(at: Int, first: Int, count: Int): Int {
+        val last = (count - SEASON_LIST_ROWS).coerceAtLeast(0)
+        val f = when {
+            at < first -> at
+            at >= first + SEASON_LIST_ROWS -> at - SEASON_LIST_ROWS + 1
+            else -> first
+        }
+        return f.coerceIn(0, last)
+    }
+
+    /**
+     * How many of a season's [total] episode pods the row holds with pod [at] chosen and [have] held now: never fewer
      * than [have], at least [EPISODE_WINDOW], and [EPISODE_WINDOW] more while [at] is within [EPISODE_AHEAD] of the end
-     * (so a held D-pad adds cards in steps, not one per press); never more than [total].
+     * (so a held D-pad adds pods in steps, not one per press); never more than [total].
      */
     fun episodeWindow(total: Int, at: Int, have: Int): Int {
         var n = maxOf(have, EPISODE_WINDOW)
@@ -552,14 +645,11 @@ internal object VodSizes {
         return minOf(n, total).coerceAtLeast(0)
     }
 
-    /** A show's rows under the header: the season pills' band (when there are pills), the episodes', More Like This'. */
-    fun pillsBandH(): Float = bandH(RowStyle.SEASONS, header = false, gapBelow = PILLS_GAP)
-    fun episodesBandH(): Float = bandH(RowStyle.EPISODE, header = false, gapBelow = ROW_GAP)
-
     /**
      * How far a show's page glides up for More Like This: enough for its band to end on screen, and never less than
-     * keeping the buttons [GLIDE_KEEP_TOP] from the top (all the text above them leaves the screen).
+     * keeping the season dropdown's row ([rowTop]) [GLIDE_KEEP_TOP] from the top (all the text above it leaves the
+     * screen).
      */
-    fun glide(moreBottom: Float, buttonsTop: Float, pageH: Float = SCREEN_H, keepTop: Float = GLIDE_KEEP_TOP): Float =
-        maxOf(moreBottom - pageH, buttonsTop - keepTop, 0f)
+    fun glide(moreBottom: Float, rowTop: Float, pageH: Float = SCREEN_H, keepTop: Float = GLIDE_KEEP_TOP): Float =
+        maxOf(moreBottom - pageH, rowTop - keepTop, 0f)
 }

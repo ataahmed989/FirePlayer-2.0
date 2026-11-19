@@ -1,14 +1,17 @@
 package app.fireplayer.vod.ui
 
 import android.content.Context
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
@@ -45,21 +48,25 @@ import app.fireplayer.vod.data.CinemetaDetails
 import app.fireplayer.vod.data.VodArt
 import app.fireplayer.vod.hasImdbId
 import app.fireplayer.vod.playTarget
+import app.fireplayer.vod.ui.TitleRules.Dir
 import app.fireplayer.vod.ui.TitleRules.Part
 import java.util.Calendar
 
 /**
- * One title's page (design-brief.md §6.4, layout A), full screen over its tab beside the rail's strip: the backdrop at
- * the top right behind everything ([HeaderArt], never moving), the header block ([TitleHeader]: title or logo, facts
- * and one callout, story, cast line, the reserved source line and the buttons), then its rows, built from the tab
- * pages' own parts ([TitleRow], [CardView], [app.fireplayer.ui.RowMotion], [PageColumn]): a show's season pills and
- * episode cards, and More Like This. It draws first from what the poster's [Title] says, then from the repository's
- * details as they come.
+ * One title's page (design-brief.md §6.4; laid out as Design-References/redesign-2026-11-19, concept 3 without its
+ * Episodes button), full screen over its tab beside the rail: the backdrop at the top right behind everything
+ * ([HeaderArt], never moving); the text block ([TitleHeader]: the large title or logo, the facts and one callout, the
+ * story, the source line); under it the stage: the action column on the left ([TitleButtons]: Play / Resume, Play
+ * from beginning, Sources, then (+) and (⋯)) and, right of it, a show's season dropdown ([SeasonDropdown]), the
+ * "Episodes" heading and its episode pods ([EpisodeRow]), or a film's More Like This. A show's More Like This is
+ * under the stage. It draws first from what the poster's [Title] says, then from the repository's details as they
+ * come.
  *
- * Moving: the buttons Left/Right; Down to the Play target's episode card (a show) or More Like This (a film); season
- * pills change the season once focus rests on one; a show's page glides up for More Like This and back. Hold OK on an
- * episode card or a poster opens the shared small window ([HoldWindow]); (⋯) opens it with Mark watched, Remove from
- * Continue Watching and Details (a [SidePanel] window).
+ * Moving ([TitleRules.next]): Up and Down inside the column; Right from it to the episodes (a film: More Like This)
+ * and Left from their first card back to it; Up from the episodes to the season dropdown, whose list (OK) changes the
+ * season; Down to a show's More Like This, for which the page glides up, and back. Left from the column goes to the
+ * rail. Hold OK on an episode or a poster opens the shared small window ([HoldWindow]); (⋯) opens it with Mark
+ * watched, Remove from Continue Watching and Details (a [SidePanel] window, where the cast is too).
  *
  * Sources and playback (step 3, design-brief.md §6.4-6.5): what Play would start is looked up after 1.5 s on the page
  * (0.5 s with a resume point, or when [soon]), never from the rows; the source line then says which source it would
@@ -107,13 +114,29 @@ class TitlePage(
     private val isShow = opened.kind == Kind.SERIES
     private val main = Handler(Looper.getMainLooper())
 
-    /** Page-sized; clips at the page's left edge (the sliver of the card before the chosen one shows, as in the rows). */
+    /** Page-sized; clips at the page's left edge (a show's More Like This runs to it, as the tabs' rows do). */
     val root = FrameLayout(ctx).apply { clipChildren = true }
     private val backdrop = HeaderArt(ctx, HeaderArt.ArtSpec.TITLE)
     private val column = PageColumn(ctx, t, VodSizes.TITLE_HEADER_H, VodSizes.TITLE_HEADER_GAP)
-    private val header = TitleHeader(ctx, t, this)
-    private val pills = TitleRow(ctx, t, spec("seasons", "Seasons", RowStyle.SEASONS), this, header = false, gapBelow = VodSizes.PILLS_GAP)
-    private val episodes = TitleRow(ctx, t, spec("episodes", "Episodes", RowStyle.EPISODE), this, header = false)
+    private val header = TitleHeader(ctx, t)
+    /** Under the text block: the action column and what's right of it. */
+    private val stage = FrameLayout(ctx).apply {
+        clipChildren = false
+        clipToPadding = false
+    }
+    private val buttons = TitleButtons(ctx, t, this)
+    private val seasonButton = SeasonDropdown.button(ctx, t)
+    private val heading = t.label(ctx, VodSizes.EPISODES_HEADING).apply { text = "Episodes" }
+    /** The season dropdown and the heading beside it, above the pods. */
+    private val headRow = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        visibility = View.GONE
+    }
+    private val seasonList = SeasonList(ctx, t)
+    private val episodes: EpisodeRow = EpisodeRow(ctx, t, podListener())
     private val more = TitleRow(ctx, t, spec("more", "More Like This", RowStyle.POSTER), this)
     /** The column's upward offset, px: a show's page glides up for More Like This. */
     private val glide = Spring(VodSizes.PAGE_OMEGA, VodSizes.PAGE_SETTLE) { column.translationY = -it }
@@ -122,10 +145,12 @@ class TitlePage(
     /** What the poster says, its description read as the details read Cinemeta's (entities, a cut word ended). */
     private var details = TitleDetails.of(opened.copy(description = CinemetaDetails.story(CinemetaDetails.clean(opened.description))))
     private var seasons: List<Season> = emptyList()
-    /** The season whose cards show, and the one a pill is resting on (shown after [VodSizes.SETTLE_MS]). */
+    /** The season the dropdown says, and the one whose pods show. */
     private var shownSeason: Int? = null
     private var cardsSeason: Int? = null
-    private var pendingSeason: Int? = null
+    /** The Play target the pods' row last started at (it moves on with the target while focus is elsewhere). */
+    private var rowTarget: String? = null
+    private var seasonArmed = false
     private var shownEpisodes: List<Episode> = emptyList()
     /** The shown season's cards, all of them: the row holds the first ones only ([VodSizes.episodeWindow]). */
     private var seasonCards: List<Card> = emptyList()
@@ -178,21 +203,60 @@ class TitlePage(
     private var panelLookup: Cancel? = null
 
     init {
-        root.addView(backdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+        val fill = ViewGroup.LayoutParams.MATCH_PARENT
+        root.addView(backdrop, FrameLayout.LayoutParams(fill, fill))
         column.header = header
         column.onRowsMoved = { onRowsMoved() }
-        for (row in listOf(pills, episodes, more)) {
-            column.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, row.bandHeight))
+        val rowTop = t.dp(VodSizes.STAGE_ROW_TOP)
+        val gap = t.dp(VodSizes.POD_GAP)
+        val right = t.dp(VodSizes.stageX())
+        stage.addView(buttons, FrameLayout.LayoutParams(t.dp(VodSizes.ACTIONS_W), wrap).apply {
+            leftMargin = t.dp(VodSizes.titleTextX())
+            topMargin = rowTop
+        })
+        if (isShow) {
+            // The pods' box starts a gap's width left of the first pod and holds the room above and below them.
+            stage.addView(episodes, FrameLayout.LayoutParams(fill, t.dp(VodSizes.podsBandH())).apply {
+                leftMargin = right - gap
+                topMargin = rowTop - t.dp(VodSizes.POD_ROOM)
+            })
+            val seasonH = t.dp(VodSizes.SEASON_H)
+            headRow.addView(seasonButton, LinearLayout.LayoutParams(wrap, seasonH).apply { rightMargin = t.dp(VodSizes.SEASON_HEADING_GAP) })
+            headRow.addView(heading, LinearLayout.LayoutParams(wrap, wrap))
+            stage.addView(headRow, FrameLayout.LayoutParams(wrap, seasonH).apply {
+                leftMargin = right
+                topMargin = t.dp(VodSizes.SEASON_TOP)
+            })
+            seasonButton.visibility = View.GONE
+            Tokens.focusEffect(seasonButton, Tokens.GROW_PILL, null) { has -> if (has) onSeasonFocused() }
+            seasonButton.setOnKeyListener { _, keyCode, event -> onSeasonKey(keyCode, event) }
+            column.addView(stage, ViewGroup.LayoutParams(fill, t.dp(VodSizes.showStageH())))
+            column.addView(more, ViewGroup.LayoutParams(fill, more.bandHeight))
+        } else {
+            // A film's More Like This sits beside the column: its strip starts where a show's pods do, cut a gap's
+            // width left of the first poster (the row itself starts its strip at the page's content x).
+            val box = ClipBox(ctx)
+            box.addView(more, FrameLayout.LayoutParams(fill, more.bandHeight).apply { leftMargin = gap - t.dp(VodSizes.PAGE_X) })
+            stage.addView(box, FrameLayout.LayoutParams(fill, more.bandHeight).apply {
+                leftMargin = right - gap
+                topMargin = t.dp(VodSizes.filmMoreTop())
+            })
+            column.addView(stage, ViewGroup.LayoutParams(fill, t.dp(VodSizes.filmStageH())))
         }
-        root.addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(column, FrameLayout.LayoutParams(fill, wrap))
+        // The season list opens over the page and never moves with it. Its layer is the page's size and doesn't clip,
+        // so the list's soft shadow shows (the page itself clips each of its children at that child's edges).
+        val over = FrameLayout(ctx).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        over.addView(seasonList, FrameLayout.LayoutParams(wrap, wrap))
+        root.addView(over, FrameLayout.LayoutParams(fill, fill))
         // The backdrop covers the whole screen: its part under the rail's strip lies left of the page.
         backdrop.addOnLayoutChangeListener { v, l, tp, r, b, _, _, _, _ ->
             backdrop.frame = RectF(-t.dpf(VodSizes.RAIL), 0f, (r - l).toFloat(), (b - tp).toFloat())
             if (v.width > 0) v.invalidate()
-        }
-        // Season pills that fit stay put; they move only as far as the last one needs.
-        pills.strip.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            pills.clampToView(root.width - t.dp(VodSizes.PAGE_X) - t.dp(VodSizes.RIGHT_MARGIN))
         }
         header.logo.onArrived = { onLogo() }
     }
@@ -212,6 +276,9 @@ class TitlePage(
 
     /** Covered by another page ([hide]), or the screen stopped: loads, timers and pictures stop. */
     fun pause(hide: Boolean) {
+        // The season list never outlives what's under it: closed, focus back on the dropdown (unless the page is
+        // being covered or closed: whatever does that places focus itself).
+        seasonList.close(fade = false, focusBack = !hide)
         if (hide) root.visibility = View.GONE
         if (paused) return
         paused = true
@@ -220,13 +287,12 @@ class TitlePage(
         main.removeCallbacksAndMessages(null)
         // The moment for the logo has passed.
         if (mode == TitleMode.WAITING) decide(TitleMode.NAME)
-        pendingSeason?.let { applySeason(it) }
         if (glide.moving) glide.snap(glide.target)
         // Pictures go, and the ones still queued for this page aren't fetched.
-        for (row in rows()) {
-            row.motion.settle()
-            row.releaseImages(cancel = true)
-        }
+        episodes.motion.settle()
+        episodes.releaseImages(cancel = true)
+        more.motion.settle()
+        more.releaseImages(cancel = true)
         press.cancel()
         backdrop.release(cancel = true)
         ImageLoader.cancel(header.logo)
@@ -243,7 +309,7 @@ class TitlePage(
         // Back from the player: a play that gave up says why, and focus waits on Sources.
         handedOff?.let { PlayOutcomes.take(it) }?.let { why ->
             stopped = why
-            header.buttons.focus(TitleButtons.Which.SOURCES)
+            buttons.focus(TitleButtons.Which.SOURCES)
         }
         handedOff = null
         refreshAll()
@@ -267,21 +333,23 @@ class TitlePage(
 
     fun applyLook() {
         header.applyLook()
-        for (row in rows()) row.applyLook()
+        buttons.applyLook()
+        seasonButton.applyLook()
+        seasonList.applyLook()
+        episodes.applyLook()
+        more.applyLook()
     }
 
     /** Memory is short: only the backdrop and the row focus is in keep their pictures. */
     fun trim() {
-        val keep = rowOf(part)
-        for (row in rows()) if (row !== keep) row.releaseImages()
+        if (part != Part.EPISODES) episodes.releaseImages()
+        if (part != Part.MORE) more.releaseImages()
     }
 
     fun onLibraryChanged() {
         if (paused || released) return
         refreshAll()
     }
-
-    private fun rows() = listOf(pills, episodes, more)
 
     private fun startLoads() {
         val r = host.repo ?: return
@@ -348,7 +416,7 @@ class TitlePage(
     private fun showMore(list: List<Card>) {
         pendingMore = null
         if (list.isEmpty()) {
-            if (more.focusedIndex() >= 0) moveUpFrom(Part.MORE)
+            if (more.focusedIndex() >= 0) focusPart(TitleRules.next(Part.MORE, Dir.UP, parts(), isShow) ?: Part.BUTTONS)
             more.releaseImages()
             more.visibility = View.GONE
             more.bind(emptyList(), false)
@@ -384,7 +452,6 @@ class TitlePage(
             filmWatched = r?.isWatched(opened.id) == true
             out = play.enabled
         }
-        val buttons = header.buttons
         buttons.setPlay(play)
         buttons.setRestart(play.restart)
         buttons.setSources(out)
@@ -393,10 +460,9 @@ class TitlePage(
         val callout = Callouts.choose(details, filmWatched, { r?.isEpisodeWatched(it) == true }, target, now)
         // TMDB's overview once it's there, else Cinemeta's (a story shown is never blanked); new words fade in.
         val story = TitleRules.story(details).ifEmpty { header.storyShown }
-        header.show(TitleRules.facts(details), callout?.let { TitleRules.calloutText(it, year) }, story, TitleRules.castLine(details))
+        header.show(TitleRules.facts(details), callout?.let { TitleRules.calloutText(it, year) }, story)
         if (mode == TitleMode.NAME) header.showName(details.title.name)
         if (isShow) refreshSeasons()
-        buttons.setEpisodes(isShow && episodes.visibility == View.VISIBLE)
         lookUpSources(play.enabled, play.restart)
         showSourceLine()
     }
@@ -426,7 +492,7 @@ class TitlePage(
         dwell = null
         dwellKey = key
         shownList = null
-        header.buttons.setSourcesLabel(PlayRules.sourcesLabel(null))
+        buttons.setSourcesLabel(PlayRules.sourcesLabel(null))
         if (tgt == null) return
         dwell = s.lookUp(tgt, PlayRules.pageLookup(resumable, soon)) { list -> onSources(tgt, list) }
     }
@@ -434,7 +500,7 @@ class TitlePage(
     private fun onSources(tgt: SourceTarget, list: SourceList) {
         if (released || tgt.key != dwellKey) return
         shownList = list
-        header.buttons.setSourcesLabel(PlayRules.sourcesLabel(list))
+        buttons.setSourcesLabel(PlayRules.sourcesLabel(list))
         showSourceLine()
     }
 
@@ -482,7 +548,7 @@ class TitlePage(
     private fun waitListener() = object : PlayWait.Listener {
         override fun onWaiting(label: String, fraction: Float, strip: String?) {
             if (released) return
-            if (waitFromButtons) header.buttons.setWaiting(label, fraction)
+            if (waitFromButtons) buttons.setWaiting(label, fraction)
             this@TitlePage.strip = strip ?: label
             showSourceLine()
         }
@@ -505,7 +571,7 @@ class TitlePage(
 
     private fun endWait() {
         strip = null
-        header.buttons.setWaiting(null)
+        buttons.setWaiting(null)
         showSourceLine()
     }
 
@@ -540,7 +606,7 @@ class TitlePage(
             val name = target?.episode?.name?.takeIf { it.isNotBlank() }
             "Sources · ${TitleRules.episodeCode(ep)}" + (name?.let { " \"$it\"" } ?: "")
         }
-        val back = header.buttons.viewOf(TitleButtons.Which.SOURCES)
+        val back = buttons.viewOf(TitleButtons.Which.SOURCES)
         panelLookup?.cancel()
         panel.open(title, s.cached(tgt) ?: shownList, onClose = {
             panelLookup?.cancel()
@@ -569,54 +635,40 @@ class TitlePage(
     }
 
     private fun refreshSeasons() {
-        var place = false
-        if (TitleRules.showsPills(seasons)) {
-            pills.bindChips(seasons.map { TitleRules.seasonLabel(it.number) })
-            if (pills.visibility != View.VISIBLE) {
-                pills.visibility = View.VISIBLE
-                place = true
-            }
-        } else if (pills.visibility == View.VISIBLE) {
-            if (pills.focusedIndex() >= 0) header.buttons.focusLast()
-            pills.visibility = View.GONE
-            pills.bindChips(emptyList())
+        val labels = seasons.map { TitleRules.seasonLabel(it.number) }
+        // The list shows other seasons than there are now: closed (focus back on the dropdown).
+        if (seasonList.isOpen && seasonList.labels != labels) seasonList.close()
+        if (TitleRules.showsSeasonPicker(seasons)) {
+            seasonButton.visibility = View.VISIBLE
+        } else if (seasonButton.visibility == View.VISIBLE) {
+            if (seasonButton.isFocused) buttons.focusLast()
+            seasonButton.visibility = View.GONE
         }
         if (shownSeason == null || seasons.none { it.number == shownSeason }) {
             // The page opens on the Play target's season.
             shownSeason = TitleRules.openingSeason(seasons, target?.episode)
-            place = true
         }
-        val i = seasonIndex(shownSeason)
-        if (place && i >= 0 && pills.focusedIndex() < 0) {
-            pills.chosen = i
-            pills.motion.snap(i, isGrown = false)
-        }
-        pills.markSelected(i)
+        shownSeason?.let { seasonButton.set(TitleRules.seasonLabel(it), null) }
         showSeasonCards()
     }
 
     private fun seasonIndex(n: Int?): Int = seasons.indexOfFirst { it.number == n }
 
-    /** The pills' strip moved straight to season [n]'s pill (not focused): a season shown from elsewhere. */
-    private fun placePills(n: Int) {
-        val i = seasonIndex(n)
-        if (i < 0 || pills.focusedIndex() >= 0) return
-        pills.chosen = i
-        pills.motion.snap(i, isGrown = false)
-    }
-
-    /** The shown season's episode cards, filled in place (a new season starts at its first card). */
+    /** The shown season's episode pods, filled in place (a new season starts at its first pod). */
     private fun showSeasonCards() {
         val r = host.repo
         val season = shownSeason
         val eps = seasons.firstOrNull { it.number == season }?.episodes.orEmpty()
         if (eps.isEmpty()) {
             if (episodes.visibility == View.VISIBLE) {
-                if (episodes.focusedIndex() >= 0) header.buttons.focusLast()
+                if (episodes.focusedIndex() >= 0) buttons.focusLast()
                 episodes.releaseImages()
                 episodes.visibility = View.GONE
-                episodes.bind(emptyList(), false)
+                episodes.bind(emptyList())
             }
+            // The dropdown stays while there are seasons to choose; the heading goes with the pods.
+            heading.visibility = View.GONE
+            headRow.visibility = if (seasonButton.visibility == View.VISIBLE) View.VISIBLE else View.GONE
             shownEpisodes = emptyList()
             seasonCards = emptyList()
             cardsSeason = null
@@ -628,19 +680,21 @@ class TitlePage(
             TitleRules.episodeCard(details.title, ep, r?.isEpisodeWatched(ep) == true, r?.positionOf(ep), now, year)
         }
         val newSeason = cardsSeason != season
+        val targetId = target?.episode?.id
         shownEpisodes = eps
         seasonCards = cards
         cardsSeason = season
-        // A long season (a daily show's 200) is held a window at a time: the first cards, more as focus nears the end.
+        // A long season (a daily show's 200) is held a window at a time: the first pods, more as focus nears the end.
         val n: Int
+        var place = false
         if (newSeason) {
             val inRow = episodes.focusedIndex() >= 0
             if (inRow) {
-                // Focus on a card that stays (the first) before any go.
+                // Focus on a pod that stays (the first) before any go.
                 episodes.items.getOrNull(0)?.requestFocus()
                 episodes.chosen = 0
             } else {
-                // At rest the row starts at the Play target when it's in this season (Down then only grows it), else E1.
+                // At rest the row starts at the Play target when it's in this season (Right then only grows it), else E1.
                 episodes.chosen = TitleRules.focusIndex(eps, target?.episode)
             }
             n = VodSizes.episodeWindow(cards.size, episodes.chosen, 0)
@@ -648,16 +702,33 @@ class TitlePage(
             episodes.releaseImages(cancel = true)
             episodes.motion.snap(episodes.chosen, isGrown = inRow)
         } else {
+            // At rest the row moves on with the Play target (an episode watched: the next one comes first).
+            if (targetId != rowTarget && part != Part.EPISODES && episodes.focusedIndex() < 0 && !host.hold.isOpen) {
+                val i = eps.indexOfFirst { it.id == targetId }
+                if (i >= 0 && i != episodes.chosen) {
+                    episodes.chosen = i
+                    place = true
+                }
+            }
             n = VodSizes.episodeWindow(cards.size, episodes.chosen, episodes.items.size)
             val f = RowRules.focusAfter(episodes.focusedIndex(), episodes.cards.size, false, n, false)
             if (f >= 0) episodes.items.getOrNull(f)?.requestFocus()
         }
-        episodes.bind(cards.subList(0, n), false)
+        rowTarget = targetId
+        // Bound with the row's place kept (binding keeps the chosen pod inside what it holds).
+        val at = episodes.chosen
+        episodes.bind(cards.subList(0, n))
+        if (place) {
+            episodes.chosen = at.coerceIn(0, n - 1)
+            episodes.motion.snap(episodes.chosen, isGrown = false)
+        }
         if (episodes.visibility != View.VISIBLE) {
             episodes.motion.snap(episodes.chosen, isGrown = false)
             episodes.visibility = View.VISIBLE
         }
-        // The header follows the chosen card's new words.
+        heading.visibility = View.VISIBLE
+        headRow.visibility = View.VISIBLE
+        // The header follows the chosen pod's new words.
         if (episodes.focusedIndex() >= 0) main.post(follow)
         updateImages()
     }
@@ -736,30 +807,39 @@ class TitlePage(
     /** Into the page as it opens: Play, or the first button that can take focus. */
     fun takeFocus() {
         part = Part.BUTTONS
-        if (!header.buttons.focusFirst()) root.requestFocus()
+        if (!buttons.focusFirst()) root.requestFocus()
     }
 
     /** Back into the page (from the rail): where focus was. */
     fun takeFocusBack() {
         val ok = when (part) {
-            Part.BUTTONS -> header.buttons.focusLast()
-            else -> rowOf(part)?.takeIf { it.visibility == View.VISIBLE }?.focusChosen() == true
+            Part.BUTTONS -> buttons.focusLast()
+            Part.SEASON -> seasonButton.isShown && seasonButton.requestFocus()
+            Part.EPISODES -> episodes.visibility == View.VISIBLE && episodes.focusChosen()
+            Part.MORE -> more.visibility == View.VISIBLE && more.focusChosen()
         }
         if (!ok) takeFocus()
     }
 
-    /** Whether focus is in one of the rows (Back then goes to the buttons). */
-    fun focusInRows(): Boolean = rows().any { it.visibility == View.VISIBLE && it.focusedIndex() >= 0 }
+    /** Whether focus is right of the action column or under it (Back then goes to the buttons). */
+    fun focusInRows(): Boolean = seasonButton.isFocused || episodes.focusedIndex() >= 0 || more.focusedIndex() >= 0
+
+    /** Back with the season list open: it closes (true), focus back on the dropdown; nothing else happens then. */
+    fun closeSeasonList(): Boolean {
+        if (!seasonList.isOpen) return false
+        seasonList.close()
+        return true
+    }
 
     /** Back from a row: focus on Play (or the first button), the page at its top. */
     fun backToButtons() {
-        header.buttons.focusFirst()
+        buttons.focusFirst()
         glide.glideTo(0f)
     }
 
     internal fun saveFocus(): Saved = Saved(
         part = part,
-        button = header.buttons.last,
+        button = buttons.last,
         season = shownSeason,
         episodeId = episodes.cards.getOrNull(episodes.chosen)?.title?.id,
         episodeIndex = episodes.chosen,
@@ -774,12 +854,13 @@ class TitlePage(
             return
         }
         if (!tryRestore(saved)) {
-            header.buttons.focus(saved.button)
+            buttons.focus(saved.button)
             restore = saved
             restoreHolder = root.findFocus()
         }
         // A row kept grown while the page was covered, and focus isn't back in it: its card shrinks.
-        for (row in rows()) if (row.focusedIndex() < 0) row.motion.shrink()
+        if (episodes.focusedIndex() < 0) episodes.motion.shrink()
+        if (more.focusedIndex() < 0) more.motion.shrink()
     }
 
     private fun applyRestore() {
@@ -793,22 +874,16 @@ class TitlePage(
     }
 
     private fun tryRestore(s: Saved): Boolean = when (s.part) {
-        Part.BUTTONS -> header.buttons.focus(s.button)
-        Part.PILLS -> {
-            val i = seasonIndex(s.season)
-            if (pills.visibility != View.VISIBLE || i < 0) false else {
-                // The season it was on shows at once (not after the pills' settle).
-                s.season?.let { if (it != shownSeason) applySeason(it) }
-                pills.chosen = i
-                pills.motion.snap(i, isGrown = true)
-                pills.focusChosen()
+        Part.BUTTONS -> buttons.focus(s.button)
+        Part.SEASON -> {
+            if (seasonButton.visibility != View.VISIBLE || seasonIndex(s.season) < 0) false else {
+                // The season it was on shows again.
+                s.season?.let { applySeason(it) }
+                seasonButton.requestFocus()
             }
         }
         Part.EPISODES -> {
-            if (s.season != null && s.season != shownSeason && seasonIndex(s.season) >= 0) {
-                applySeason(s.season)
-                placePills(s.season)
-            }
+            if (s.season != null && s.season != shownSeason && seasonIndex(s.season) >= 0) applySeason(s.season)
             val i = seasonCards.indexOfFirst { it.title.id == s.episodeId }.takeIf { it >= 0 } ?: s.episodeIndex
             if (episodes.visibility != View.VISIBLE || episodes.items.isEmpty()) false else {
                 holdEpisodes(i)
@@ -830,72 +905,46 @@ class TitlePage(
         }
     }
 
-    private fun rowOf(p: Part): TitleRow? = when (p) {
-        Part.PILLS -> pills
-        Part.EPISODES -> episodes
-        Part.MORE -> more
-        Part.BUTTONS -> null
-    }
-
-    private fun partOf(row: TitleRow): Part = when (row) {
-        pills -> Part.PILLS
-        episodes -> Part.EPISODES
-        else -> Part.MORE
-    }
-
     private fun parts() = TitleRules.Parts(
-        pills = pills.visibility == View.VISIBLE && pills.items.isNotEmpty(),
+        season = seasonButton.visibility == View.VISIBLE && headRow.visibility == View.VISIBLE,
         episodes = episodes.visibility == View.VISIBLE && episodes.items.isNotEmpty(),
         more = more.visibility == View.VISIBLE && more.items.isNotEmpty(),
     )
 
-    /** Focus into [to], as the D-pad map says: the episode cards on the Play target (from the buttons) or E1. */
-    private fun focusPart(to: Part, from: Part) {
+    /** A D-pad press at the edge of [from]: to the rail, or to the part the page's map says ([TitleRules.next]). */
+    private fun move(from: Part, dir: Dir) {
+        if (TitleRules.toRail(from, dir, isShow)) {
+            host.focusRail()
+            return
+        }
+        TitleRules.next(from, dir, parts(), isShow)?.let { focusPart(it) }
+    }
+
+    /**
+     * Focus into [to]: the column on the button it was last on, a row on the card chosen in it (the pods: the Play
+     * target's when its season shows and nothing else was chosen since, [showSeasonCards]).
+     */
+    private fun focusPart(to: Part) {
         when (to) {
-            Part.BUTTONS -> header.buttons.focusLast()
-            Part.PILLS -> {
-                pills.chosen = seasonIndex(shownSeason).coerceAtLeast(0)
-                pills.focusChosen()
-            }
-            Part.EPISODES -> when (from) {
-                Part.BUTTONS -> focusEpisodes(toTarget = true)
-                Part.PILLS -> focusEpisodes(toTarget = false)
-                else -> episodes.focusChosen()
-            }
+            Part.BUTTONS -> buttons.focusLast()
+            Part.SEASON -> seasonButton.requestFocus()
+            Part.EPISODES -> episodes.focusChosen()
             Part.MORE -> more.focusChosen()
         }
     }
 
-    /**
-     * Into the episode cards: from the buttons, the Play target's card (its season shown first); from the pills, the
-     * Play target if it's in the season shown, else its first card.
-     */
-    private fun focusEpisodes(toTarget: Boolean) {
-        pendingSeason?.let { applySeason(it) }
-        val tgt = target?.episode
-        if (toTarget && tgt != null && tgt.season != shownSeason && seasonIndex(tgt.season) >= 0) {
-            applySeason(tgt.season)
-            placePills(tgt.season)
-        }
-        if (episodes.items.isEmpty()) return
-        episodes.chosen = TitleRules.focusIndex(shownEpisodes, tgt)
-        holdEpisodes(episodes.chosen)
-        episodes.focusChosen()
-    }
-
-    /** The row holds the shown season's cards up to [i] and some way past it (a long season's window grows). */
+    /** The row holds the shown season's pods up to [i] and some way past it (a long season's window grows). */
     private fun holdEpisodes(i: Int) {
         val n = VodSizes.episodeWindow(seasonCards.size, i, episodes.items.size)
-        if (n > episodes.items.size) episodes.bind(seasonCards.subList(0, n), false)
+        if (n > episodes.items.size) episodes.bind(seasonCards.subList(0, n))
     }
 
-    private fun moveDownFrom(from: Part) {
-        TitleRules.down(from, parts())?.let { focusPart(it, from) }
-    }
-
-    private fun moveUpFrom(from: Part) {
-        val to = TitleRules.up(from, parts()) ?: return
-        focusPart(to, from)
+    private fun dirOf(keyCode: Int): Dir? = when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_LEFT -> Dir.LEFT
+        KeyEvent.KEYCODE_DPAD_RIGHT -> Dir.RIGHT
+        KeyEvent.KEYCODE_DPAD_UP -> Dir.UP
+        KeyEvent.KEYCODE_DPAD_DOWN -> Dir.DOWN
+        else -> null
     }
 
     // ---- Buttons ----------------------------------------------------------------------------------------------------
@@ -904,13 +953,12 @@ class TitlePage(
         when (which) {
             TitleButtons.Which.PLAY -> playButton(fromBeginning = false)
             TitleButtons.Which.RESTART -> playButton(fromBeginning = true)
-            TitleButtons.Which.EPISODES -> focusEpisodes(toTarget = true)
             TitleButtons.Which.SOURCES -> openSources()
             TitleButtons.Which.MY_LIST -> {
                 val r = host.repo ?: return
                 val inList = !r.inMyList(opened.id)
                 host.hold.setInList(details.title, inList)
-                header.buttons.setMyList(inList)
+                buttons.setMyList(inList)
             }
             TitleButtons.Which.MORE -> openMoreWindow()
         }
@@ -918,90 +966,103 @@ class TitlePage(
 
     override fun onButtonFocused(which: TitleButtons.Which) {
         part = Part.BUTTONS
+        offTheRows()
+    }
+
+    /** Focus is on the column or the dropdown: the header says the title's own words, the page is at its top. */
+    private fun offTheRows() {
         press.cancel()
         cancelResolve()
         main.removeCallbacks(follow)
         header.unfollow()
+        // A pod kept grown for its small window, which closed with focus elsewhere: it shrinks back.
+        if (!host.hold.isOpen && episodes.focusedIndex() < 0) episodes.motion.shrink()
         glide.glideTo(0f)
         updateImages()
     }
 
-    override fun onButtonsDown(which: TitleButtons.Which) = moveDownFrom(Part.BUTTONS)
+    override fun onButtonsDown(which: TitleButtons.Which) = move(Part.BUTTONS, Dir.DOWN)
 
-    override fun onLeftEdge() = host.focusRail()
+    override fun onButtonsRight(which: TitleButtons.Which) = move(Part.BUTTONS, Dir.RIGHT)
+
+    override fun onLeftEdge() = move(Part.BUTTONS, Dir.LEFT)
 
     // ---- Rows -------------------------------------------------------------------------------------------------------
 
+    /** More Like This (the page's one [TitleRow]). */
     override fun onItemFocused(row: TitleRow, index: Int) {
         press.cancel()
         // A poster being looked up acts only while focus stays on it.
-        if (row !== more || index != resolving) cancelResolve()
-        part = partOf(row)
-        if (row !== episodes) {
-            main.removeCallbacks(follow)
-            header.unfollow()
-        }
-        when (row) {
-            pills -> {
-                val n = seasons.getOrNull(index)?.number
-                main.removeCallbacks(settleSeason)
-                if (n != null && n != shownSeason) {
-                    pendingSeason = n
-                    main.postDelayed(settleSeason, VodSizes.SETTLE_MS)
-                } else {
-                    pendingSeason = null
-                }
-            }
-            episodes -> {
-                holdEpisodes(index)
-                main.removeCallbacks(follow)
-                main.postDelayed(follow, VodSizes.SETTLE_MS)
-            }
-        }
-        if (isShow) glide.glideTo(if (TitleRules.glided(part, isShow)) glideTarget() else 0f)
+        if (index != resolving) cancelResolve()
+        part = Part.MORE
+        main.removeCallbacks(follow)
+        header.unfollow()
+        if (isShow) glide.glideTo(glideTarget())
         updateImages()
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
         // Covered by the page opened from it (or gone): the row stays as it was, its card grown, for coming back.
         if (paused || released) return false
-        // Into its small window: the card stays grown (and the header on its episode) until the window closes.
+        // Into its small window: the card stays grown until the window closes.
         if (host.hold.isOpen && host.hold.heldRow === row) return false
         press.cancel()
-        when (row) {
-            episodes -> {
-                main.removeCallbacks(follow)
-                header.unfollow()
-            }
-            more -> {
-                cancelResolve()
-                pendingMore?.let { showMore(it) }
-            }
-            pills -> pendingSeason?.let { applySeason(it) }
-        }
+        cancelResolve()
+        pendingMore?.let { showMore(it) }
         return true
     }
 
-    override fun onItemKey(row: TitleRow, index: Int, keyCode: Int, event: KeyEvent): Boolean {
+    override fun onItemKey(row: TitleRow, index: Int, keyCode: Int, event: KeyEvent): Boolean =
+        itemKey(Part.MORE, index, row.items, keyCode, event)
+
+    /** The episode pods. */
+    private fun podListener(): EpisodeRow.Listener = object : EpisodeRow.Listener {
+        override fun onEpisodeFocused(index: Int) {
+            press.cancel()
+            cancelResolve()
+            part = Part.EPISODES
+            holdEpisodes(index)
+            // The header says what the pod is once focus rests on it.
+            main.removeCallbacks(follow)
+            main.postDelayed(follow, VodSizes.SETTLE_MS)
+            glide.glideTo(0f)
+            updateImages()
+        }
+
+        override fun onEpisodesLeft(): Boolean {
+            // Covered by another page (or gone): the row stays as it was, its pod grown, for coming back.
+            if (paused || released) return false
+            // Into its small window: the pod stays grown (and the header on its episode) until the window closes.
+            if (host.hold.isOpen && host.hold.heldView is EpisodePod) return false
+            press.cancel()
+            main.removeCallbacks(follow)
+            header.unfollow()
+            return true
+        }
+
+        override fun onEpisodeKey(index: Int, keyCode: Int, event: KeyEvent): Boolean =
+            itemKey(Part.EPISODES, index, episodes.items, keyCode, event)
+    }
+
+    /** A key on card [index] of [p]'s row (the pods, or More Like This), whose cards are [items]. */
+    private fun itemKey(p: Part, index: Int, items: List<View>, keyCode: Int, event: KeyEvent): Boolean {
         if (isOk(keyCode)) {
             when (event.action) {
-                KeyEvent.ACTION_DOWN -> if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) onHold(row, index)
-                KeyEvent.ACTION_UP -> if (press.up(event.isCanceled)) onPick(row, index)
+                KeyEvent.ACTION_DOWN -> if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) onHold(p, index)
+                KeyEvent.ACTION_UP -> if (press.up(event.isCanceled)) onPick(p, index)
             }
             return true
         }
-        val dpad = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
-            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-        if (event.action != KeyEvent.ACTION_DOWN) return dpad
+        val dir = dirOf(keyCode) ?: return false
+        if (event.action != KeyEvent.ACTION_DOWN) return true
         press.cancel()
-        val p = partOf(row)
-        when (keyCode) {
-            // One card (or pill) per press, also while held: the row glides behind; nothing wraps.
-            KeyEvent.KEYCODE_DPAD_RIGHT -> row.items.getOrNull(index + 1)?.requestFocus()
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (index == 0) host.focusRail() else row.items.getOrNull(index - 1)?.requestFocus()
-            KeyEvent.KEYCODE_DPAD_DOWN -> moveDownFrom(p)
-            KeyEvent.KEYCODE_DPAD_UP -> moveUpFrom(p)
-            else -> return false
+        when {
+            // One card per press, also while held: the row glides behind; nothing wraps.
+            dir == Dir.RIGHT -> items.getOrNull(index + 1)?.requestFocus()
+            dir == Dir.LEFT && index > 0 -> items.getOrNull(index - 1)?.requestFocus()
+            // A held Left stops on the first card; a new press goes on to the column.
+            dir == Dir.LEFT && event.repeatCount > 0 && !TitleRules.toRail(p, dir, isShow) -> Unit
+            else -> move(p, dir)
         }
         return true
     }
@@ -1009,31 +1070,31 @@ class TitlePage(
     private fun isOk(keyCode: Int) =
         keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
-    private fun onPick(row: TitleRow, index: Int) {
-        when (row) {
-            pills -> moveDownFrom(Part.PILLS)
-            episodes -> {
+    private fun onPick(p: Part, index: Int) {
+        when (p) {
+            Part.EPISODES -> {
                 val ep = shownEpisodes.getOrNull(index) ?: return
                 if (ep.aired(System.currentTimeMillis())) playEpisode(ep) else host.showNotice(TitleRules.airs(ep, thisYear()))
             }
-            more -> {
+            Part.MORE -> {
                 val card = more.cards.getOrNull(index) ?: return
                 resolve(card.title, index) { host.openNext(it) }
             }
+            else -> Unit
         }
     }
 
-    private fun onHold(row: TitleRow, index: Int) {
+    private fun onHold(p: Part, index: Int) {
         val r = host.repo ?: return
         val hold = host.hold
-        when (row) {
-            episodes -> {
+        when (p) {
+            Part.EPISODES -> {
                 val ep = shownEpisodes.getOrNull(index) ?: return
                 // Nothing to mark on one that hasn't aired.
                 if (!ep.aired(System.currentTimeMillis())) return
-                val anchor = row.cardViewAt(index) ?: return
+                val pod = episodes.items.getOrNull(index) ?: return
                 val watched = r.isEpisodeWatched(ep)
-                val buttons = listOf(
+                val actions = listOf(
                     HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched") {
                         hold.close()
                         r.setEpisodesWatched(listOf(ep), !watched)
@@ -1046,16 +1107,18 @@ class TitlePage(
                     },
                 )
                 val name = listOfNotNull(TitleRules.episodeCode(ep.ref), ep.name.takeIf { it.isNotBlank() }).joinToString(" · ")
-                hold.open(name, buttons, anchor, row.items[index], hold.area(VodSizes.HOLD_INSET), row, this) { takeFocusBack() }
+                // The pod stays grown while its window is open ([EpisodeRow.Listener.onEpisodesLeft]).
+                hold.open(name, actions, pod, pod, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
             }
-            more -> {
+            Part.MORE -> {
                 val card = more.cards.getOrNull(index) ?: return
                 resolve(card.title, index) { found ->
-                    val anchor = row.cardViewAt(index) ?: return@resolve
+                    val anchor = more.cardViewAt(index) ?: return@resolve
                     if (!anchor.isShown) return@resolve
-                    hold.openPoster(card.copy(title = found), false, anchor, row.items[index], hold.area(VodSizes.HOLD_INSET), row, this) { takeFocusBack() }
+                    hold.openPoster(card.copy(title = found), false, anchor, more.items[index], hold.area(VodSizes.HOLD_INSET), more, this) { takeFocusBack() }
                 }
             }
+            else -> Unit
         }
     }
 
@@ -1081,17 +1144,57 @@ class TitlePage(
         }
     }
 
-    // ---- Season pills, the header following an episode -------------------------------------------------------------
+    // ---- The season dropdown, the header following an episode ------------------------------------------------------
 
-    private val settleSeason = Runnable { pendingSeason?.let { applySeason(it) } }
+    private fun onSeasonFocused() {
+        part = Part.SEASON
+        offTheRows()
+    }
 
-    /** Shows season [n]'s cards (rebuilt in place) and marks its pill. */
+    /** The dropdown's keys: OK (on its release, for a press that started here) opens its list; the D-pad leaves it. */
+    private fun onSeasonKey(keyCode: Int, event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+        if (isOk(keyCode)) {
+            if (down && event.repeatCount == 0) seasonArmed = true
+            if (event.action == KeyEvent.ACTION_UP) {
+                val mine = seasonArmed && !event.isCanceled
+                seasonArmed = false
+                if (mine) openSeasonList()
+            }
+            return true
+        }
+        val dir = dirOf(keyCode) ?: return false
+        if (down) {
+            seasonArmed = false
+            move(Part.SEASON, dir)
+        }
+        return true
+    }
+
+    /** The show's seasons in a small window under the dropdown: OK on one shows its episodes. */
+    private fun openSeasonList() {
+        if (seasons.isEmpty() || root.width <= 0 || paused || released) return
+        // Placed where the dropdown is laid out: the page at its top first.
+        if (glide.moving || glide.value != 0f) glide.snap(0f)
+        val at = Rect(0, 0, seasonButton.width, seasonButton.height)
+        root.offsetDescendantRectToMyCoords(seasonButton, at)
+        val inset = t.dpf(VodSizes.SEASON_LIST_INSET)
+        seasonList.open(
+            seasons.map { TitleRules.seasonLabel(it.number) }, seasonIndex(shownSeason), RectF(at),
+            RectF(inset, inset, root.width - inset, root.height - inset),
+            onClose = { focusBack ->
+                if (focusBack && !released) {
+                    if (seasonButton.isShown) seasonButton.requestFocus() else takeFocusBack()
+                }
+            },
+        ) { i -> seasons.getOrNull(i)?.let { applySeason(it.number) } }
+    }
+
+    /** Shows season [n]'s pods (rebuilt in place) and says it on the dropdown. */
     private fun applySeason(n: Int) {
-        main.removeCallbacks(settleSeason)
-        pendingSeason = null
         if (n == shownSeason && cardsSeason == n) return
         shownSeason = n
-        pills.markSelected(seasonIndex(n))
+        seasonButton.set(TitleRules.seasonLabel(n), null)
         showSeasonCards()
     }
 
@@ -1120,17 +1223,17 @@ class TitlePage(
         } else {
             r.isWatched(opened.id)
         }
-        val buttons = ArrayList<HoldPopup.Button>(3)
-        buttons += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched") { hold.markWatched(title, !watched) }
-        if (r.inContinueWatching(opened.id)) buttons += HoldPopup.Button("Remove from Continue Watching") { hold.removeFromContinue(title) }
-        buttons += HoldPopup.Button("Details") { openDetails() }
-        val anchor = header.buttons.moreButton
-        hold.open(title.name, buttons, anchor, anchor, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
+        val actions = ArrayList<HoldPopup.Button>(3)
+        actions += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched") { hold.markWatched(title, !watched) }
+        if (r.inContinueWatching(opened.id)) actions += HoldPopup.Button("Remove from Continue Watching") { hold.removeFromContinue(title) }
+        actions += HoldPopup.Button("Details") { openDetails() }
+        val anchor = buttons.moreButton
+        hold.open(title.name, actions, anchor, anchor, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
     }
 
     /** Details: the whole story, the facts, all the cast and crew, and where each came from (a wide settings window). */
     private fun openDetails() {
-        val back = header.buttons.moreButton
+        val back = buttons.moreButton
         host.hold.close(fade = false, focusBack = false)
         val d = details
         host.sidePanel.open(d.title.name, onClose = {
@@ -1140,13 +1243,16 @@ class TitlePage(
 
     // ---- The glide and pictures -------------------------------------------------------------------------------------
 
-    /** How far a show's page glides up for More Like This (its band ends on screen; the buttons stay just in view). */
+    /**
+     * How far a show's page glides up for More Like This (its band ends on screen; the season dropdown's row stays just
+     * in view, the text block above it gone).
+     */
     private fun glideTarget(): Float {
         val top = column.topOf(more)
         if (!isShow || top < 0 || root.height <= 0) return 0f
         val moreBottom = (top + more.bandHeight).toFloat()
-        val buttonsTop = (header.top + header.buttonsTop()).toFloat()
-        return VodSizes.glide(moreBottom, buttonsTop, root.height.toFloat(), t.dpf(VodSizes.GLIDE_KEEP_TOP))
+        val rowTop = stage.top + t.dpf(VodSizes.SEASON_TOP)
+        return VodSizes.glide(moreBottom, rowTop, root.height.toFloat(), t.dpf(VodSizes.GLIDE_KEEP_TOP))
     }
 
     /** Rows came or went (laid out again): a page glided for More Like This stays on it, wherever it now is. */
@@ -1165,7 +1271,7 @@ class TitlePage(
     private fun updateImages() {
         if (paused || released) return
         if (episodes.visibility == View.VISIBLE) {
-            val after = if (part == Part.MORE) VodSizes.EPISODE_BIND_AFTER - 1 else VodSizes.EPISODE_BIND_AFTER
+            val after = if (part == Part.MORE) VodSizes.POD_BIND_AFTER - 1 else VodSizes.POD_BIND_AFTER
             val range = RowMath.boundCards(episodes.chosen, episodes.items.size, 1, after)
             if (range != episodes.boundRange) episodes.bindImages(range)
         }
