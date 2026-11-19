@@ -548,6 +548,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * asking again. Null until read (from the store: at once).
      */
     private var vodDetails: TitleDetails? = null
+    private var nextSkipWarmed = false
     /** How long this start takes, step by step, for one "FirePlayerDiag: start …" line at the first picture. */
     private var launch = LaunchLog(SystemClock.elapsedRealtime())
     private var launchNote = ""
@@ -2488,9 +2489,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updatePostPlay()
             noteWhilePlaying()
             source?.let { s ->
-                player?.takeIf { it.duration != C.TIME_UNSET }?.let { s.nearEnd(it.currentPosition, it.duration) }
-                // Stage 4: a stall that goes on is judged while it lasts.
-                s.tick()
+                player?.takeIf { it.duration != C.TIME_UNSET }?.let {
+                    s.nearEnd(it.currentPosition, it.duration)
+                    // With the next episode's sources, its Skip intro times are asked for too (once).
+                    val n = s.next
+                    if (n != null && !nextSkipWarmed && it.duration - it.currentPosition <= PlayRules.NEXT_LOOKUP_MS) {
+                        nextSkipWarmed = true
+                        warmSkipTimes(s.request.imdbId, n.season, n.episode, 0L)
+                    }
+                }
+                // Stage 4: a stall that goes on is judged while it lasts (the same source reopened first, then the rules).
+                s.tick(player?.totalBufferedDuration ?: 0L)
             }
             checkFreeze()
             tellDamageSkip()
@@ -2657,6 +2666,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * TMDB once per episode, for one matched to it; null meanwhile, or when it isn't matched.
      */
     private fun isSeriesFinale(entry: Entry): Boolean? {
+        // From Films & Shows: by the show's stored details (ended, and nothing listed after this episode).
+        source?.takeIf { entry.storeKey != null }?.let { vod ->
+            val d = vodDetails ?: return null
+            return vod.request.target.episode?.let { PlayerMeta.isFinale(d, it) }
+        }
         val g = guide ?: return null
         val ep = guideEpisode(entry)?.takeIf { g.tmdbId > 0 && it.match != ShowGuide.Match.NONE } ?: return null
         if (!tmdb.isConfigured) return null
@@ -5731,6 +5745,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             soundOnDevice = true
             rebuildPlayer()
             player?.play()
+        }
+
+        override fun reopen(): Boolean {
+            val p = player ?: return false
+            // Not while something else has the film in hand: a retry, a jump being lined up, a question, the TV switching.
+            if (retryPending || seeking || pausedForSwitch || pausedForFreeze || resumeDialogShowing || isFinishing ||
+                errorBox.visibility == View.VISIBLE || p.playbackState != Player.STATE_BUFFERING || !p.playWhenReady
+            ) return false
+            // Stopped and loaded again where it stands: a new connection to the same link. The spinner stays up over it.
+            retryPending = true
+            shownPercent = 0
+            buffering.visibility = View.VISIBLE
+            p.stop()
+            p.prepare()
+            retryPending = false
+            return true
+        }
+
+        override fun log(text: String) {
+            android.util.Log.i(PlaybackDiag.TAG, "recovery $text")
         }
 
         override fun playNext(next: PlayRequest) {

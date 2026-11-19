@@ -88,6 +88,15 @@ object PlayerMeta {
     /** The episode of [guide] that [request] plays; null for a film or an episode the guide doesn't list. */
     fun episode(guide: ShowGuide?, request: PlayRequest): ShowGuide.Ep? = guide?.episode(episodeId(request))
 
+    /**
+     * Whether [episode] is the show's very last: Cinemeta says the show has ended, and lists no regular episode after
+     * it (aired or not). The player's end card then offers Exit instead of Next episode, as for a film.
+     */
+    fun isFinale(details: TitleDetails, episode: EpisodeRef): Boolean {
+        if (episode.season <= 0 || details.status?.equals("Ended", ignoreCase = true) != true) return false
+        return details.episodes.none { it.season > episode.season || (it.season == episode.season && it.episode > episode.episode) }
+    }
+
     /** The reference a guide episode plays by (season, number and name), for the next play's request. */
     fun refOf(ep: ShowGuide.Ep): EpisodeRef = EpisodeRef(ep.season, ep.number, ep.name.ifEmpty { null })
 

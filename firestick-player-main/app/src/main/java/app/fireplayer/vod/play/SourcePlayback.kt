@@ -70,6 +70,15 @@ class SourcePlayback(
 
         /** The next episode, from its own sources: a new play in place of this one. */
         fun playNext(next: PlayRequest)
+
+        /**
+         * The same link opened again where the film stands, on a new connection ([StallAid]). False when the player
+         * can't just now (it's already retrying, or holding the film for something else).
+         */
+        fun reopen(): Boolean = false
+
+        /** One line for the log about a recovery ("stall 9 s, nothing arriving: same source reopened"): no links, no titles. */
+        fun log(text: String) = Unit
     }
 
     /** The source playing (or being opened), and the add-on offer it came from. */
@@ -98,6 +107,9 @@ class SourcePlayback(
     private var stallSwitching = false
     /** When the last switch for stalls was tried (it may have found nothing to switch to). */
     private var stallTryAt = Long.MIN_VALUE / 2
+    /** A stall's first aid: the same source opened again before any switch ([StallAid]). */
+    private val aid = StallAid()
+    private var stalledAt = 0L
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -185,7 +197,9 @@ class SourcePlayback(
         offer = o.offer
         playing = false
         stalled = false
+        aid.reset()
         loadTimer?.cancel()
+        if (switching) host.log("another source starts at ${PlayRules.clock(start)}")
         host.startSource(o, start, switching)
         if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
         armLoad(o.source)
@@ -274,20 +288,35 @@ class SourcePlayback(
     fun buffering(on: Boolean) {
         if (!playing) return
         val now = ticker.now()
+        if (on && !stalled) stalledAt = now
+        if (!on && stalled && now - stalledAt >= LOGGED_STALL_MS) host.log("playing again after a ${(now - stalledAt) / 1000} s stall")
         stalled = on
+        aid.stalled(now, on)
         session.stalls.buffering(now, on)
         if (!on) session.stalls.playing(now)
         checkStalls(now)
     }
 
-    /** Called as it plays (a few times a second): a stall that goes on is judged while it lasts, not only once it ends. */
-    fun tick() {
-        if (playing && stalled && !closed) checkStalls(ticker.now())
+    /**
+     * Called as it plays (a few times a second), with how much of the film is loaded ahead ([aheadMs]): a stall that
+     * goes on is judged while it lasts, not only once it ends. First the same source is opened again when nothing is
+     * arriving ([StallAid]); a stall that still goes on is the switching rules'.
+     */
+    fun tick(aheadMs: Long = 0L) {
+        if (!playing || !stalled || closed) return
+        val now = ticker.now()
+        if (!stallSwitching && aid.shouldReopen(now, aheadMs)) {
+            if (host.reopen()) {
+                host.log("stall ${(now - stalledAt) / 1000} s with nothing arriving: same source reopened at ${PlayRules.clock(host.positionMs())}")
+            }
+        }
+        checkStalls(now)
     }
 
     /** A seek, a resume or a rebuilt player: stalls right after it don't count. */
     fun jumped() {
         session.stalls.jumped(ticker.now())
+        aid.reset()
     }
 
     private fun checkStalls(now: Long) {
@@ -297,9 +326,11 @@ class SourcePlayback(
             if (now - stallTryAt < STALL_RETRY_MS) return
             stallTryAt = now
             stallSwitching = true
+            host.log("stalls past the limit: trying the next source")
             open(null, OpenWhy.STALLS)
         } else if (!limitNoted) {
             limitNoted = true
+            host.log("stalls past the limit, but no switch is left")
             host.notice(LIMIT_NOTE)
         }
     }
@@ -311,7 +342,17 @@ class SourcePlayback(
         val s = current ?: return end(GENERIC_STOP)
         val failure = session.failureOf(errorCode, httpStatus)
         playing = false
-        act(session.failed(s, failure))
+        val step = session.failed(s, failure)
+        host.log("error $errorCode" + (httpStatus?.let { " (HTTP $it)" } ?: "") + " counted as ${failure.kind}: " + stepWords(step))
+        act(step)
+    }
+
+    private fun stepWords(step: Step): String = when (step) {
+        Step.TryNext -> "the next source"
+        is Step.Retry -> "the same link again in ${step.afterMs / 1000} s"
+        Step.Refresh -> "a fresh link for the same file"
+        Step.DecodeOnDevice -> "the sound decoded on the Stick"
+        is Step.Stop -> "stopping"
     }
 
     private fun act(step: Step) {
@@ -406,6 +447,8 @@ class SourcePlayback(
         const val GENERIC_STOP = "This title couldn't play · Sources lists every file"
         /** A switch for stalls that found nothing is tried again after this long, ms. */
         const val STALL_RETRY_MS = 120_000L
+        /** A stall at least this long is noted in the log when it ends. */
+        const val LOGGED_STALL_MS = 2_000L
     }
 }
 

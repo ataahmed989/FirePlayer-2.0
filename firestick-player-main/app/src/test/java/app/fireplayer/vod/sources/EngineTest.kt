@@ -5,6 +5,7 @@ import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.EpisodeRef
+import app.fireplayer.vod.Failure
 import app.fireplayer.vod.FailureKind
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Kind
@@ -247,7 +248,7 @@ class EngineTest {
             asked += addon to target.key
             answers[addon]!!.invoke()
         },
-        LinkCheck({ _, _, _ -> LinkCheck.Answer(302, "https://cdn.invalid/x", null) }, { true }, { loop.now }),
+        LinkCheck({ _, _, _ -> LinkCheck.Answer(302, "https://cdn.invalid/d/x/f.mkv", null) }, { true }, { loop.now }),
         Budget(budgetStore) { wall }, { null }, { "en" }, loop, io, direct, { loop.now }, { wall }, { true },
     )
 
@@ -295,7 +296,8 @@ class EngineTest {
         answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
         // MediaFusion's answer is held back: the page's list has Torrentio's source only.
         val held = ArrayList<Runnable>()
-        val slowEngine = engineWith(Executor { r -> if (held.isEmpty() && asked.isNotEmpty()) held += r else r.run() })
+        var hold = true
+        val slowEngine = engineWith(Executor { r -> if (hold && asked.isNotEmpty()) { held += r; hold = false } else r.run() })
         val got = ArrayList<SourceList>()
         slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
         loop.advance()
@@ -328,7 +330,8 @@ class EngineTest {
         answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
         answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
         val held = ArrayList<Runnable>()
-        val slowEngine = engineWith(Executor { r -> if (held.isEmpty() && asked.isNotEmpty()) held += r else r.run() })
+        var hold = true
+        val slowEngine = engineWith(Executor { r -> if (hold && asked.isNotEmpty()) { held += r; hold = false } else r.run() })
         val got = ArrayList<SourceList>()
         slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
         loop.advance()
