@@ -693,8 +693,9 @@ private class FilmLoadControl(
         if (cap < budgetBytes) freeLetGo(cap)
         val allocated = allocator.totalBytesAllocated
         val limit = FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
-        // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits.
-        if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US && !isLive(parameters)) {
+        // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits. (A live
+        // channel's is never read: shouldStartPlayback leaves those to Media3's own rule.)
+        if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US) {
             fullUs = parameters.bufferedDurationUs
             fullPeriod = parameters.mediaPeriodId.periodUid
         }

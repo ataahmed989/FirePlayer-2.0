@@ -621,7 +621,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         const val MAX_TAG_LENGTH = 4
         // Searches answered lately, whichever screen asked (they're only read, never changed).
         const val SEARCH_KEPT_MS = 30 * 60_000L
-        val SEARCHES = RecentAnswers<JSONArray>(max = 48, keptMs = SEARCH_KEPT_MS)
+        val SEARCHES = RecentAnswers<JSONArray>(max = 24, keptMs = SEARCH_KEPT_MS)
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

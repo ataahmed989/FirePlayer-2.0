@@ -555,6 +555,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var launchNote = ""
 
     private fun launchMark(step: String) = launch.mark(step, SystemClock.elapsedRealtime())
+    /** When Back (or the film's end) began closing this screen; 0 when it isn't closing. For the "leave" line in the log. */
+    private var leftAt = 0L
     /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
@@ -815,7 +817,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
+        val releaseFrom = SystemClock.elapsedRealtime()
         releasePlayer()
+        // For the log on the TV: how long after Back this screen was taken down, and how long letting go of the player
+        // held the app's main thread (the page is on screen by then).
+        if (leftAt > 0) {
+            val now = SystemClock.elapsedRealtime()
+            android.util.Log.i(PlaybackDiag.TAG, "leave stop +${now - leftAt}ms · player let go in ${now - releaseFrom}ms")
+            leftAt = 0L
+        }
         // Nothing for auto sync to listen to till the player is back (onStart builds it; its tracks start it again).
         if (::autoSync.isInitialized) autoSync.playerGone()
         pausedForSwitch = false
@@ -1442,6 +1452,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Lets TiviMate know where we stopped (MX Player result contract). */
     private fun finishWithResult(animate: Boolean = true) {
         val p = player
+        leftAt = SystemClock.elapsedRealtime()
         val result = Intent("com.mxtech.intent.result.VIEW")
         // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
         // file:// link would crash the app on newer Android.
