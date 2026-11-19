@@ -10,7 +10,7 @@ import app.fireplayer.vod.SecretUrl
 import app.fireplayer.vod.SourceFacts
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
+import app.fireplayer.vod.parseLink
 import java.util.Locale
 
 /** One stream of an add-on's answer, read. Its link stays inside [offer] (memory only). */
@@ -195,7 +195,7 @@ object StreamParser {
      * secret. Null when none.
      */
     fun releaseOf(link: SecretUrl, stream: JSONObject?): ReleaseKey? {
-        val path = runCatching { URI(link.reveal()).rawPath }.getOrNull().orEmpty()
+        val path = parseLink(link.reveal())?.rawPath.orEmpty()
         val parts = path.split('/').filter { it.isNotEmpty() }
         val topIdx = stream?.takeIf { it.has("fileIdx") && !it.isNull("fileIdx") }?.optInt("fileIdx", -1)
         stream?.optString("infoHash")?.takeIf { it.isNotBlank() }?.let { ReleaseKey.of(it, topIdx)?.let { k -> return k } }

@@ -4,7 +4,7 @@ import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Failure
 import app.fireplayer.vod.FailureKind
 import app.fireplayer.vod.redactLinks
-import java.net.URI
+import app.fireplayer.vod.parseLink
 import java.net.URLDecoder
 import java.util.Locale
 
@@ -87,7 +87,7 @@ object Notices {
      * name or the slate's title, never the link.
      */
     fun classify(url: String, addon: Addon?): Failure? {
-        val uri = runCatching { URI(url.trim()) }.getOrNull() ?: return null
+        val uri = parseLink(url) ?: return null
         val path = uri.rawPath?.lowercase(Locale.ROOT) ?: return null
         TIO_VIDEO.find(path)?.let { m ->
             val name = m.groupValues[1]

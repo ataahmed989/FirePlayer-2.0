@@ -217,6 +217,21 @@ class SourceRulesTest {
 
     // ---- The vault ----
 
+    @Test
+    fun aTorrentioLinkWithPipesIsALink() {
+        // Torrentio separates its options with "|", which java.net.URI refuses (a made-up key, not a real one).
+        val pasted = "stremio://torrentio.strem.fun/providers=yts,eztv|sort=qualitysize|realdebrid=FAKEKEY123/manifest.json"
+        val base = AddonVault.normalise(pasted)
+        assertEquals("https://torrentio.strem.fun/providers=yts,eztv|sort=qualitysize|realdebrid=FAKEKEY123", base)
+        assertEquals("torrentio.strem.fun", SecretUrl.of(base!!)!!.host)
+        assertEquals(
+            "https://torrentio.strem.fun/providers=yts,eztv%7Csort=qualitysize%7Crealdebrid=FAKEKEY123/stream/movie/tt0111161.json",
+            app.fireplayer.vod.encodeLinkChars(base + "/stream/movie/tt0111161.json"),
+        )
+        // Already-encoded links stay as they are.
+        assertEquals("torrentio.strem.fun", SecretUrl.of("https://torrentio.strem.fun/a%7Cb")!!.host)
+    }
+
     private class MemoryStore : AddonVault.Store {
         val values = HashMap<String, String>()
         override fun get(name: String) = values[name]

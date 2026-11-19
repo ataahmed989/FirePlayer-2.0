@@ -42,7 +42,7 @@ class SecretUrl private constructor(private val value: String) {
     fun reveal(): String = value
 
     /** Where it points ("torrentio.strem.fun"), safe to show; null when it has no host. */
-    val host: String? get() = runCatching { java.net.URI(value).host }.getOrNull()?.removePrefix("www.")
+    val host: String? get() = parseLink(value)?.host?.removePrefix("www.")
 
     override fun toString(): String = "SecretUrl(${host ?: "?"})"
     override fun equals(other: Any?): Boolean = other is SecretUrl && other.value == value
@@ -57,6 +57,26 @@ class SecretUrl private constructor(private val value: String) {
         }
     }
 }
+
+/**
+ * Encodes the characters a strict URI parser refuses but add-on links carry: Torrentio's options are separated by
+ * "|" (e.g. "…/providers=yts|realdebrid=…/manifest.json"), and a pasted link may hold spaces or braces. Characters
+ * already percent-encoded stay as they are.
+ */
+fun encodeLinkChars(url: String): String {
+    val sb = StringBuilder(url.length + 8)
+    for (ch in url.trim()) {
+        when (ch) {
+            '|', ' ', '"', '<', '>', '\\', '^', '`', '{', '}' -> sb.append('%').append(String.format(java.util.Locale.ROOT, "%02X", ch.code))
+            else -> sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
+/** [url] parsed leniently (see [encodeLinkChars]); null when it still isn't a link. */
+fun parseLink(url: String): java.net.URI? =
+    runCatching { java.net.URI(encodeLinkChars(url)) }.getOrNull()
 
 private val LINK = Regex("""(?i)\b(?:https?|stremio)://\S+""")
 

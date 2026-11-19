@@ -1,5 +1,6 @@
 package app.fireplayer.vod.sources
 
+import app.fireplayer.vod.encodeLinkChars
 import app.fireplayer.vod.SecretUrl
 import app.fireplayer.vod.SourceTarget
 import java.io.ByteArrayOutputStream
@@ -28,7 +29,7 @@ fun interface StreamsHttp {
         const val MAX_BYTES = 4 shl 20
 
         /** The full request link: memory only. */
-        fun linkFor(base: SecretUrl, target: SourceTarget): String = base.reveal().trimEnd('/') + "/" + target.key
+        fun linkFor(base: SecretUrl, target: SourceTarget): String = encodeLinkChars(base.reveal().trimEnd('/') + "/" + target.key)
 
         /** The app's: HttpURLConnection (Android asks for gzip and inflates it), a size cap, cancellable. */
         val URL_STREAMS = StreamsHttp { base, target, timeoutMs, cancel ->

@@ -8,7 +8,8 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URI
+import app.fireplayer.vod.encodeLinkChars
+import app.fireplayer.vod.parseLink
 import java.net.URL
 import java.net.UnknownHostException
 import java.util.Locale
@@ -99,10 +100,10 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
         else -> Failure(FailureKind.UNKNOWN, addon, "HTTP $code")
     }
 
-    private fun host(url: String): String? = runCatching { URI(url).host?.lowercase(Locale.ROOT) }.getOrNull()
+    private fun host(url: String): String? = parseLink(url)?.host?.lowercase(Locale.ROOT)
 
     private fun resolve(base: String, location: String): String? =
-        runCatching { URI(base).resolve(location.trim()).toString() }.getOrNull()
+        runCatching { parseLink(base)?.resolve(encodeLinkChars(location))?.toString() }.getOrNull()
 
     companion object {
         const val LIMIT_MS = 20_000L
