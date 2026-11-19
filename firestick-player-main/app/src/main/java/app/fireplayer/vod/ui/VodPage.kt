@@ -1221,6 +1221,10 @@ class VodPage(
     /** Search: the trash button asks first (the app's question window), then the history goes. */
     private fun confirmClearHistory() {
         val activity = ctx as? Activity ?: return
+        if (history?.entries.isNullOrEmpty()) {
+            showNotice(NO_HISTORY)
+            return
+        }
         FireDialog.ask(
             activity,
             "Clear search history?",
@@ -1240,6 +1244,7 @@ class VodPage(
         const val ROW_CARDS = RowRules.ROW_CARDS
         /** My List with nothing in it. */
         const val MY_LIST_EMPTY = "Titles you add with + show up here"
+        const val NO_HISTORY = "No searches to clear"
         /** Rows are asked again when the page comes back after this long (the repository answers from its cache). */
         private const val RELOAD_MS = 10L * 60 * 1000
     }
