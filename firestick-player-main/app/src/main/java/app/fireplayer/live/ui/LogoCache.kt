@@ -77,15 +77,15 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: 
             var sample = 1
             while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx / 2) sample *= 2
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
-            return Logo(bmp, lightPlate(bmp))
+            return logoOf(bmp)
         } finally {
             conn.disconnect()
         }
     }
 
-    /** The logo's plate ([LogoPlate.light]), from a grid of at most about 64 x 64 of its pixels. */
-    private fun lightPlate(bmp: Bitmap): Boolean {
-        if (bmp.width <= 0 || bmp.height <= 0) return false
+    /** The logo with its plate in each look ([LogoPlate.light]), from a grid of at most about 64 x 64 of its pixels. */
+    private fun logoOf(bmp: Bitmap): Logo {
+        if (bmp.width <= 0 || bmp.height <= 0) return Logo(bmp, false)
         val step = maxOf(1, maxOf(bmp.width, bmp.height) / 64)
         val cols = (bmp.width + step - 1) / step
         val rows = (bmp.height + step - 1) / step
@@ -97,7 +97,7 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: 
             var x = 0
             while (x < bmp.width) { px[n++] = line[x]; x += step }
         }
-        return LogoPlate.light(px, n)
+        return Logo(bmp, LogoPlate.light(px, n), LogoPlate.light(px, n, LogoPlate.DARK_INK_GLASS))
     }
 
     private companion object {
