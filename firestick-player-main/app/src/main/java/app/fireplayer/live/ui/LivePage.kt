@@ -521,6 +521,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** Changes this page announced ([announce]) that its own listener is still to hear of. */
     private var ownChanges = 0
 
+    /** When the tab last started showing (uptime ms), until its guide is listed: for the log of how long that took. */
+    private var openedAt = 0L
+    /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
+    private var keyAt = 0L
+
     /** The tab is showing (activity started, or switched to this tab). */
     fun start() {
         if (started) return
@@ -530,8 +535,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         player.addListener(statusListener)
         sync.addListener(dataListener)
         // A channel that was playing comes back in the miniature (not full screen).
+        openedAt = android.os.SystemClock.uptimeMillis()
+        startedAt = openedAt
         if (!player.onScreenStarted() && player.currentKey == null) {
-            prefs.lastChannel?.let { key -> resumeLast(key) }
+            prefs.lastChannel?.let { key ->
+                // Built now, while the channel is read, rather than when it arrives.
+                player.warm()
+                resumeLast(key)
+            }
         }
         // The rail and column as they were (the rail shows with the column, or while there's nothing else).
         layoutFor(columnOpen = sidebarOpen || playlists.isEmpty(), animate = false)
@@ -550,6 +561,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // would hand it to the column's top row, whose preview would then switch the guide.
         popup.close(fade = false)
         backClosedPopup = false
+        dropZap()
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
         player.onScreenStopped(host.videoOwner)
@@ -662,6 +674,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post {
                 if (serial != loadSerial || released) return@post
                 showChannels(s, list, focus, enterGrid)
+                if (openedAt != 0L) {
+                    Log.i(TAG, "Live TV: guide listed (${list.size} channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening")
+                    openedAt = 0L
+                }
             }
         }
     }
@@ -807,9 +823,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
-    private fun tune(channel: Channel, known: Playlist? = null): Boolean {
+    /**
+     * Plays [channel]. [pressedAt] is when the key that asked for it went down (for the log of how long it took to
+     * show): the last key here unless it's given, when that was a moment ago.
+     */
+    private fun tune(channel: Channel, known: Playlist? = null, pressedAt: Long = recentKey()): Boolean {
+        // Whatever a held key was heading for is overtaken.
+        main.removeCallbacks(tunePending)
+        zapPending = null
         val playlist = known ?: playlists.firstOrNull { it.id == channel.playlistId } ?: return false
-        val result = player.tune(LiveSession.Source(channel.key.toString(), channel.url, playlist.id, playlist.maxConnections))
+        val result = player.tune(LiveSession.Source(channel.key.toString(), channel.url, playlist.id, playlist.maxConnections), pressedAt)
         if (result == LiveSession.Tune.NoConnection) {
             showNotice("This playlist's connection limit is reached")
             return false
@@ -831,13 +854,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The channel playing, kept here: it may not be in the scope the guide shows. */
     private var playingChannel: Channel? = null
 
+    /** The last key's time when it went down within the last couple of seconds, else 0 (nothing was pressed for this). */
+    private fun recentKey(): Long = keyAt.takeIf { it > 0 && android.os.SystemClock.uptimeMillis() - it < 2_000 } ?: 0L
+
     private fun resumeLast(key: ChannelKey) {
         bg {
             val ch = db.channel(key) ?: return@bg
             val pl = db.playlist(ch.playlistId) ?: return@bg
-            main.post { if (started && player.currentKey == null) tune(ch, pl) }
+            // Timed from the tab's opening: that's the wait the viewer sees.
+            main.post { if (started && player.currentKey == null) tune(ch, pl, pressedAt = openedAtForTune()) }
         }
     }
+
+    private var startedAt = 0L
+    private fun openedAtForTune(): Long = startedAt.takeIf { android.os.SystemClock.uptimeMillis() - it < 10_000 } ?: 0L
 
     private fun openSidebar(focus: Boolean) {
         val was = sidebarOpen
@@ -936,6 +966,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     fun toGuide(toPlaying: Boolean = false) {
         if (!fullScreen) return
+        dropZap()
         fullScreen = false
         revealKey = 0
         controls.hideAll()
@@ -1004,9 +1035,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun refreshControls() {
-        val key = ChannelKey.parse(player.currentKey) ?: return
+        // The channel a held key has reached is named at once, before it's opened ([zap]).
+        val pending = zapPending
+        val key = pending?.key ?: ChannelKey.parse(player.currentKey) ?: return
         // The guide's copy first (fresh favorite state), else the channel as tuned: it may be outside this scope.
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key }
+        val ch = pending ?: guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key }
         if (ch == null) {
             bg {
                 val found = db.channel(key) ?: return@bg
@@ -1033,21 +1066,56 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var controlsProgrammesFor: ChannelKey? = null
     private var controlsProgrammes: List<Programme> = emptyList()
 
-    private fun zap(delta: Int) {
+    /** The channel a held Up/Down (or Channel) key has reached: named at once, opened when the key lets up ([zap]). */
+    private var zapPending: Channel? = null
+
+    private val tunePending = Runnable {
+        val ch = zapPending ?: return@Runnable
+        zapPending = null
+        if (fullScreen && started && tune(ch)) zapped(ch) else refreshControls()
+    }
+
+    /**
+     * The next channel down the guide's list ([delta] +1) or the one before (-1), round at the ends. A press opens it
+     * at once. A [held] key runs on through the channels: each is named at once, and only the one it stops on is
+     * opened (a stream opened for every channel passed would be thrown away again, and providers count connections).
+     */
+    private fun zap(delta: Int, held: Boolean = false) {
         val list = guide.channelList()
         if (list.isEmpty()) return
-        val cur = list.indexOfFirst { it.key.toString() == player.currentKey }
+        val from = zapPending?.key ?: ChannelKey.parse(player.currentKey)
+        val cur = list.indexOfFirst { it.key == from }
         val next = list[Math.floorMod((if (cur < 0) 0 else cur) + delta, list.size)]
-        if (tune(next)) {
-            zappedInFull = true
-            guide.focusChannel(next.key)
+        main.removeCallbacks(tunePending)
+        if (held) {
+            zapPending = next
             refreshControls()
-            if (!controls.controlsShown) {
-                controls.showInfo()
-                main.removeCallbacks(hideControls)
-                main.postDelayed(hideControls, INFO_MS)
-            }
+            showZapInfo()
+            main.postDelayed(tunePending, ZAP_SETTLE_MS)
+            return
         }
+        if (tune(next)) zapped(next)
+    }
+
+    private fun zapped(next: Channel) {
+        zappedInFull = true
+        guide.focusChannel(next.key)
+        refreshControls()
+        showZapInfo()
+    }
+
+    /** The channel's name and programme at the top for a moment (unless the controls are up anyway). */
+    private fun showZapInfo() {
+        if (controls.controlsShown) return
+        controls.showInfo()
+        main.removeCallbacks(hideControls)
+        main.postDelayed(hideControls, INFO_MS)
+    }
+
+    /** A held key's channel that wasn't opened yet is forgotten (full screen is left, or the tab). */
+    private fun dropZap() {
+        main.removeCallbacks(tunePending)
+        zapPending = null
     }
 
     /** The hide timer found a dialog or window open over the controls and waited for it. */
@@ -1385,7 +1453,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private val clockTick = object : Runnable {
         override fun run() {
-            if (fullScreen && controls.visibility == View.VISIBLE) controls.tick(System.currentTimeMillis())
+            if (fullScreen && controls.visibility == View.VISIBLE && controls.tick(System.currentTimeMillis())) refreshControls()
             detailChannelObj?.let { showDetails(it, guide.focusedCell()) }
             main.postDelayed(this, 15_000)
         }
@@ -1397,7 +1465,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun dispatchKey(event: KeyEvent): Boolean {
         if (FireDialog.isShowing(activity)) return false
         val down = event.action == KeyEvent.ACTION_DOWN
-        if (down) scheduleIdle()
+        if (down) {
+            scheduleIdle()
+            keyAt = event.eventTime
+        }
         val code = event.keyCode
 
         if (code == KeyEvent.KEYCODE_BACK) return back(event)
@@ -1465,10 +1536,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         when (code) {
             // Up (and Channel +) goes on down the guide's list to the next channel, Down (Channel -) back to the one
             // before (the user's choice), round at the ends.
-            KeyEvent.KEYCODE_CHANNEL_UP -> zap(+1)
-            KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(-1)
-            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(+1)
-            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(-1)
+            KeyEvent.KEYCODE_CHANNEL_UP -> zap(+1, event.repeatCount > 0)
+            KeyEvent.KEYCODE_CHANNEL_DOWN -> zap(-1, event.repeatCount > 0)
+            KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(+1, event.repeatCount > 0)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(-1, event.repeatCount > 0)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> reveal(code, event)
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
             else -> return false
@@ -1556,6 +1627,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     companion object {
         private const val TAG = "FirePlayerLive"
         private const val INFO_MS = 4_000L
+        /** A held zap key's channel is opened once no repeat has come for this long (repeats come about every 50 ms). */
+        private const val ZAP_SETTLE_MS = 250L
         /** Column and rail sliding in and out. */
         private const val SLIDE_MS = 220L
         /** The miniature growing to full screen, and shrinking back. */

@@ -51,6 +51,8 @@ class SettingsCategoryTest {
         )
         val added = listOf(
             "Manage playlists", "Manage EPG sources", "Live TV buffer",
+            // Manage playlists and Update playlists sit under it, as Manage EPG sources does under EPG sources.
+            "Playlists",
             // Films & Shows step 3: the add-ons and This TV.
             "Torrentio", "MediaFusion", "Check again", "Best for this TV",
             // Films & Shows step 4: Settings › Rows, a window per page.

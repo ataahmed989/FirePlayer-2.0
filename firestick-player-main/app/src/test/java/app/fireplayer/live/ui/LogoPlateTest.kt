@@ -62,4 +62,33 @@ class LogoPlateTest {
         assertEquals(LogoPlate.LIGHT, LogoPlate.color(true))
         assertEquals(LogoPlate.SOFT, LogoPlate.color(false))
     }
+
+    // The large logo's plate (LogoBadge): 92 px high with 18 x 12 px of room, so the logo's box is 68 px high.
+
+    private fun badge(w: Int, h: Int) = LogoPlate.badgeWidth(w, h, height = 92, padX = 18f, padY = 12f, minWidth = 92, maxWidth = 208)
+
+    @Test fun theBadgeIsAsWideAsItsLogoNeeds() {
+        // Twice as wide as tall: 136 x 68 inside, plus the room each side.
+        assertEquals(136 + 36, badge(200, 100))
+        assertEquals(136 + 36, badge(50, 25))
+    }
+
+    @Test fun aTallLogoGetsTheLeastWidthAndAVeryWideOneTheMost() {
+        // Square: 68 x 68 inside, plus the room each side.
+        assertEquals(68 + 36, badge(100, 100))
+        assertEquals(92, badge(40, 160))
+        assertEquals(208, badge(600, 100))
+        // Nothing to show (no logo yet): the least width.
+        assertEquals(92, badge(0, 0))
+    }
+
+    @Test fun aLogoIsFittedWholeAndNeverStretched() {
+        // A very wide logo in the widest badge's box (172 x 68): the width decides, and the same scale serves both sides.
+        val s = LogoPlate.fitScale(600, 100, 172f, 68f)
+        assertEquals(172f / 600, s, 1e-6f)
+        assertTrue(100 * s <= 68f)
+        // A tall one: the height decides.
+        assertEquals(68f / 160, LogoPlate.fitScale(40, 160, 56f, 68f), 1e-6f)
+        assertEquals(0f, LogoPlate.fitScale(0, 10, 56f, 68f), 0f)
+    }
 }

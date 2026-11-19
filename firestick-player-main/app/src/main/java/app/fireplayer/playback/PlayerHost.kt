@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.SurfaceView
 import androidx.annotation.OptIn
@@ -32,6 +33,11 @@ import app.fireplayer.player.PlayerFactory
  * the stream). Lives for the process; the screen tells it when it starts and stops ([onScreenStarted] /
  * [onScreenStopped]) so no stream stays open in the background.
  *
+ * A channel that fails, or that its provider drops, is tried again by itself for as long as the viewer stays on it
+ * ([LiveReconnect]: after about 1, 2, 4 and 8 seconds, then every 30), the last frame staying on screen meanwhile
+ * ([Status.reconnecting]); only a picture this TV can't decode gives up with a message. Each recovery is logged, and
+ * so is how long each channel took to show ([LiveTiming]); never a link or a name.
+ *
  * Everything here runs on the main thread; Media3 does its loading and decoding on its own playback threads.
  * VOD keeps its own player in PlayerActivity, untouched.
  */
@@ -43,7 +49,7 @@ class PlayerHost private constructor(context: Context) {
         val key: String?,
         val buffering: Boolean,
         val playing: Boolean,
-        /** Shown when the channel can't be played (after retries); null while all is well. */
+        /** Shown when the channel can't be played at all (a picture this TV can't decode); null while all is well. */
         val error: String?,
         val video: Format?,
         val audio: Format?,
@@ -54,6 +60,10 @@ class PlayerHost private constructor(context: Context) {
         val paused: Boolean = false,
         /** Playing (or paused) behind the live edge: Go live is offered until it's back at live. */
         val behindLive: Boolean = false,
+        /** The channel failed or was dropped and is being tried again (until frames play again). */
+        val reconnecting: Boolean = false,
+        /** Why, and how often it's tried, once the quick tries are used up (to show while [reconnecting]). */
+        val waiting: String? = null,
     )
 
     data class Track(val groupIndex: Int, val trackIndex: Int, val label: String, val selected: Boolean)
@@ -72,8 +82,15 @@ class PlayerHost private constructor(context: Context) {
     /** The Live TV buffer [player] was built with. */
     private var builtBuffer: LiveBuffer? = null
     private var surface: SurfaceView? = null
-    private var retries = 0
+    private val reconnect = LiveReconnect()
+    /** Between a failure and frames playing again. */
+    private var reconnecting = false
+    private var reconnectingSince = 0L
+    private var waitReason: String? = null
     private var error: String? = null
+    private val timing = LiveTiming()
+    /** When the key that asked for the channel being opened was pressed (uptime ms; 0: not known). */
+    private var pressedAt = 0L
     /** Captions the viewer turned on stay on from channel to channel (the kind chosen, CC1 or digital, first). */
     private var captionsOn = false
     private var captionsMime: String? = null
@@ -111,16 +128,30 @@ class PlayerHost private constructor(context: Context) {
 
     fun removeListener(l: Listener) { listeners -= l }
 
-    /** Plays [source] (or keeps playing it when it already is). */
-    fun tune(source: LiveSession.Source): LiveSession.Tune {
+    /**
+     * Plays [source] (or keeps playing it when it already is). [pressedAt] is when the key that asked for it was
+     * pressed (KeyEvent.eventTime; 0 when there was none), for the log of how long the channel took to show.
+     */
+    fun tune(source: LiveSession.Source, pressedAt: Long = 0L): LiveSession.Tune {
+        this.pressedAt = pressedAt
         var result = session.tune(source)
         if (result == LiveSession.Tune.AlreadyPlaying && streamDead()) {
             // The channel is still ours (its lease is held) but the stream gave up: try it again from the start.
             openStream(source)
             result = LiveSession.Tune.Started
         }
+        this.pressedAt = 0L
         publish()
         return result
+    }
+
+    /**
+     * Live TV is opening and a channel is about to be tuned (the one last watched, once it's been read): the player
+     * is built now, while that's read, rather than when the channel arrives. It holds no decoder until a stream is
+     * opened, and is let go again if the screen stops, or a film starts, with nothing tuned.
+     */
+    fun warm() {
+        if (player == null && session.state == LiveSession.State.IDLE) playerFor(emptyMap())
     }
 
     private fun streamDead(): Boolean {
@@ -155,12 +186,15 @@ class PlayerHost private constructor(context: Context) {
     fun onScreenStopped(owner: Any? = null) {
         if (owner != null && surface != null && owner !== surface) return
         session.suspend()
+        // A player built ahead ([warm]) that never got a channel.
+        if (player != null && session.state != LiveSession.State.PLAYING) closeStream()
         publish()
     }
 
     /** The viewer closed live playback, or a film is starting. */
     fun stop() {
         session.stop()
+        if (player != null) closeStream()
         publish()
     }
 
@@ -327,7 +361,9 @@ class PlayerHost private constructor(context: Context) {
         main.removeCallbacks(retry)
         // Tracks to pick again are only for the same channel reopened by Live TV buffer.
         if (source.key != pickAgainKey) { pickAgainAudio = null; pickAgainCaption = null }
-        retries = 0
+        reconnect.reset()
+        reconnecting = false
+        waitReason = null
         error = null
         // A fresh stream starts at live.
         paused = false
@@ -336,7 +372,9 @@ class PlayerHost private constructor(context: Context) {
             delayKey = source.key
             delays.audioUs = 0L
         }
+        val before = player
         val p = playerFor(source.headers)
+        timing.opened(SystemClock.uptimeMillis(), pressedAt, LiveTiming.kindOf(Uri.parse(source.url).lastPathSegment), before === p)
         // The shared Defaults (Settings › Defaults, the same values films use): the sound in the chosen language when
         // the channel has it, and that language's captions first once captions are on.
         val prefs = Prefs(app)
@@ -361,6 +399,10 @@ class PlayerHost private constructor(context: Context) {
         player = null
         builtHeaders = null
         builtBuffer = null
+        timing.clear()
+        reconnect.reset()
+        reconnecting = false
+        waitReason = null
         error = null
         paused = false
         behind = false
@@ -403,6 +445,7 @@ class PlayerHost private constructor(context: Context) {
     /** Reconnects after an error or a dropped stream: back to the live edge, prepared again. */
     private val retry = Runnable {
         val p = player ?: return@Runnable
+        Log.i(TAG, "Live recovery: reconnecting (try ${reconnect.attempt})")
         // Reconnecting lands at the live edge: whatever was behind has recalibrated itself.
         behind = false
         paused = false
@@ -439,24 +482,44 @@ class PlayerHost private constructor(context: Context) {
                 p.prepare()
                 return
             }
-            if (retries < RETRY_DELAYS_MS.size) {
-                Log.i(TAG, "Live stream error ${e.errorCodeName}; retry ${retries + 1}")
-                main.postDelayed(retry, RETRY_DELAYS_MS[retries++])
-                return
-            }
-            error = when (e.errorCode) {
+            val reason = when (e.errorCode) {
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "The channel isn't available right now"
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Can't reach the channel's server"
-                PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-                PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "This TV can't play this channel's picture"
+                in CANT_DECODE -> "This TV can't play this channel's picture"
                 else -> "The channel couldn't be played"
             }
-            publish()
+            // A picture this TV can't decode won't get better by asking again: a couple of tries (the decoder may only
+            // have been busy), then it says so. Anything else is tried for as long as the viewer stays on the channel.
+            if (e.errorCode in CANT_DECODE && reconnect.attempt >= CANT_DECODE_TRIES) {
+                Log.i(TAG, "Live recovery: gave up after ${reconnect.attempt} tries (${e.errorCodeName})")
+                main.removeCallbacks(retry)
+                reconnecting = false
+                waitReason = null
+                error = reason
+                publish()
+                return
+            }
+            // The code's name only: an error's own text can hold the stream's address.
+            reconnectAfter(e.errorCodeName, reason, ended = false)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            if (isPlaying) retries = 0
+            val now = SystemClock.elapsedRealtime()
+            if (!isPlaying) {
+                reconnect.notPlaying(now)
+                return
+            }
+            reconnect.playing(now)
+            if (reconnecting) {
+                Log.i(TAG, "Live recovery: playing again after ${now - reconnectingSince} ms (${reconnect.attempt} tries)")
+                reconnecting = false
+                waitReason = null
+            }
+        }
+
+        override fun onRenderedFirstFrame() {
+            timing.firstFrame(SystemClock.uptimeMillis())?.let { Log.i(TAG, it) }
         }
 
         override fun onPlaybackSuppressionReasonChanged(reason: Int) {
@@ -470,17 +533,30 @@ class PlayerHost private constructor(context: Context) {
         }
 
         override fun onPlaybackStateChanged(state: Int) {
-            // A live channel doesn't end: the provider dropped the stream. Reconnect, with the same back-off as errors.
+            if (state == Player.STATE_READY) timing.ready(SystemClock.uptimeMillis())
+            // A live channel doesn't end: the provider dropped the stream. Reconnect, almost at once the first time
+            // (what was loaded has played out), then with the same back-off as errors.
             if (state != Player.STATE_ENDED || session.playingKey == null) return
             if (player == null) return
-            if (retries < RETRY_DELAYS_MS.size) {
-                main.removeCallbacks(retry)
-                main.postDelayed(retry, RETRY_DELAYS_MS[retries++])
-            } else {
-                error = "The channel stopped"
-                publish()
-            }
+            reconnectAfter("stream ended", "The channel stopped", ended = true)
         }
+    }
+
+    /**
+     * The channel is tried again after [LiveReconnect]'s wait; the screen is told it's waiting ([Status.reconnecting],
+     * published with the player's other news) and, once the quick tries are used up, why ([Status.waiting]).
+     */
+    private fun reconnectAfter(what: String, reason: String, ended: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        if (!reconnecting) {
+            reconnecting = true
+            reconnectingSince = now
+        }
+        val wait = reconnect.failed(now, ended)
+        if (reconnect.slow) waitReason = "$reason\nTrying again every ${LiveReconnect.SLOW_MS / 1000} seconds"
+        Log.i(TAG, "Live recovery: $what; try ${reconnect.attempt} in $wait ms")
+        main.removeCallbacks(retry)
+        main.postDelayed(retry, wait)
     }
 
     private fun publish() {
@@ -503,6 +579,8 @@ class PlayerHost private constructor(context: Context) {
             audioTracks = tracksOf(tracks, C.TRACK_TYPE_AUDIO),
             paused = paused && session.playingKey != null,
             behindLive = p != null && session.playingKey != null && stillBehind(p),
+            reconnecting = reconnecting && session.playingKey != null,
+            waiting = waitReason,
         )
     }
 
@@ -527,7 +605,14 @@ class PlayerHost private constructor(context: Context) {
 
     companion object {
         private const val TAG = "FirePlayerLive"
-        private val RETRY_DELAYS_MS = longArrayOf(1_000, 2_000, 4_000)
+        /** Errors that say this TV can't decode the channel's picture, and how often such a channel is tried again. */
+        private val CANT_DECODE = setOf(
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+        )
+        private const val CANT_DECODE_TRIES = 2
         /** Within this of the live edge counts as live again (the player itself sits a few seconds back). */
         private const val LIVE_EDGE_SLACK_MS = 20_000L
 

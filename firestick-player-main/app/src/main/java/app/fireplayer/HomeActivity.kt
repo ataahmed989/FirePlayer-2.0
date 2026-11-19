@@ -104,6 +104,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private var videoRadius = 0f
     /** Darkens the full-screen live picture (Screen dimmer), under the controls. */
     private lateinit var liveDimmer: View
+    /**
+     * The buffering symbol over the live picture, miniature and full screen (under the page, so the guide and the
+     * controls draw over it), and when it shows ([app.fireplayer.ui.BusySigns]: after about 300 ms, gone the moment
+     * frames play; "Reconnecting…" under it after a few seconds of that).
+     */
+    private lateinit var busy: app.fireplayer.ui.BusyOverlay
+    private val busySigns = app.fireplayer.ui.BusySigns()
+    private val busyCheck = Runnable { showBusy(player.status()) }
 
     private val player by lazy { PlayerHost.get(this) }
     /** Film mode memory and background release (§6.6). */
@@ -124,6 +132,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         surface = findViewById(R.id.live_surface)
         captions = findViewById(R.id.live_captions)
         liveDimmer = findViewById(R.id.live_dimmer)
+        busy = app.fireplayer.ui.BusyOverlay(this, shellTokens)
+        root.addView(busy, root.indexOfChild(liveDimmer) + 1, busy.params())
         pages = findViewById(R.id.page_container)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
@@ -263,6 +273,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onDestroy() {
         root.viewTreeObserver.removeOnGlobalFocusChangeListener(focusWatcher)
+        root.removeCallbacks(busyCheck)
         player.removeListener(videoSizeListener)
         player.detach(surface)
         live.release()
@@ -614,6 +625,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         laidAt = null
         pictureFull = false
         wallpaper.setHole(null, 0f)
+        busy.away()
         resetTransform()
         if (surface.visibility != View.INVISIBLE) {
             val lp = surface.layoutParams as FrameLayout.LayoutParams
@@ -643,6 +655,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         laidAt = at
         surface.visibility = View.VISIBLE
         wallpaper.setHole(target, radius, full = videoFull)
+        busy.place(target.centerX(), target.centerY(), if (videoFull) 1f else 0f)
         pictureFull = videoFull
         // The full-screen controls' glass shows a copy of the picture: one of it where it is now.
         if (moved && filmOn) film?.frameChanged()
@@ -703,6 +716,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         holeNow.set(hole.left, hole.top, hole.right, hole.bottom)
         // Not full screen until the end: the wallpaper shows around the picture all the way.
         wallpaper.setHole(holeNow, motion.radius, full = false)
+        // The buffering symbol stays on the picture's middle and grows with it (translation and scale only).
+        busy.place(holeNow.centerX(), holeNow.centerY(), motion.fullness)
         showDimmer()
     }
 
@@ -747,8 +762,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         override fun onLiveStatus(status: PlayerHost.Status) {
             // The screen stays on while a channel plays (the Fire TV screensaver would cover it), as films do; paused, it
             // may sleep, as a paused film's does.
-            root.keepScreenOn = status.key != null && status.error == null && !status.paused
+            // A channel that's down to a try every half minute lets the screen sleep too (it would otherwise hold a
+            // still picture on the TV for good).
+            root.keepScreenOn = status.key != null && status.error == null && !status.paused && status.waiting == null
             film?.playing = status.playing
+            showBusy(status)
             if (status.videoSize != lastSize) {
                 lastSize = status.videoSize
                 layoutVideo()
@@ -756,6 +774,16 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         }
 
         override fun onLiveCues(cues: List<Cue>) = showCues(cues)
+    }
+
+    /** The buffering symbol and its text as [status] and the time so far say; asks itself again when they're next due. */
+    private fun showBusy(status: PlayerHost.Status) {
+        val waiting = status.key != null && status.error == null && !status.paused && !status.playing &&
+            (status.buffering || status.reconnecting)
+        val next = busySigns.update(waiting, status.reconnecting, android.os.SystemClock.uptimeMillis())
+        root.removeCallbacks(busyCheck)
+        if (next != app.fireplayer.ui.BusySigns.NONE) root.postDelayed(busyCheck, next)
+        busy.show(busySigns.spinner, if (busySigns.text) status.waiting ?: "Reconnecting…" else null)
     }
 
     /**

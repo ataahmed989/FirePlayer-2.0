@@ -81,6 +81,41 @@ class Tokens(context: Context) {
         const val GROW_CIRCLE = 1.08f
         const val GROW_PILL = 1.04f
 
+        // ---- Players --------------------------------------------------------------------------------------------
+        // Sizes a layout reads are in res/values/dimens.xml (player_main_button, player_pill_min_width,
+        // logo_badge_height); what code draws is here.
+
+        /** The buffering symbol ([app.fireplayer.ui.BusyOverlay]): its size over a full-screen picture and its ring. */
+        const val SPINNER_DP = 44f
+        const val SPINNER_STROKE_DP = 4f
+        /** How much of that size it has over a miniature. */
+        const val SPINNER_MINI_SCALE = 0.68f
+        /** One turn. */
+        const val SPINNER_TURN_MS = 900L
+        /** The part of the ring that's blue, in degrees. */
+        const val SPINNER_SWEEP = 100f
+        const val SPINNER_RING = 0x40FFFFFF
+        /** A darker ring under it, so it shows over a bright picture too. */
+        const val SPINNER_SHADE = 0x59000000
+
+        /** Live TV's line with no programme to show: the programme line's blue, the whole way, at this strength. */
+        const val NO_PROGRAMME_LINE_ALPHA = 0.45f
+
+        /**
+         * A channel logo on its own plate ([app.fireplayer.live.ui.LogoBadge]): the plate is as wide as the fitted logo
+         * needs (within these), the logo sits inside with this room around it. Most logos get the neutral dark plate
+         * (white and coloured ink stay bright on it, over any picture); dark ink gets the light one
+         * ([app.fireplayer.live.ui.LogoPlate.light] decides).
+         */
+        const val LOGO_BADGE_PAD_X_DP = 9f
+        const val LOGO_BADGE_PAD_Y_DP = 6f
+        const val LOGO_BADGE_MIN_WIDTH_DP = 46f
+        const val LOGO_BADGE_MAX_WIDTH_DP = 104f
+        const val LOGO_BADGE_RADIUS_DP = 9f
+        const val LOGO_BADGE_PLATE = 0xD92A2F36.toInt()
+        const val LOGO_BADGE_PLATE_LIGHT = 0xEBE6E8EB.toInt()
+        const val LOGO_BADGE_RIM = 0x33FFFFFF
+
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
 
         /**

@@ -8,6 +8,7 @@ import android.text.InputType
 import android.text.format.DateFormat
 import android.util.Log
 import android.view.KeyEvent
+import android.view.View
 import app.fireplayer.R
 import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelGroup
@@ -149,8 +150,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * Playlists & EPG as Live FirePlayer Settings and the Settings tab's Playlists & EPG both show them (user
-     * outline): each playlist, Manage playlists, Update playlists; then EPG sources ▾, closed each time the window
-     * opens, with Manage EPG sources under it. [headings]: Playlists and EPG under headings of their own, in the window
+     * outline): each playlist; Playlists ▾ with Manage playlists and Update playlists under it; then EPG sources ▾
+     * with Manage EPG sources under it, both closed each time the window opens. [headings]: Playlists and EPG under headings of their own, in the window
      * that holds only them.
      */
     private fun playlistsAndEpg(p: SidePanel, headings: Boolean): Unit = with(p) {
@@ -172,8 +173,10 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     }
 
     /**
-     * The playlists (each opens its settings), Manage playlists, and Update playlists with when they last updated.
-     * With none yet, how to start and Add playlist come first.
+     * The playlists (each opens its settings), then Playlists ▾ (closed each time the window opens, as EPG sources
+     * is, and the same row: [SidePanel.dropdownRow]) saying how many there are, or that they're updating. Open,
+     * Manage playlists, and Update playlists with when they last updated, indented under it. With none yet, how to
+     * start and Add playlist come first.
      */
     private fun playlistRows(p: SidePanel): Unit = with(p) {
         if (playlists.isEmpty()) {
@@ -186,14 +189,21 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
         for (pl in playlists) {
             row(pl.name, shortStatus(pl), twoLines = false) { openPlaylist(pl.id) }
         }
-        managePlaylistsRow(this)
-        updateRow(this, "Update playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }
+        val open = isPartOpen("playlists")
+        val count = if (playlists.size == 1) "1 playlist" else "${playlists.size} playlists"
+        dropdownRow("Playlists", if (sync.busy) "Updating…" else count, if (sync.busy) Rows.Badge.BUSY else Rows.Badge.LIGHT, open) {
+            togglePart("playlists")
+            refresh()
+        }
+        if (open) {
+            managePlaylistsRow(this).asSubRow()
+            updateRow(this, "Update playlists", playlists.maxOf { it.lastSync }) { sync.updateAll() }.asSubRow()
+        }
     }
 
-    private fun managePlaylistsRow(p: SidePanel) {
+    private fun managePlaylistsRow(p: SidePanel): View =
         // Two short rows: the usual width (wide windows are for long names).
         p.row("Manage playlists") { p.openSub("Manage playlists") { managePlaylists(this) } }
-    }
 
     /** Manage playlists (user outline): Add playlist and Reorder playlists. */
     private fun managePlaylists(p: SidePanel): Unit = with(p) {
@@ -218,12 +228,13 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
      * An Update button: while anything is updating it's dimmed and does nothing (it stays focusable, so focus
      * doesn't jump), and says "Updating…"; otherwise it says when the last update was.
      */
-    private fun updateRow(p: SidePanel, label: String, lastSync: Long, start: () -> Unit) {
+    private fun updateRow(p: SidePanel, label: String, lastSync: Long, start: () -> Unit): View {
         val busy = sync.busy
         val row = p.row(label, updatedText(lastSync)) {
             if (!sync.busy) { start(); p.refresh() }
         }
         if (busy) p.dim(row)
+        return row
     }
 
     /** "Updating…" while anything updates, else "Updated 5:04 PM" (or "yesterday", "Nov 15"), or "Never updated". */
