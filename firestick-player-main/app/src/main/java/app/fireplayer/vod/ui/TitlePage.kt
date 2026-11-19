@@ -466,6 +466,11 @@ class TitlePage(
             return
         }
         if (w.waitingFor?.key != tgt.key) {
+            // Waiting for something else (Play, then another episode's OK): that wait ends first, its pill too.
+            if (w.isWaiting) {
+                w.release()
+                endWait()
+            }
             waitStart = start
             waitFromButtons = fromButtons
             waitNext = if (isShow) tgt.episode?.let { PlayRules.nextEpisode(details.episodes, it, System.currentTimeMillis())?.ref } else null

@@ -86,6 +86,25 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun offScreenTheLimitWaitsAndAStoppedPlayIsntAskedAbout() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1, mbps = 10.0))
+        p.pause()
+        ticker.advance(60_000)
+        assertTrue(questions.isEmpty())
+        p.resume()
+        ticker.advance(30_000)
+        assertEquals(1, questions.size)
+        s.step = Step.Stop("Stopped")
+        p.failed(2004, 500)
+        p.pause()
+        p.resume()
+        ticker.advance(120_000)
+        assertEquals(1, questions.size)
+        PlayOutcomes.clear(SourceTarget(Fixtures.film))
+    }
+
+    @Test
     fun theFirstFrameEndsStageThreeAndRecordsTheRelease() {
         val (p, s) = play()
         s.ready(Fixtures.source(1, mbps = 60.0))

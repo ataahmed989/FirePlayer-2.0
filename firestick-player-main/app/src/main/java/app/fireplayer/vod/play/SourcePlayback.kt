@@ -88,6 +88,8 @@ class SourcePlayback(
     /** The next open plays from the beginning (a Sources row held: Play from beginning). */
     private var fromBeginning = false
     private var closed = false
+    /** The play stopped with a message (nothing more is tried until a new source is ready). */
+    private var stopped = false
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -153,6 +155,7 @@ class SourcePlayback(
             }
         }
         fromBeginning = false
+        stopped = false
         current = o.source
         offer = o.offer
         playing = false
@@ -182,11 +185,24 @@ class SourcePlayback(
             return
         }
         loadTimer?.cancel()
+        stopped = true
         PlayOutcomes.put(request.target, message)
         host.stopWith(message)
     }
 
     // ---- Stage 3: the first load ------------------------------------------------------------------------------------
+
+    /** The player left the screen: stage 3's limit waits (nothing is asked over a screen that isn't there). */
+    fun pause() {
+        loadTimer?.cancel()
+        loadTimer = null
+    }
+
+    /** Back on screen: a source still loading gets its limit afresh (the player loads it again from here). */
+    fun resume() {
+        val s = current ?: return
+        if (!playing && !closed && !stopped && loadTimer == null) armLoad(s)
+    }
 
     private fun armLoad(s: PlaybackSource) {
         loadTimer?.cancel()

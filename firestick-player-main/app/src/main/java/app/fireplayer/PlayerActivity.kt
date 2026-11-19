@@ -733,6 +733,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pausedForSwitch = false
         }
         backdrop?.start()
+        source?.resume()
         if (entries.isNotEmpty() && player == null) {
             // Back from Home with the TV on another refresh rate: it switches again as the window shows, so the film
             // waits for the picture instead of playing into the blank.
@@ -772,6 +773,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         notice = false
         retryPending = false
         savePosition()
+        source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
         releasePlayer()
