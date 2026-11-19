@@ -193,6 +193,11 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             registered = true
             bd.register(this)
         }
+        // Glass that can't be seen (faded out, or drawn once before it fades in) asks for nothing: no copies of the film
+        // and no redrawing through a fade. A view left drawing at no opacity once kept the copies and 20 redraws a
+        // second going all film long, with nothing on screen.
+        val seen = isOnScreen()
+        drewHidden = !seen
         val top = bd.frame(kind)
         val f = bd.fadeFraction()
         val under = if (f < 1f) bd.previous(kind) else null
@@ -206,10 +211,19 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             drawSource(canvas, under, lower)
             drawSource(canvas, top, a * f)
             // Held still while the D-pad moves round (see GlassBackdrop.navigating): drawn again when it carries on.
-            if (!bd.navigating) invalidateSelf()
+            // Otherwise drawn again as the fade goes on, at the pace the source sets (the TV's own refreshes for the film's
+            // glass: Fire OS draws 60 times a second on a TV showing 24, which redrew every glass 2.5 times a refresh).
+            if (seen && !bd.navigating) bd.onFadeDrawn(this)
         }
-        bd.onGlassDrawn()
+        if (seen) bd.onGlassDrawn() else bd.onGlassHidden()
     }
+
+    /** Its last drawing was where it couldn't be seen: what it shows may be out of date once it comes into view. */
+    internal var drewHidden = false
+        private set
+
+    /** Whether its view is shown at all (every parent too), whatever its opacity. */
+    internal fun isShown(): Boolean = hostView()?.isShown == true
 
     /** Film, or the dark fill when [film] is null, at [strength] of its usual opacity. */
     private fun drawSource(canvas: Canvas, film: Bitmap?, strength: Float) {
@@ -261,6 +275,18 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         filmMatrix.postTranslate((ox - x).toFloat(), (oy - y).toFloat())
         shader0?.setLocalMatrix(filmMatrix)
         shader1?.setLocalMatrix(filmMatrix)
+    }
+
+    /**
+     * Off screen a while ([GlassBackdrop]'s idle release): lets go of the pictures of the film it drew last, so they and
+     * their copies in the TV's drawing cache can go. Drawn again, it takes the newest film.
+     */
+    internal fun forgetFilm() {
+        filmPaint.shader = null
+        film0 = null
+        shader0 = null
+        film1 = null
+        shader1 = null
     }
 
     private fun shaderFor(film: Bitmap): BitmapShader {
@@ -400,6 +426,12 @@ internal object GlassBakes {
 
     /** About 12 MB, less on a small heap: the film's buffer takes most of it on older TVs. */
     private fun cacheBytes(): Int = min(12L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 16).toInt()
+
+    /**
+     * With no glass on screen for a while ([GlassBackdrop]'s idle release), every bitmap kept here goes; glass that
+     * still exists keeps the ones it drew, and the rest are made again (a few milliseconds each) when next needed.
+     */
+    fun trim() = cache.evictAll()
 
     fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float): Bitmap {
         val key = Key(kind.ordinal, focused, w, h, 0, density)

@@ -1,7 +1,6 @@
 package app.fireplayer.vod.play
 
 import android.app.Activity
-import android.content.ComponentCallbacks2
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
@@ -12,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
+import app.fireplayer.player.GraphicsTrim
 
 /**
  * Film mode memory and background release (design-brief.md §6.6), for the shell (HomeActivity).
@@ -44,11 +44,16 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private var released = false
     private val backgroundRelease = Runnable { releaseNow() }
 
-    /** A film starts from a page: the snapshot first, then Live TV's decoder freed, then [go] (the player starts). */
+    /**
+     * A film starts from a page: Live TV's decoder is freed, the snapshot is asked for, and [go] runs at once (the
+     * player starts). The snapshot is a copy of this window's own picture, which the player's screen coming up over
+     * it doesn't change, so the start no longer waits for it (up to [CAPTURE_WAIT_MS] before).
+     */
     fun beforeFilm(go: () -> Unit) {
         filmStarting = true
         hooks.stopLive()
-        capture { go() }
+        capture(null)
+        go()
     }
 
     /** The shell paused: a snapshot for coming back, unless a film's start already took one. */
@@ -70,6 +75,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     /** Back: the release that hadn't run yet doesn't; after one, the snapshot covers the page while it fills again. */
     fun onStart(over: FrameLayout) {
         main.removeCallbacks(backgroundRelease)
+        main.removeCallbacks(trimStale)
         filmStarting = false
         val shot = snapshot
         if (released && shot != null) show(over, shot) else dropSnapshot()
@@ -78,6 +84,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
     fun release() {
         main.removeCallbacks(backgroundRelease)
+        main.removeCallbacks(trimStale)
         overlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         overlay = null
         dropSnapshot()
@@ -157,17 +164,17 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
     /**
      * The graphics caches the shell's windows hold (textures, glyphs, layers), flushed as Android does when an app's
-     * screens are hidden. Best effort: the call isn't public, so it's skipped wherever it isn't there.
+     * screens are hidden ([GraphicsTrim]).
      */
     private fun trimGraphics() {
-        try {
-            val global = Class.forName("android.view.WindowManagerGlobal")
-            val instance = global.getMethod("getInstance").invoke(null)
-            global.getMethod("trimMemory", Int::class.javaPrimitiveType).invoke(instance, ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN)
-        } catch (e: Throwable) {
-            Log.i(TAG, "Graphics trim not available: ${e.javaClass.simpleName}")
-        }
+        val trimmed = GraphicsTrim.trim()
+        Log.i(TAG, "Film mode: the pages' pictures and caches let go" + if (trimmed) ", graphics trimmed" else "")
+        // Where Android only lets go of graphics unused for half a minute, the pages' go once they've been hidden that long.
+        main.removeCallbacks(trimStale)
+        if (GraphicsTrim.staleOnly) main.postDelayed(trimStale, GraphicsTrim.STALE_MS + 1_000L)
     }
+
+    private val trimStale = Runnable { if (released) GraphicsTrim.trim() }
 
     companion object {
         /** In the background this long before the shell's memory is released (not at once: a quick return stays as it was). */

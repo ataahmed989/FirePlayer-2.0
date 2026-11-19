@@ -5,6 +5,7 @@ import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.EpisodeRef
+import app.fireplayer.vod.Failure
 import app.fireplayer.vod.FailureKind
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Kind
@@ -247,7 +248,7 @@ class EngineTest {
             asked += addon to target.key
             answers[addon]!!.invoke()
         },
-        LinkCheck({ _, _, _ -> LinkCheck.Answer(302, "https://cdn.invalid/x", null) }, { true }, { loop.now }),
+        LinkCheck({ _, _, _ -> LinkCheck.Answer(302, "https://cdn.invalid/d/x/f.mkv", null) }, { true }, { loop.now }),
         Budget(budgetStore) { wall }, { null }, { "en" }, loop, io, direct, { loop.now }, { wall }, { true },
     )
 
@@ -287,6 +288,67 @@ class EngineTest {
         lists(SourceTarget(show, EpisodeRef(1, 2)), LookupWhy.PLAY)
         loop.advance()
         assertEquals(n, asked.count { it.first == Addon.MEDIAFUSION })
+    }
+
+    @Test
+    fun okAgainOnThePagePlaysTheBestSoFarWithoutWaitingForTheOtherAddon() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        // MediaFusion's answer is held back: the page's list has Torrentio's source only.
+        val held = ArrayList<Runnable>()
+        var hold = true
+        val slowEngine = engineWith(Executor { r -> if (hold && asked.isNotEmpty()) { held += r; hold = false } else r.run() })
+        val got = ArrayList<SourceList>()
+        slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
+        loop.advance()
+        val soFar = got.last()
+        assertFalse(soFar.complete)
+        assertEquals(ReleaseKey(H1, 0), soFar.best?.release)
+
+        // OK again: the page hands over the list as it stands, and the player checks its best at once.
+        val session = slowEngine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = soFar))
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        val ready = opened.last() as Opened.Ready
+        assertEquals(ReleaseKey(H1, 0), ready.source.release)
+        assertEquals(1, held.size)
+        session.started(ready.source, ready.offer)
+
+        // The other add-on's answer still joins the list: Next source goes on to it.
+        held.removeAt(0).run()
+        loop.advance()
+        assertEquals(2, session.list?.sources?.size)
+        val next = ArrayList<Opened>()
+        session.open(null, OpenWhy.USER) { next += it }
+        loop.advance()
+        assertEquals(ReleaseKey(H2, 0), (next.last() as Opened.Ready).source.release)
+    }
+
+    @Test
+    fun theBestSoFarFailingWaitsForTheAddonStillLooking() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val held = ArrayList<Runnable>()
+        var hold = true
+        val slowEngine = engineWith(Executor { r -> if (hold && asked.isNotEmpty()) { held += r; hold = false } else r.run() })
+        val got = ArrayList<SourceList>()
+        slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
+        loop.advance()
+        val session = slowEngine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = got.last()))
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        val first = opened.last() as Opened.Ready
+        // Its file turns out dead before it plays: nothing else is ready yet, so the other add-on is waited for.
+        assertEquals(Step.TryNext, session.failed(first.source, Failure(FailureKind.FILE, Addon.TORRENTIO)))
+        val after = ArrayList<Opened>()
+        session.open(null, OpenWhy.FAILED) { after += it }
+        loop.advance()
+        assertTrue(after.last() is Opened.Looking)
+        held.removeAt(0).run()
+        loop.advance()
+        assertEquals(ReleaseKey(H2, 0), (after.last() as Opened.Ready).source.release)
     }
 
     // ---- Sessions ----

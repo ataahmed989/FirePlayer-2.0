@@ -202,6 +202,8 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val ageRating: String = "",
         /** The language it was made in, ISO 639-1 ("en", "fr"); empty when TMDB doesn't say. */
         val originalLanguage: String = "",
+        /** Whose score [rating] is: TMDB's, or IMDb's for details handed over by Films & Shows. */
+        val ratingFrom: String = "TMDB",
     )
 
     /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */

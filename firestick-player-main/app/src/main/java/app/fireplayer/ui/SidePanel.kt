@@ -112,6 +112,8 @@ class SidePanel(private val activity: Activity) {
         title.text = titleText
         setWide(wide)
         Glass.background(root, Glass.Kind.PANEL)
+        // The film behind the glass is copied now, so it's there as the window slides in.
+        (activity as? GlassBackdrop.Host)?.glassBackdrop?.wake()
         root.visibility = View.VISIBLE
         root.alpha = 0f
         root.translationX = rows.dp(24).toFloat()

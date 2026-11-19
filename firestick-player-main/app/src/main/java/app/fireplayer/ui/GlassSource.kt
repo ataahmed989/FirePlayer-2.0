@@ -27,8 +27,20 @@ interface GlassSource {
     val originY: Int
     /** Glass to repaint when a new picture arrives. */
     fun register(drawable: GlassDrawable)
-    /** Called by each glass shape as it draws. */
+    /** Called by each glass shape as it draws where it can be seen ([GlassDrawable.isOnScreen]). */
     fun onGlassDrawn()
+
+    /**
+     * Called by a glass shape that drew where it can't be seen (faded out, or not shown yet as it fades in): nothing is
+     * copied for it, but it's looked at again shortly in case it has come into view ([GlassBackdrop]).
+     */
+    fun onGlassHidden() {}
+
+    /**
+     * Called by a glass shape that drew part-way through a fade to a newer picture, where it can be seen: it has to be
+     * drawn again as the fade goes on. As it stands, at once (the next frame).
+     */
+    fun onFadeDrawn(drawable: GlassDrawable) = drawable.invalidateSelf()
 
     /** An activity whose glass shows something other than a film (the app's own screens). */
     interface Host {

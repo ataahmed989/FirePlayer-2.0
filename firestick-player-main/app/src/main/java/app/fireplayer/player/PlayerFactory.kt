@@ -3,6 +3,7 @@ package app.fireplayer.player
 import android.content.Context
 import android.os.Handler
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
@@ -20,7 +21,9 @@ import androidx.media3.exoplayer.analytics.PlayerId
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.TrackGroupArray
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.Allocator
+import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.common.Format
 import androidx.media3.exoplayer.Renderer
@@ -72,13 +75,36 @@ class BufferWait(val fraction: Float, val slowLine: Boolean, val atMs: Long)
 @OptIn(UnstableApi::class)
 object PlayerFactory {
 
-    class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
+    class Built(
+        val player: ExoPlayer,
+        val assHandler: AssHandler?,
+        val bufferWait: () -> BufferWait?,
+        /** The memory the film's loaded part holds now, in bytes (for the FirePlayerDiag log). */
+        val filmBytes: () -> Long,
+        private val squeezer: (Int) -> Int,
+        /** libass's overlay over the film, put up the first time a styled track is chosen; null without libass. */
+        val assOverlay: AssOverlay?,
+        /** How long a stretch of the film is kept behind where it plays now, in ms (see [BackBuffer]). */
+        val keptBehindMs: () -> Long = { 0L },
+        /** What the film's buffer fills to now, in bytes: its budget, or less while squeezed. */
+        val fillBytes: () -> Long = { 0L },
+    ) {
+        /**
+         * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
+         * 2 half (see [FilmMemory.capFor]). Gives back what the buffer now fills to, in bytes.
+         */
+        fun squeeze(step: Int): Int = squeezer(step)
+    }
 
     /**
      * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
      * between), so less video has to be downloaded and decoded before the picture moves.
      */
     val FILM_SEEK = SeekParameters(2_000_000L, 0L)
+
+    /** The biggest picture the skip preview asks for; on a TV short of memory, the biggest it decodes at all. */
+    const val PREVIEW_MAX_WIDTH = 1920
+    const val PREVIEW_MAX_HEIGHT = 1080
 
     /**
      * Decoders for the skip preview. Its picture is decoded while the film plays, so 4K-class formats only get a
@@ -102,6 +128,7 @@ object PlayerFactory {
         headers: Map<String, String>,
         serverSwitch: ServerSwitch? = null,
         readOnlyMemory: Boolean = false,
+        meter: ByteMeter? = null,
     ): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
@@ -113,6 +140,8 @@ object PlayerFactory {
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(12_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
+        // The film's bytes are counted as they come, for the download speed in the log (DownloadRate).
+        if (meter != null) httpFactory.setTransferListener(meter)
         return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory, serverSwitch, readOnlyMemory))
     }
 
@@ -140,15 +169,23 @@ object PlayerFactory {
         val renderers = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector(PREVIEW_DECODERS)
+        val trackSelector = DefaultTrackSelector(context)
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .setMaxVideoSize(PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT)
+                // A film with no picture that small is still previewed at its own size, except on a TV short of memory
+                // (under 2.6 GiB): a second 4K decoder there, and its 25 MB pictures beside the film's, take what the
+                // film needs. A 4K-only film gets no preview on those (SeekPreview says so once) and skips as without.
+                .setExceedVideoConstraintsIfNecessary(!FilmMemory.tier(context).short)
+                .build(),
+        )
         val player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
             .setRenderersFactory(renderers)
+            .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
-            .build()
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            .setMaxVideoSize(1920, 1080)
             .build()
         // Jumping to the nearest keyframe is what makes a preview quick.
         player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
@@ -236,6 +273,8 @@ object PlayerFactory {
         pictureText: PictureText,
         /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
         vsync: VsyncFix,
+        /** Whether the TV takes HDR10+, which the film's video renderer keeps from the decoder when it doesn't. */
+        hdr10Plus: Hdr10PlusGate,
         /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
         displaySwitch: DisplaySwitch,
         /** A copy of the sound for subtitle auto sync, taken only while it listens (see [SpeechTap]). */
@@ -244,33 +283,43 @@ object PlayerFactory {
         embeddedCues: EmbeddedCues? = null,
         /** Where damaged stretches of a film the player went past are noted, so the viewer can be told. */
         damageSkips: DamageSkips? = null,
+        /** Where the video renderer counts the frames lost that Media3 doesn't (see [PacedVideoRenderer]). */
+        frameCounts: FrameCounts = FrameCounts(),
+        /** Counts the film's bytes as they come from the network (see [DownloadRate]). */
+        byteMeter: ByteMeter? = null,
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
-        val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
+        val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch, meter = byteMeter)
 
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, hdr10Plus, speechTap, frameCounts)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
-        // As much of the film as memory allows, up to two minutes ahead, topped up all the time. High-quality
+        // As much of the film as this TV can spare, up to two minutes ahead, topped up all the time. High-quality
         // films fill it by size first; the stall-free stretch then depends on the connection, not a fixed
-        // half minute.
-        val budget = (Runtime.getRuntime().maxMemory() * 0.6).toLong().coerceIn(64L shl 20, 400L shl 20).toInt()
+        // half minute. What the TV can spare goes by its memory in all (FilmMemory), not the app's heap limit: Fire OS
+        // allows 384 MB even on a Stick with 1.7 GB, where a 230 MB buffer left the TV short of memory and the film
+        // losing frames.
+        // And by what's free as the film starts: the decoder's own 4K frames (up to 200 MB) come out of the same memory.
+        val free = FilmMemory.freeNow(context)
+        val plan = FilmMemory.plan(FilmMemory.tier(context), Runtime.getRuntime().maxMemory(), free)
+        val budget = plan.budgetBytes
         // What's kept behind comes out of the same memory as what's ahead (for a 4K remux, about 8 MB a second), so
-        // TVs with less of it keep less, or the room ahead would shrink to a few seconds.
-        val backBufferMs = when {
-            budget >= 280 shl 20 -> 15_000
-            // Still one press back (10 s, landing up to 2 s early) on a TV with 384 MB for an app, as the Fire TV Stick
-            // 4K Plus: at 10 s, going back one press in a 4K film loaded it all again (2 s, measured).
-            budget >= 180 shl 20 -> 13_000
-            else -> 5_000
-        }
+        // TVs with less of it keep less, or the room ahead would shrink to a few seconds. Below 10 s, going back one
+        // press (10 s, landing up to 2 s early) loads that stretch again (2 s in a 4K film, measured).
+        val backBufferMs = plan.backBufferMs
+        Log.i("FirePlayer", "Film buffer: ${plan.tier} memory, ${free shr 20} MiB free, ${budget shr 20} MiB" +
+            (if (plan.byFreeMemory) " (held down by free memory)" else "") + ", ${backBufferMs / 1000} s kept behind" +
+            (if (plan.backCapBytes > 0) " up to ${plan.backCapBytes shr 20} MiB" else ""))
+        // Owned here so the film's buffer can give memory back while the TV is short of it (FilmLoadControl.squeeze).
+        val allocator = DefaultAllocator(/* trimOnReset = */ true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
         val loadControl = FilmLoadControl(
             DefaultLoadControl.Builder()
+                .setAllocator(allocator)
                 .setBufferDurationsMs(
                     /* minBufferMs = */ 120_000,
                     /* maxBufferMs = */ 120_000,
@@ -286,6 +335,7 @@ object PlayerFactory {
                 // couldn't be decoded.
                 .setBackBuffer(backBufferMs, /* retainBackBufferFromKeyframe = */ true)
                 .build(),
+            allocator,
             budget,
             serverSwitch,
         )
@@ -311,11 +361,12 @@ object PlayerFactory {
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, tapped(SeekableMkvExtractorsFactory(extractors, damageSkips?.let { it::add }), embeddedCues))
                 .setLoadErrorHandlingPolicy(retryPolicy)
                 .setSubtitleParserFactory(parsers)
+            val sources = backCapped(mediaSourceFactory, plan, loadControl)
             val player = builder
-                .setMediaSourceFactory(mediaSourceFactory)
+                .setMediaSourceFactory(sources)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
-            return Built(player, null) { loadControl.wait }
+            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes })
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -330,14 +381,25 @@ object PlayerFactory {
         )
         mediaSourceFactory.setSubtitleParserFactory(parserFactory)
         mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)
+        val sources = backCapped(mediaSourceFactory, plan, loadControl)
         val player = builder
-            .setMediaSourceFactory(mediaSourceFactory)
+            .setMediaSourceFactory(sources)
             .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays, vsync))
             .build()
-        assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
-        return Built(player, assHandler) { loadControl.wait }
+        // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
+        // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
+        val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
+        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes })
     }
+
+    /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */
+    private fun backCapped(sources: MediaSource.Factory, plan: FilmBufferPlan, loadControl: FilmLoadControl): MediaSource.Factory =
+        if (plan.backCapBytes <= 0L) sources
+        else BackCappedSources(sources, plan.backCapBytes, plan.backBufferMs * 1000L) { loadControl.allocatedBytes }
+
+    private fun keptBehind(sources: MediaSource.Factory, plan: FilmBufferPlan): () -> Long =
+        (sources as? BackCappedSources)?.let { capped -> { capped.keptBehindMs } } ?: { plan.backBufferMs.toLong() }
 }
 
 /**
@@ -427,13 +489,25 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
  * high-quality film on a slower line), playback waits for enough to then play a minute without stopping, instead of
  * starting at once and stopping again every few seconds. Stalls that keep coming also make the next wait longer
  * (4, 10, then 20 seconds).
+ *
+ * While the TV is short of memory the buffer fills to less than its budget ([squeeze]), and the memory it lets go of
+ * is freed instead of kept for reuse. [allocator] is [inner]'s, owned by [PlayerFactory.build] for that.
  */
 @OptIn(UnstableApi::class)
 private class FilmLoadControl(
     private val inner: DefaultLoadControl,
+    private val allocator: DefaultAllocator,
     private val budgetBytes: Int,
     private val serverSwitch: ServerSwitch,
 ) : LoadControl {
+
+    /**
+     * What the buffer fills to: [budgetBytes], or less while the TV is short of memory. Set on the main thread, read on
+     * the playback thread.
+     */
+    @Volatile private var capBytes = budgetBytes
+    // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
+    private var trimmedAt = 0L
 
     // When recent stalls began (elapsedRealtime), on the playback thread only.
     private val stalls = ArrayDeque<Long>()
@@ -460,6 +534,12 @@ private class FilmLoadControl(
     @Volatile var wait: BufferWait? = null
         private set
 
+    /** The memory the film's loaded part holds now, in bytes: any thread (Media3's allocator answers under its lock). */
+    val allocatedBytes: Long get() = inner.allocator.totalBytesAllocated.toLong()
+
+    /** What the buffer fills to now, in bytes. */
+    val fillBytes: Long get() = capBytes.toLong()
+
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
         if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
@@ -468,7 +548,8 @@ private class FilmLoadControl(
         if (loadedToEnd(parameters)) return true
         measure(parameters, waiting = true)
         // Memory full means nothing more can come before playing on.
-        if (inner.allocator.totalBytesAllocated >= budgetBytes) return true
+        val limit = FilmMemory.fillLimit(capBytes, budgetBytes, parameters.bufferedDurationUs)
+        if (allocator.totalBytesAllocated >= limit) return true
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
         val now = SystemClock.elapsedRealtime()
@@ -489,7 +570,7 @@ private class FilmLoadControl(
             maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
         }
         // Whichever comes first ends the wait: enough film, or full memory.
-        val fraction = maxOf(buffered.toFloat() / neededUs, inner.allocator.totalBytesAllocated.toFloat() / budgetBytes)
+        val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)
         wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
         return buffered >= neededUs
     }
@@ -577,7 +658,40 @@ private class FilmLoadControl(
 
     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
         measure(parameters, waiting = false)
-        return inner.shouldContinueLoading(parameters).also { loading = it }
+        // Media3's own rule stops at the whole budget; squeezed, it stops at the lower cap as well.
+        val wanted = inner.shouldContinueLoading(parameters)
+        val cap = capBytes
+        if (cap < budgetBytes) freeLetGo(cap)
+        val full = cap < budgetBytes &&
+            allocator.totalBytesAllocated >= FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
+        return (wanted && !full).also { loading = it }
+    }
+
+    /**
+     * Lowers what the buffer fills to while the TV is short of memory, or raises it back: [step] 0 is the whole budget,
+     * 1 three quarters, 2 half ([FilmMemory.capFor]). Memory loaded and let go of is no longer kept beyond the new
+     * size; what's in use (the film loaded ahead and kept behind) is let go of as the film plays on. On the main
+     * thread; gives back the new size in bytes.
+     */
+    fun squeeze(step: Int): Int {
+        val cap = FilmMemory.capFor(budgetBytes, step)
+        capBytes = cap
+        allocator.setTargetBufferSize(cap)
+        return cap
+    }
+
+    /**
+     * Squeezed: the memory the film let go of since (what's played past, and kept behind no longer) is freed rather
+     * than kept for reuse, at most once a second. Media3 frees it only on a jump. The cap is given to the allocator
+     * again first: Media3 sets it back to the whole budget when tracks are chosen, which can cross a squeeze made on
+     * the main thread at the same moment.
+     */
+    private fun freeLetGo(cap: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - trimmedAt < TRIM_EVERY_MS) return
+        trimmedAt = now
+        allocator.setTargetBufferSize(cap)
+        allocator.trim()
     }
 
     override fun shouldContinuePreloading(timeline: Timeline, mediaPeriodId: MediaSource.MediaPeriodId, bufferedDurationUs: Long) =
@@ -589,19 +703,24 @@ private class FilmLoadControl(
         parameters: LoadControl.Parameters,
         trackGroups: TrackGroupArray,
         trackSelections: Array<ExoTrackSelection?>,
-    ) = inner.onTracksSelected(parameters, trackGroups, trackSelections)
+    ) {
+        inner.onTracksSelected(parameters, trackGroups, trackSelections)
+        // Media3 sets the memory kept for reuse back to the whole budget here; squeezed, it stays at the cap.
+        allocator.setTargetBufferSize(capBytes)
+    }
 
     override fun onStopped(playerId: PlayerId) = inner.onStopped(playerId)
 
     override fun onReleased(playerId: PlayerId) = inner.onReleased(playerId)
 
-    override fun getAllocator(): Allocator = inner.allocator
+    override fun getAllocator(): Allocator = allocator
 
     override fun getBackBufferDurationUs(playerId: PlayerId) = inner.getBackBufferDurationUs(playerId)
 
     override fun retainBackBufferFromKeyframe(playerId: PlayerId) = inner.retainBackBufferFromKeyframe(playerId)
 
     private companion object {
+        const val TRIM_EVERY_MS = 1_000L
         const val STALL_MEMORY_MS = 5 * 60_000L
         const val START_US = 1_000_000L
         // Loading time needed before the speed is trusted.
@@ -698,7 +817,9 @@ private class TvRenderersFactory(
     private val passthrough: Boolean,
     private val displaySwitch: DisplaySwitch,
     private val vsync: VsyncFix,
+    private val hdr10Plus: Hdr10PlusGate,
     private val speechTap: SpeechTap,
+    private val frameCounts: FrameCounts,
 ) : DefaultRenderersFactory(context) {
     /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
     override fun buildVideoRenderers(
@@ -727,6 +848,8 @@ private class TvRenderersFactory(
                 .setEventListener(eventListener)
                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
             vsync,
+            frameCounts,
+            hdr10Plus,
         )
     }
 
