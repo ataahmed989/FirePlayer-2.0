@@ -522,3 +522,8 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   that differed (Sound info pod hidden, subtitle shadow Light, Preview while skipping on, English titles in TiviMate
   on, Glass refresh 8). Still the user's to do: English titles in TiviMate and TiviMate's external player now belong
   to FirePlayer 2.0.
+- 2026-11-19 · User: release plan. After the visual design updates, FirePlayer 2.0 replaces the old FirePlayer's code
+  completely and ships as a signed release from the old FirePlayer's repository, so the installed app updates itself
+  and the extra test app is removed; the user re-enters their info; nothing permanent is built only for the
+  transition. FirePlayer 2.0 keeps acting as an external player (TiviMate). Until the swap, design work continues on
+  the Max-only test build. Details in PROGRESS.md §6.

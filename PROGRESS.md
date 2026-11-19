@@ -242,6 +242,14 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when
       installed and opens it on a held Menu button; it reaches the TV through Glass Home's own release.
       FirePlayer 1.0's data was cleared on the Max. Still open: 2.0 as the official signed release that replaces 1.0.
+- [ ] **Release plan (user, 2026-11-19), after the visual design updates:** FirePlayer 2.0 (all pages, features and
+      playback fixes) completely replaces the old FirePlayer's code in `ataahmed989/firestick-player` and ships as a
+      signed release through that repo's existing pipeline (workflow, release key and secrets are there; both the old
+      app and 2.0's updater already look at its releases), so the old FirePlayer on each Stick updates itself to 2.0
+      as the same app (`app.fireplayer`). The extra test app (`app.fireplayer.next`) is then removed and the user
+      re-enters their info. Keep the transition lean: nothing permanent that exists only for the transition (no
+      settings carry-over tool). Until then, work continues on the Max-only test build so the user can verify design
+      changes there. At the swap, Glass Home's "prefer `app.fireplayer.next`" choice (`FirePlayer.java`) can go.
 
 ## Contracts that must keep working (checked at every increment)
 
