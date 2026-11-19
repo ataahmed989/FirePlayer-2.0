@@ -57,12 +57,16 @@ class DefaultVodRepository(
     private val net: Executor,
     private val lookups: Executor,
     private val clock: () -> Long = System::currentTimeMillis,
+    rowStore: RowLayoutStore = RowLayoutStore.Memory(),
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     /** The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). */
     val library = VodLibrary(libraryStore, clock, io) { main.execute { listeners.forEach { it() } } }
+
+    /** Settings › Rows: each page's rows as the viewer set them (main thread). */
+    val rowSettings = RowSettings(rowStore) { newYear(it) }
 
     private val ids = IdMap(idStore, clock, io)
     private val pages = Lru<String, Stored<Cinemeta.Page>>(PAGES_KEPT)
@@ -91,15 +95,19 @@ class DefaultVodRepository(
     override fun rows(page: Page): List<RowSpec> {
         val m = manifest
         if (m == null || !m.isFresh(clock())) refreshManifest()
-        return PageRows.rows(page, newYear(if (page == Page.SHOWS) Kind.SERIES else Kind.MOVIE))
+        return rowSettings.rows(page)
     }
+
+    override fun addRowsListener(listener: () -> Unit) = rowSettings.addListener(listener)
+
+    override fun removeRowsListener(listener: () -> Unit) = rowSettings.removeListener(listener)
 
     override fun load(row: RowSpec, skip: Int, limit: Int, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
         val req = Req()
         val sink: (List<Card>, Boolean) -> Unit = { cards, fresh -> post(req) { onCards(cards, fresh) } }
         when (val s = row.source) {
             is Source.Catalog -> catalogCards(resolve(s), skip, limit, req) { titles, fresh -> sink(titles.map { Card(it) }, fresh) }
-            is Source.Trending -> trendingCards(s.kind, skip, limit, req, sink)
+            is Source.Trending -> s.kind?.let { trendingCards(it, skip, limit, req, sink) } ?: trendingBoth(skip, limit, req, sink)
             is Source.ContinueWatching -> local(req, skip, limit, sink) { library.continueWatching(s.kind) }
             Source.MyList -> local(req, skip, limit, sink) { library.myList().map { Card(it) } }
             is Source.MyListOf -> local(req, skip, limit, sink) { library.myList().filter { it.kind == s.kind }.map { Card(it) } }
@@ -743,6 +751,37 @@ class DefaultVodRepository(
                 val fresh = refreshTop10(kind)
                 sink((fresh ?: stored?.value.orEmpty()).window(skip, limit), true)
             }
+        }
+    }
+
+    /** Films' and series' Top 10 in turn, ranked 1 to 10 together (a Top 10 row added for both). */
+    private fun trendingBoth(skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
+        val mix = TopMix { cards, fresh -> sink(cards.window(skip, limit), fresh) }
+        for (kind in Kind.entries) trendingCards(kind, 0, TmdbTrending.WANTED, req) { cards, fresh -> mix.update(kind, cards, fresh) }
+    }
+
+    /**
+     * Puts films' and series' Top 10 together as each answers: films and series in turn, ranked again from 1. Passed
+     * on once both have answered, again when it changes, and last with fresh = true once both are fresh.
+     */
+    internal class TopMix(private val emit: (List<Card>, Boolean) -> Unit) {
+        private val cards = HashMap<Kind, List<Card>>()
+        private val settled = HashSet<Kind>()
+        private var sent: List<Card>? = null
+        private var sentFresh = false
+
+        @Synchronized
+        fun update(kind: Kind, list: List<Card>, fresh: Boolean) {
+            cards[kind] = list
+            if (fresh) settled += kind
+            if (!Kind.entries.all { it in cards }) return
+            val mixed = TmdbTrending.interleave(cards[Kind.MOVIE].orEmpty(), cards[Kind.SERIES].orEmpty())
+                .mapIndexed { i, c -> c.copy(rank = i + 1) }
+            val done = Kind.entries.all { it in settled }
+            if (mixed == sent && (sentFresh || !done)) return
+            sent = mixed
+            sentFresh = done
+            emit(mixed, done)
         }
     }
 

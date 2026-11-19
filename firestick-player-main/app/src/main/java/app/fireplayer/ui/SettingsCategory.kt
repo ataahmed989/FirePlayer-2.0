@@ -54,6 +54,8 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
             "Check the keys now",
         ),
     ),
+    // Films & Shows' pages: which rows Home, Movies and TV Shows show, in what order (Settings › Rows).
+    ROWS("Rows", R.drawable.ic_head_list, listOf("Home", "Movies", "TV Shows")),
     // Films & Shows' sources (design-brief.md §6.1, 6.5): the two add-ons, and how sources are ranked for this TV.
     ADDONS("Add-ons", R.drawable.ic_server, listOf("Torrentio", "MediaFusion")),
     THIS_TV("This TV", R.drawable.ic_display, listOf("Check again", "Best for this TV")),

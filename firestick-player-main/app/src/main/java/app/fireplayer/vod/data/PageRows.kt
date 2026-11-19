@@ -7,7 +7,8 @@ import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
 
 /**
- * The rows of Home, Movies and TV Shows, in order (design-brief.md §6.3). All are on: Settings › Rows comes later.
+ * The default rows of Home, Movies and TV Shows, in order (design-brief.md §6.3); Settings › Rows lets the viewer
+ * switch, reorder and add to them ([RowSettings]).
  * Rows whose source is empty are hidden by the page (Continue Watching and Next Episodes until playback records some,
  * My List until a title is added, Top 10 without a TMDB key). Keys are stable, whatever the year in a label.
  */

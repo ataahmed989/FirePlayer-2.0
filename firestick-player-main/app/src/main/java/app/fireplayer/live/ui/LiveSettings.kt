@@ -473,58 +473,9 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
 
     // ---- Reorder (playlists and groups) ---------------------------------------------------------------------------
 
-    /**
-     * A list the viewer puts in order ([Reorder]): OK picks an entry up (it says "Moving"), Up/Down carry it, OK puts
-     * it down; the button beside each moves it to the top. Every move is saved as it happens ([save]). A long list:
-     * only the rows on screen exist, and a move only shows the rows it changed again, so it's instant with 350 groups.
-     */
-    private fun <T> reorderRows(p: SidePanel, r: Reorder<T>, name: (T) -> String, key: (T) -> String, save: (List<T>) -> Unit) {
-        p.longList(object : LongList {
-            override val size: Int get() = r.items.size + 1
-
-            override fun entry(index: Int): ListEntry =
-                if (index == 0) ListEntry("note", if (r.items.isEmpty()) "Nothing to put in order: every group is hidden. Show some in Manage groups first." else REORDER_NOTE, kind = ListEntry.Kind.NOTE)
-                else r.items[index - 1].let { item ->
-                    ListEntry("i|" + key(item), name(item), r.value(index - 1), button = R.drawable.ic_move_top, buttonLabel = "Move to top")
-                }
-
-            override fun onClick(index: Int) {
-                val before = r.press(index - 1)
-                if (before >= 0 && before != index - 1) p.changed(before + 1)
-                p.changed(index)
-            }
-
-            override fun onButton(index: Int) {
-                val i = index - 1
-                val before = r.toTop(i)
-                if (i > 0) save(r.items.toList())
-                // Every row down to where it was now says another place; one picked up further down is put down.
-                p.changed(1, i + 1)
-                if (before > i) p.changed(before + 1)
-                p.focusEntry(1)
-            }
-
-            override fun onKey(index: Int, keyCode: Int, event: KeyEvent): Boolean {
-                val step = when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> -1
-                    KeyEvent.KEYCODE_DPAD_DOWN -> 1
-                    else -> return false
-                }
-                if (r.moving != index - 1) return false
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    val to = r.carry(step)
-                    if (to >= 0) {
-                        save(r.items.toList())
-                        p.changed(index)
-                        p.changed(to + 1)
-                        // Focus follows the entry being moved (the list glides along with it).
-                        p.focusEntry(to + 1)
-                    }
-                }
-                return true
-            }
-        })
-    }
+    /** A list the viewer puts in order ([reorderList], shared with Settings › Rows). */
+    private fun <T> reorderRows(p: SidePanel, r: Reorder<T>, name: (T) -> String, key: (T) -> String, save: (List<T>) -> Unit) =
+        reorderList(p, r, REORDER_NOTE, "Nothing to put in order: every group is hidden. Show some in Manage groups first.", name, key, save)
 
     private fun reorderPlaylists(p: SidePanel) {
         val r = reorderState(p, "playlists") { Reorder(playlists) }
