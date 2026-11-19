@@ -330,8 +330,10 @@ class VodPage(
         val now = SystemClock.elapsedRealtime()
         if (lastLoad == 0L || now - lastLoad > RELOAD_MS) loadAll() else reloadLibrary()
         updateHeaderPause()
+        // The stack runs again even with no title page open: one opened later must start (it used to stay paused
+        // after a film started from Continue Watching, so its details, sources and Play were dead).
+        titles.resume()
         if (titles.isOpen) {
-            titles.resume()
             // Behind the title page, only the poster it was opened from keeps its picture (for coming back).
             originRow()?.let { row -> row.bindImages(row.chosen..row.chosen) }
             return
