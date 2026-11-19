@@ -17,25 +17,32 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.View
+import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
+import app.fireplayer.ui.Rows
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.data.VodArt
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /**
  * One card in a row or the See all grid, drawn in [onDraw] (no child views, so a new title or picture only redraws
- * it and nothing is laid out). A poster or a wide Continue Watching card (name, caption line and progress bar inside
- * its bottom), or the row's "See all" card. Until its picture comes it shows the name on a dark gradient. The white
- * ring round the chosen card is drawn just outside it, as strong as [focus]; it stays 3 dp however much the card is
- * grown. Its picture is decoded at the grown size, so it's sharp at both sizes.
+ * it and nothing is laid out). A poster, a wide Continue Watching card (name, caption line and progress bar inside
+ * its bottom), a show's episode card on the title page ([Kind.EPISODE]: a 16:9 still with its progress bar, NEW and ✓
+ * badges, and two caption lines under it; dimmed when it hasn't aired), or the row's "See all" card. Until its picture
+ * comes it shows the name on a dark gradient. The white ring round the chosen card (its picture) is drawn just outside
+ * it, as strong as [focus]; it stays 3 dp however much the card is grown. Its picture is decoded at the grown size
+ * (an episode still at its shown size), so it's sharp at both sizes. Every size, colour and text style is
+ * [VodSizes]'s or [Tokens]'.
  */
 @SuppressLint("ViewConstructor")
 class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(context), ImageTarget {
 
-    enum class Kind { POSTER, WIDE, SEE_ALL }
+    enum class Kind { POSTER, WIDE, EPISODE, SEE_ALL }
 
     var card: Card? = null
         private set
@@ -59,58 +66,58 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
 
     private val radius = t.dpf(VodSizes.CARD_RADIUS)
     private val ringPx = t.dpf(VodSizes.RING)
+    /** The picture's box: the whole card, or an episode's still above its captions. */
     private val box = RectF()
     private val ringBox = RectF()
     private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val holderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrimPaint = Paint()
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = RING_COLOR }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(1f) }
-    private val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = t.bold
-        color = NAME_COLOR
-        textSize = sp(12.5f)
-    }
-    private val captionPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = t.semibold
-        color = CAPTION_COLOR
-        textSize = sp(10.5f)
-    }
-    private val holderTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = t.semibold
-        color = t.textMuted
-        textSize = sp(12.5f)
-    }
-    private val seeAllPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = t.semibold
-        textSize = sp(14f)
-        textAlign = Paint.Align.CENTER
-    }
-    private val badgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = t.bold
-        color = 0xFFFFFFFF.toInt()
-        textSize = sp(10f)
-    }
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(VodSizes.FLAT_RIM) }
+    private val namePaint = textPaint(VodSizes.CARD_NAME)
+    private val captionPaint = textPaint(VodSizes.CARD_CAPTION)
+    private val holderTextPaint = textPaint(VodSizes.CARD_HOLDER)
+    private val seeAllPaint = textPaint(VodSizes.SEE_ALL_STYLE).apply { textAlign = Paint.Align.CENTER }
+    private val badgePaint = textPaint(VodSizes.BADGE)
     private val badgeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent }
-    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TRACK_COLOR }
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = VodSizes.TRACK_COLOR }
     private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent }
+    // An episode's two lines: "E5 · Peacekeepers" (the number blue), "23m · Oct 5, 2013".
+    private val numberPaint = textPaint(VodSizes.EPISODE_TITLE).apply { color = VodSizes.EPISODE_NUMBER }
+    private val episodePaint = textPaint(VodSizes.EPISODE_TITLE)
+    private val metaPaint = textPaint(VodSizes.EPISODE_META)
 
     // Text laid out once per title and size, never while drawing.
     private var holderLayout: Layout? = null
     private var nameLine: CharSequence = ""
     private var captionLine: CharSequence = ""
+    private var numberLine: CharSequence = ""
     private var textFor = -1
 
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
     }
 
-    private fun sp(v: Float) = v * resources.displayMetrics.scaledDensity
+    private fun textPaint(style: TextStyle) = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = t.faceOf(style.weight)
+        color = t.colorOf(style)
+        textSize = style.sp * resources.displayMetrics.scaledDensity
+    }
 
-    /** The width and height its picture is decoded at: the grown card's, in px. */
-    val decodeW: Int get() = ceil(t.dpf(if (kind == Kind.WIDE) VodSizes.WIDE_W else VodSizes.POSTER_W) * (1f + VodSizes.GROW)).toInt()
-    val decodeH: Int get() = ceil(t.dpf(if (kind == Kind.WIDE) VodSizes.WIDE_H else VodSizes.POSTER_H) * (1f + VodSizes.GROW)).toInt()
+    /** The width and height its picture is decoded at, px: the grown card's (an episode's still: as shown). */
+    val decodeW: Int get() = decodeSize().first
+    val decodeH: Int get() = decodeSize().second
+
+    private fun decodeSize(): Pair<Int, Int> {
+        if (kind == Kind.EPISODE) return ceil(t.dpf(VodSizes.WIDE_W)).toInt() to ceil(t.dpf(VodSizes.WIDE_H)).toInt()
+        val w = ceil(t.dpf(if (kind == Kind.WIDE) VodSizes.WIDE_W else VodSizes.POSTER_W) * (1f + VodSizes.GROW)).toInt()
+        val h = ceil(t.dpf(if (kind == Kind.WIDE) VodSizes.WIDE_H else VodSizes.POSTER_H) * (1f + VodSizes.GROW)).toInt()
+        // A poster never decoded wider than its source says it is (TMDB's w185): no larger bitmap for no more detail.
+        val source = card?.let { pictureOf(it) }?.let { sourceWidth(it) } ?: return w to h
+        if (kind != Kind.POSTER || source >= w) return w to h
+        return source to (h * source / w.toFloat()).roundToInt()
+    }
 
     /** Shows [card]: only redrawn (its picture is bound separately, [bindImage]). */
     fun bind(card: Card) {
@@ -139,9 +146,10 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
             if (imageKey != null) ImageLoader.release(this)
             return
         }
-        val key = ImageLoader.keyOf(url, decodeW, decodeH)
+        val (w, h) = decodeSize()
+        val key = ImageLoader.keyOf(url, w, h)
         if (imageKey == key) return
-        ImageLoader.load(url, this, decodeW, decodeH)
+        ImageLoader.load(url, this, w, h)
     }
 
     /** Lets its picture go (the card shows its name until it's bound again). */
@@ -149,7 +157,16 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         if (imageKey != null || bitmap != null) ImageLoader.release(this)
     }
 
-    private fun pictureOf(c: Card): String? = if (kind == Kind.WIDE) wideArt(c) else c.title.poster
+    /** As [releaseImage], and its picture isn't fetched at all if it's still queued for this card alone (a page left). */
+    fun cancelImage() {
+        if (imageKey != null || bitmap != null) ImageLoader.cancel(this)
+    }
+
+    private fun pictureOf(c: Card): String? = when (kind) {
+        Kind.WIDE -> wideArt(c)
+        Kind.EPISODE -> c.picture
+        else -> c.title.poster
+    }
 
     override fun setImage(bitmap: Bitmap?, fromMemory: Boolean) {
         fader?.cancel()
@@ -159,7 +176,7 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         if (bitmap != null && !fromMemory) {
             imageAlpha = 0f
             fader = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = FADE_MS
+                duration = ImageLoader.FADE_MS
                 addUpdateListener { imageAlpha = it.animatedValue as Float; invalidate() }
                 start()
             }
@@ -186,19 +203,20 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
     private var focusFade: ValueAnimator? = null
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        box.set(0f, 0f, w.toFloat(), h.toFloat())
-        holderPaint.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(), HOLDER_TOP, HOLDER_BOTTOM, Shader.TileMode.CLAMP)
-        scrimPaint.shader = LinearGradient(0f, h * 0.35f, 0f, h.toFloat(), 0x00000000, SCRIM_BOTTOM, Shader.TileMode.CLAMP)
+        val ph = if (kind == Kind.EPISODE) t.dpf(VodSizes.pictureH(RowStyle.EPISODE)).coerceAtMost(h.toFloat()) else h.toFloat()
+        box.set(0f, 0f, w.toFloat(), ph)
+        holderPaint.shader = LinearGradient(0f, 0f, w.toFloat(), ph, VodSizes.HOLDER_TOP, VodSizes.HOLDER_BOTTOM, Shader.TileMode.CLAMP)
+        scrimPaint.shader = LinearGradient(0f, ph * VodSizes.SCRIM_FROM, 0f, ph, 0x00000000, VodSizes.SCRIM_BOTTOM, Shader.TileMode.CLAMP)
         textFor = -1
     }
 
     override fun onDraw(canvas: Canvas) {
         val w = width
         if (w <= 0) return
-        if (kind == Kind.SEE_ALL) {
-            drawSeeAll(canvas)
-        } else {
-            drawCard(canvas)
+        when (kind) {
+            Kind.SEE_ALL -> drawSeeAll(canvas)
+            Kind.EPISODE -> drawEpisode(canvas)
+            else -> drawCard(canvas)
         }
         drawRing(canvas)
     }
@@ -217,52 +235,95 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
                 canvas.restore()
             }
         }
-        if (bmp != null && s != null) {
-            shaderMatrix.setScale(width / bmp.width.toFloat(), height / bmp.height.toFloat())
-            s.setLocalMatrix(shaderMatrix)
-            imagePaint.shader = s
-            imagePaint.alpha = (255 * imageAlpha).toInt()
-            canvas.drawRoundRect(box, radius, radius, imagePaint)
-        }
+        if (bmp != null && s != null) drawPicture(canvas, bmp, s, 255)
         if (kind == Kind.WIDE && c != null) drawWideText(canvas, c)
-        c?.badge?.let { drawBadge(canvas, it) }
+        c?.badge?.let { drawBadge(canvas, it, right = true, alpha = 255) }
+    }
+
+    private fun drawPicture(canvas: Canvas, bmp: Bitmap, s: BitmapShader, alpha: Int) {
+        shaderMatrix.setScale(box.width() / bmp.width.toFloat(), box.height() / bmp.height.toFloat())
+        s.setLocalMatrix(shaderMatrix)
+        imagePaint.shader = s
+        imagePaint.alpha = (alpha * imageAlpha).toInt()
+        canvas.drawRoundRect(box, radius, radius, imagePaint)
     }
 
     /** A wide card's bottom: a soft dark scrim, the name, the caption line and the progress bar. */
     private fun drawWideText(canvas: Canvas, c: Card) {
         canvas.drawRoundRect(box, radius, radius, scrimPaint)
-        val side = t.dpf(8f)
+        val side = t.dpf(VodSizes.CARD_TEXT_SIDE)
         val progress = c.progress
-        val bottom = height - if (progress != null) t.dpf(15f) else t.dpf(9f)
+        val bottom = height - if (progress != null) t.dpf(VodSizes.CARD_BOTTOM_BAR) else t.dpf(VodSizes.CARD_BOTTOM)
         val nameBaseline = if (captionLine.isNotEmpty()) {
             val captionBaseline = bottom - captionPaint.descent()
             canvas.drawText(captionLine, 0, captionLine.length, side, captionBaseline, captionPaint)
             // The name just above, 2 dp clear of the caption's tallest letters.
-            captionBaseline + captionPaint.ascent() - t.dpf(2f) - namePaint.descent()
+            captionBaseline + captionPaint.ascent() - t.dpf(VodSizes.CARD_LINE_GAP) - namePaint.descent()
         } else {
             bottom - namePaint.descent()
         }
         canvas.drawText(nameLine, 0, nameLine.length, side, nameBaseline, namePaint)
-        if (progress != null) {
-            val top = height - t.dpf(6f) - t.dpf(3f)
-            val r = t.dpf(1.5f)
-            val right = width - side
-            canvas.drawRoundRect(side, top, right, top + t.dpf(3f), r, r, trackPaint)
-            val p = progress.coerceIn(0f, 1f)
-            if (p > 0f) canvas.drawRoundRect(side, top, side + (right - side) * p, top + t.dpf(3f), r, r, barPaint)
-        }
+        if (progress != null) drawBar(canvas, progress, 255)
     }
 
-    private fun drawBadge(canvas: Canvas, text: String) {
-        val padX = t.dpf(7f)
-        val padY = t.dpf(2f)
+    /** The progress bar along a picture's bottom (wide cards, episode stills). */
+    private fun drawBar(canvas: Canvas, progress: Float, alpha: Int) {
+        val side = t.dpf(VodSizes.CARD_TEXT_SIDE)
+        val barH = t.dpf(VodSizes.BAR_H)
+        val top = box.bottom - t.dpf(VodSizes.BAR_BOTTOM) - barH
+        val r = t.dpf(VodSizes.BAR_RADIUS)
+        val right = width - side
+        trackPaint.alpha = alpha * (VodSizes.TRACK_COLOR ushr 24) / 255
+        barPaint.alpha = alpha
+        canvas.drawRoundRect(side, top, right, top + barH, r, r, trackPaint)
+        val p = progress.coerceIn(0f, 1f)
+        if (p > 0f) canvas.drawRoundRect(side, top, side + (right - side) * p, top + barH, r, r, barPaint)
+    }
+
+    /**
+     * An episode card: the still (or its placeholder), the progress bar, NEW at its top right and ✓ at its top left,
+     * then "E5 · Peacekeepers" and "23m · Oct 5, 2013" under it. One that hasn't aired is drawn faint (its ring isn't).
+     */
+    private fun drawEpisode(canvas: Canvas) {
+        val c = card ?: return
+        val bmp = bitmap
+        val s = shader
+        if (textFor != width) layOutText(c)
+        val alpha = if (c.playable) 255 else (255 * Rows.DIM).toInt()
+        if (bmp == null || imageAlpha < 1f) {
+            holderPaint.alpha = alpha
+            canvas.drawRoundRect(box, radius, radius, holderPaint)
+        }
+        if (bmp != null && s != null) drawPicture(canvas, bmp, s, alpha)
+        c.progress?.takeIf { it > 0f }?.let { drawBar(canvas, it, alpha) }
+        c.badge?.let { drawBadge(canvas, it, right = true, alpha = alpha) }
+        if (c.watched) drawBadge(canvas, VodSizes.WATCHED_MARK, right = false, alpha = alpha)
+        // The captions under the still.
+        val side = 0f
+        val first = box.bottom + t.dpf(VodSizes.EPISODE_CAPTION_GAP) - episodePaint.ascent()
+        numberPaint.alpha = alpha
+        episodePaint.alpha = alpha
+        metaPaint.alpha = alpha
+        canvas.drawText(numberLine, 0, numberLine.length, side, first, numberPaint)
+        val nx = side + numberPaint.measureText(numberLine, 0, numberLine.length)
+        canvas.drawText(nameLine, 0, nameLine.length, nx, first, episodePaint)
+        val second = first + episodePaint.descent() + t.dpf(VodSizes.EPISODE_LINE_GAP) - metaPaint.ascent()
+        canvas.drawText(captionLine, 0, captionLine.length, side, second, metaPaint)
+    }
+
+    private fun drawBadge(canvas: Canvas, text: String, right: Boolean, alpha: Int) {
+        val padX = t.dpf(VodSizes.BADGE_PAD_X)
+        val padY = t.dpf(VodSizes.BADGE_PAD_Y)
         val tw = badgePaint.measureText(text)
         val th = badgePaint.descent() - badgePaint.ascent()
-        val right = width - t.dpf(6f)
-        val top = t.dpf(6f)
-        val r = t.dpf(8f)
-        canvas.drawRoundRect(right - tw - 2 * padX, top, right, top + th + 2 * padY, r, r, badgeFill)
-        canvas.drawText(text, right - tw - padX, top + padY - badgePaint.ascent(), badgePaint)
+        val inset = t.dpf(VodSizes.BADGE_INSET)
+        val l = if (right) width - inset - tw - 2 * padX else inset
+        val top = inset
+        val r = t.dpf(VodSizes.BADGE_RADIUS)
+        badgeFill.alpha = alpha
+        badgePaint.alpha = alpha
+        canvas.drawRoundRect(l, top, l + tw + 2 * padX, top + th + 2 * padY, r, r, badgeFill)
+        canvas.drawText(text, l + padX, top + padY - badgePaint.ascent(), badgePaint)
     }
 
     /**
@@ -271,19 +332,19 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
      */
     private fun drawSeeAll(canvas: Canvas) {
         val f = focus
-        val plain = if (Glass.on) SEE_ALL_GLASS else t.rowFill
+        val plain = if (Glass.on) t.groupFillGlass else t.rowFill
         fillPaint.color = blend(plain, t.focusFill, f)
         canvas.drawRoundRect(box, radius, radius, fillPaint)
         if (Glass.on && f < 1f) {
-            rimPaint.color = SEE_ALL_RIM
-            rimPaint.alpha = (alphaOf(SEE_ALL_RIM) * (1f - f)).toInt()
+            rimPaint.color = t.groupRimGlass
+            rimPaint.alpha = (alphaOf(t.groupRimGlass) * (1f - f)).toInt()
             val half = rimPaint.strokeWidth / 2
             ringBox.set(half, half, width - half, height - half)
             canvas.drawRoundRect(ringBox, radius, radius, rimPaint)
         }
         seeAllPaint.color = blend(t.text, t.accent, f)
         val y = height / 2f - (seeAllPaint.descent() + seeAllPaint.ascent()) / 2f
-        canvas.drawText(SEE_ALL, width / 2f, y, seeAllPaint)
+        canvas.drawText(VodSizes.SEE_ALL, width / 2f, y, seeAllPaint)
     }
 
     private fun drawRing(canvas: Canvas) {
@@ -295,20 +356,32 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         ringPaint.strokeWidth = stroke
         ringPaint.alpha = (255 * f).toInt()
         val half = stroke / 2f
-        ringBox.set(-half, -half, width + half, height + half)
+        ringBox.set(box.left - half, box.top - half, box.right + half, box.bottom + half)
         canvas.drawRoundRect(ringBox, radius + half, radius + half, ringPaint)
     }
 
     private fun layOutText(c: Card?) {
         textFor = width
         val name = c?.title?.name.orEmpty()
-        val avail = (width - 2 * t.dpf(8f)).coerceAtLeast(1f)
-        if (kind == Kind.WIDE) {
-            nameLine = TextUtils.ellipsize(name, namePaint, avail, TextUtils.TruncateAt.END)
-            captionLine = TextUtils.ellipsize(c?.caption.orEmpty(), captionPaint, avail, TextUtils.TruncateAt.END)
-            holderLayout = null
-        } else {
-            holderLayout = if (name.isEmpty()) null else makeLayout(name, avail.toInt())
+        val avail = (width - 2 * t.dpf(VodSizes.CARD_TEXT_SIDE)).coerceAtLeast(1f)
+        when (kind) {
+            Kind.WIDE -> {
+                nameLine = TextUtils.ellipsize(name, namePaint, avail, TextUtils.TruncateAt.END)
+                captionLine = TextUtils.ellipsize(c?.caption.orEmpty(), captionPaint, avail, TextUtils.TruncateAt.END)
+                holderLayout = null
+            }
+            Kind.EPISODE -> {
+                // "E5" in blue, then " · Peacekeepers"; the line under it as the row worded it.
+                val ep = c?.episode
+                numberLine = ep?.let { TitleRules.episodeNumber(it) }.orEmpty()
+                val w = width.toFloat()
+                val rest = ep?.let { TitleRules.episodeNameAfterNumber(it) }.orEmpty()
+                val restW = (w - numberPaint.measureText(numberLine, 0, numberLine.length)).coerceAtLeast(1f)
+                nameLine = TextUtils.ellipsize(rest, episodePaint, restW, TextUtils.TruncateAt.END)
+                captionLine = TextUtils.ellipsize(c?.caption.orEmpty(), metaPaint, w.coerceAtLeast(1f), TextUtils.TruncateAt.END)
+                holderLayout = null
+            }
+            else -> holderLayout = if (name.isEmpty()) null else makeLayout(name, avail.toInt())
         }
     }
 
@@ -317,7 +390,7 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             StaticLayout.Builder.obtain(text, 0, text.length, holderTextPaint, w)
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setMaxLines(4)
+                .setMaxLines(VodSizes.HOLDER_LINES)
                 .setEllipsize(TextUtils.TruncateAt.END)
                 .setIncludePad(false)
                 .build()
@@ -326,22 +399,12 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         }
 
     private companion object {
-        const val SEE_ALL = "See all ›"
-        const val FADE_MS = 160L
-        /** The white of the focus ring (the sizing page's focus white). */
-        const val RING_COLOR = 0xFFF2F4F7.toInt()
-        const val NAME_COLOR = 0xFFFFFFFF.toInt()
-        const val CAPTION_COLOR = 0xFFD6DEE8.toInt()
-        const val TRACK_COLOR = 0x47FFFFFF
-        /** The Episodes sheet's card placeholder. */
-        const val HOLDER_TOP = 0xFF26313F.toInt()
-        const val HOLDER_BOTTOM = 0xFF141A22.toInt()
-        const val SCRIM_BOTTOM = 0xC7000000.toInt()
-        /** The settings windows' grouped-row fill and rim (group_fill_glass, group_rim_glass). */
-        const val SEE_ALL_GLASS = 0x14FFFFFF
-        const val SEE_ALL_RIM = 0x24FFFFFF
-
         fun alphaOf(c: Int) = c ushr 24
+
+        /** TMDB's picture width in its address ("…/t/p/w185/…"); null for any other. */
+        private val TMDB_WIDTH = Regex("""image\.tmdb\.org/t/p/w(\d+)/""")
+
+        fun sourceWidth(url: String): Int? = TMDB_WIDTH.find(url)?.groupValues?.get(1)?.toIntOrNull()
 
         /** [a] towards [b] by [f], channel by channel. */
         fun blend(a: Int, b: Int, f: Float): Int {

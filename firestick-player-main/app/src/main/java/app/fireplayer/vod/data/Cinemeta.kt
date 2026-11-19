@@ -52,6 +52,31 @@ object Cinemeta {
         return "$BASE/catalog/${kind.type}/${enc(catalog)}$tail.json"
     }
 
+    /**
+     * A name search: `/catalog/movie/top/search=Denis%20Villeneuve.json`. It finds the name in any field (cast, writer,
+     * title too); More Like This uses it for a film's director when there is no TMDB key.
+     */
+    fun searchUrl(kind: Kind, query: String) = "$BASE/catalog/${kind.type}/$TOP/search=${enc(query.trim())}.json"
+
+    /**
+     * A search answer read into titles of [kind], in order, each id once. No junk filters: search items carry no
+     * `year` field, and the caller filters by year itself. [Page.hasMore] is always false.
+     */
+    fun parseSearch(text: String, kind: Kind): Page {
+        val root = JSONObject(text)
+        val metas = root.optJSONArray("metas")
+        val seen = HashSet<String>()
+        val titles = ArrayList<Title>()
+        if (metas != null) {
+            for (i in 0 until metas.length()) {
+                val title = parsePreview(metas.optJSONObject(i) ?: continue, kind) ?: continue
+                if (title.kind == kind && seen.add(title.id)) titles += title
+            }
+        }
+        val maxAge = root.optLong("cacheMaxAge", 0L).takeIf { it > 0 }?.let { (it * 1000).coerceIn(MIN_FRESH_MS, MAX_FRESH_MS) }
+        return Page(titles, false, maxAge ?: PAGE_FRESH_MS)
+    }
+
     /** One catalog page, filtered (see [parseCatalog]). [maxAgeMs]: how long the server says it stays fresh. */
     class Page(val titles: List<Title>, val hasMore: Boolean, val maxAgeMs: Long)
 

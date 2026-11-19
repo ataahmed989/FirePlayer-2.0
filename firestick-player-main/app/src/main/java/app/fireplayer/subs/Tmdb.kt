@@ -281,6 +281,19 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         if (e.code == 404) null else throw e
     }
 
+    /**
+     * A film's or show's details with the parts in [append] (`append_to_response`, comma-separated) as TMDB sends them,
+     * in English; null when TMDB has no such title. For the title page (one call per title). Blocks.
+     */
+    fun titleDetails(id: Int, show: Boolean, append: String): String? = try {
+        request("${if (show) "tv" else "movie"}/$id", listOf("language" to "en-US", "append_to_response" to append))
+    } catch (e: HttpError) {
+        if (e.code == 404) null else throw e
+    }
+
+    /** What TMDB has under an IMDb id (`find/{tt}`), as it sends it: for a meta without a TMDB id. Blocks. */
+    fun findByImdb(imdbId: String): String = request("find/$imdbId", listOf("external_source" to "imdb_id"))
+
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
     class TvEpisode(
         val id: Int,

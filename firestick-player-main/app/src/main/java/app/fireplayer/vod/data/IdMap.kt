@@ -24,9 +24,11 @@ class MemoryIdStore : IdStore {
 }
 
 /**
- * TMDB id → IMDb id, per kind (TMDB's film and TV ids are separate numbers). Hits are kept for good; a miss (TMDB had
- * no IMDb id) only for [MISS_KEPT_MS], since new titles often get theirs a few days later. Cinemeta's pages teach it
- * pairs for nothing ([learn]); TMDB answers fill in the rest. Reads go through a memory copy; writes go to [writer].
+ * TMDB id → IMDb id, per kind (TMDB's film and TV ids are separate numbers). Hits are kept [HIT_KEPT_MS] (TMDB's
+ * 6-month limit on what's kept from it; Cinemeta's pages teach them again), a miss (TMDB had no IMDb id) only
+ * [MISS_KEPT_MS], since new titles often get theirs a few days later; older rows leave vod.db ([VodDb]). Cinemeta's
+ * pages teach it pairs for nothing ([learn]); TMDB answers fill in the rest. Reads go through a memory copy, which also
+ * remembers ids never asked about (no store read each time); writes go to [writer].
  */
 class IdMap(private val store: IdStore, private val clock: () -> Long, private val writer: Executor) {
 
@@ -34,23 +36,35 @@ class IdMap(private val store: IdStore, private val clock: () -> Long, private v
 
     fun known(kind: Kind, tmdbId: Int): TmdbTrending.Known {
         val key = "${kind.type}|$tmdbId"
-        val entry = memory[key] ?: runCatching { store.idFor(kind, tmdbId) }.getOrNull()?.also { memory[key] = it }
-            ?: return TmdbTrending.Known.Unknown
+        val entry = memory[key] ?: run {
+            val read = runCatching { store.idFor(kind, tmdbId) }.getOrNull() ?: NONE
+            // Something learnt meanwhile wins (ConcurrentHashMap's own putIfAbsent: on every API level).
+            memory.putIfAbsent(key, read) ?: read
+        }
+        if (entry === NONE) return TmdbTrending.Known.Unknown
         val (imdb, at) = entry
-        if (imdb.isNotEmpty()) return TmdbTrending.Known.Hit(imdb)
-        return if (clock() - at in 0 until MISS_KEPT_MS) TmdbTrending.Known.Miss else TmdbTrending.Known.Unknown
+        val age = clock() - at
+        if (imdb.isNotEmpty()) return if (age < HIT_KEPT_MS) TmdbTrending.Known.Hit(imdb) else TmdbTrending.Known.Unknown
+        return if (age in 0 until MISS_KEPT_MS) TmdbTrending.Known.Miss else TmdbTrending.Known.Unknown
     }
 
     fun found(kind: Kind, tmdbId: Int, imdb: String) = put(kind, listOf(tmdbId to imdb))
 
     fun missed(kind: Kind, tmdbId: Int) = put(kind, listOf(tmdbId to ""))
 
-    /** The pairs Cinemeta's titles carry (`moviedb_id`), after its junk filters. Only new or changed ones are written. */
+    /**
+     * The pairs Cinemeta's titles carry (`moviedb_id`), after its junk filters. Only new or changed ones are written,
+     * and ones past [HIT_KEPT_MS] (learnt again).
+     */
     fun learn(titles: List<Title>) {
+        val now = clock()
         for (kind in Kind.entries) {
             val pairs = titles.filter { it.kind == kind && it.tmdbId != null && it.id.startsWith("tt") }
                 .map { it.tmdbId!! to it.id }
-                .filter { (tmdb, imdb) -> memory["${kind.type}|$tmdb"]?.first != imdb }
+                .filter { (tmdb, imdb) ->
+                    val had = memory["${kind.type}|$tmdb"]
+                    had == null || had.first != imdb || now - had.second >= HIT_KEPT_MS
+                }
             if (pairs.isNotEmpty()) put(kind, pairs)
         }
     }
@@ -64,5 +78,10 @@ class IdMap(private val store: IdStore, private val clock: () -> Long, private v
 
     companion object {
         const val MISS_KEPT_MS = 2 * 24 * 3600_000L
+        /** A hit is used this long after it was learnt (nothing from TMDB is kept past 6 months). */
+        const val HIT_KEPT_MS = 180 * 24 * 3600_000L
+
+        /** In memory only: the store had nothing (asked once, not again until something is learnt). */
+        private val NONE = "" to Long.MIN_VALUE
     }
 }

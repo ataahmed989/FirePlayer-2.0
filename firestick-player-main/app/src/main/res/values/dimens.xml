@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Look values that both resources and code read, so each lives in one place. -->
+<resources>
+    <!-- A round button's name (ButtonLabel): its gap under the button, and its side margins (negative: it hangs out
+         over both sides of the button by half the widest name). Round buttons made in code read them too. -->
+    <dimen name="button_label_gap">4dp</dimen>
+    <dimen name="button_label_side">-48dp</dimen>
+
+    <!-- The classic look's corners (res/drawable/bg_*.xml), also read by Glass.cornerRadius for a picture drawn to
+         follow a surface's corners. -->
+    <dimen name="radius_panel">15dp</dimen>
+    <dimen name="radius_popup">15dp</dimen>
+    <dimen name="radius_pill">20dp</dimen>
+    <dimen name="radius_chip">5dp</dimen>
+    <dimen name="radius_row">9dp</dimen>
+</resources>

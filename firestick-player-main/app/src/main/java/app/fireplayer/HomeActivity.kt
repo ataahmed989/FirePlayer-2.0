@@ -808,6 +808,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 if (event.action == KeyEvent.ACTION_UP) rail.focusSelected()
                 return true
             }
+            // On the rail over a title page: back into the page (its place kept), never out of the app.
+            if (!panel.isOpen && rail.hasFocus() && vodPages.isVodTab(rail.selected) && vodPages.hasTitle()) {
+                if (event.action == KeyEvent.ACTION_UP) focusPage()
+                return true
+            }
         }
         if (!panel.isOpen) return super.dispatchKeyEvent(event)
         val before = currentFocus

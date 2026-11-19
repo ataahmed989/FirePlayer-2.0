@@ -12,6 +12,10 @@ import org.json.JSONObject
  * Films & Shows storage (`vod.db`), this TV only: the user's library (My List, watched marks, where playback stopped)
  * and the TMDB → IMDb ids Top 10 has learnt. Opened by the main app process only. Library rows are never deleted:
  * leaving a list flips a flag with its time, so a sync could be added later.
+ *
+ * Version 2 (the title page) adds `episode_progress`, where playback of each episode stopped. A single episode's watched
+ * mark is a `watched` row with the episode's id ("tt…:S:E", kind series), so no other table changes: the upgrade from
+ * version 1 only creates the new table, and My List, watched marks and Continue Watching stay as they were.
  */
 class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSION), LibraryStore, IdStore {
 
@@ -39,9 +43,20 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
             "CREATE TABLE tmdb_imdb(kind TEXT NOT NULL, tmdb INTEGER NOT NULL, imdb TEXT NOT NULL, at INTEGER NOT NULL, " +
                 "PRIMARY KEY(kind, tmdb)) WITHOUT ROWID",
         )
+        db.execSQL(CREATE_EPISODE_PROGRESS)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // 1 → 2: where each episode stopped. Nothing else changes.
+        if (oldVersion < 2) db.execSQL(CREATE_EPISODE_PROGRESS)
+    }
+
+    /** Each time it's opened: ids learnt more than [IdMap.HIT_KEPT_MS] ago go (TMDB's 6-month limit). */
+    override fun onOpen(db: SQLiteDatabase) {
+        if (db.isReadOnly) return
+        val before = System.currentTimeMillis() - IdMap.HIT_KEPT_MS
+        if (before > 0) runCatching { db.delete("tmdb_imdb", "at < ?", arrayOf(before.toString())) }
+    }
 
     // ---- LibraryStore ----
 
@@ -74,7 +89,12 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
                 }
             }
         }
-        return LibraryStore.Saved(listed, watched, progress)
+        val positions = db.rawQuery("SELECT id, position, duration, at FROM episode_progress", null).use { c ->
+            buildList {
+                while (c.moveToNext()) add(EpisodePosition(c.getString(0), c.getLong(1), c.getLong(2), c.getLong(3)))
+            }
+        }
+        return LibraryStore.Saved(listed, watched, progress, positions)
     }
 
     override fun saveListed(l: Listed) {
@@ -88,11 +108,39 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
     }
 
     override fun saveWatched(w: Watched) {
-        writableDatabase.insertWithOnConflict("watched", null, ContentValues().apply {
-            put("kind", w.kind.type)
-            put("id", w.id)
-            put("at", w.at)
-            put("watched", if (w.watched) 1 else 0)
+        writableDatabase.insertWithOnConflict("watched", null, watchedValues(w, ContentValues()), SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /** One transaction for all of them ("Mark watched up to here" on a long show is hundreds of rows). */
+    override fun saveWatchedAll(marks: List<Watched>) {
+        if (marks.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues()
+            for (w in marks) {
+                values.clear()
+                db.insertWithOnConflict("watched", null, watchedValues(w, values), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun watchedValues(w: Watched, values: ContentValues) = values.apply {
+        put("kind", w.kind.type)
+        put("id", w.id)
+        put("at", w.at)
+        put("watched", if (w.watched) 1 else 0)
+    }
+
+    override fun saveEpisodePosition(p: EpisodePosition) {
+        writableDatabase.insertWithOnConflict("episode_progress", null, ContentValues().apply {
+            put("id", p.id)
+            put("position", p.positionMs)
+            put("duration", p.durationMs)
+            put("at", p.at)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -148,6 +196,11 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
         json?.let { runCatching { TitleJson.read(JSONObject(it)) }.getOrNull() }
 
     private companion object {
-        const val VERSION = 1
+        const val VERSION = 2
+
+        /** Where playback of each episode ("tt…:S:E") stopped (version 2). */
+        const val CREATE_EPISODE_PROGRESS =
+            "CREATE TABLE IF NOT EXISTS episode_progress(id TEXT NOT NULL PRIMARY KEY, position INTEGER NOT NULL, " +
+                "duration INTEGER NOT NULL, at INTEGER NOT NULL) WITHOUT ROWID"
     }
 }
