@@ -28,8 +28,15 @@ object Glass {
      */
     @Volatile var dim = 0f
 
-    /** The shapes that can be glass. Each replaces one classic background ([classicRes]). */
-    enum class Kind { PANEL, POPUP, DIALOG_POPUP, CIRCLE, PILL, CHIP, MORE_ICON, ROW }
+    /**
+     * The shapes that can be glass. Each replaces one classic background ([classicRes]). [CELL] is a row in the cell
+     * glass ([GlassStyle.CELL], the material of the guide's programme cells): the Search tab's bar and history pods.
+     * Selected it's the white row, as [ROW]; classic, the solid row.
+     */
+    enum class Kind { PANEL, POPUP, DIALOG_POPUP, CIRCLE, PILL, CHIP, MORE_ICON, ROW, CELL }
+
+    /** A row of either glass: it sits on its page or window and has no film of its own. */
+    internal fun isRow(kind: Kind): Boolean = kind == Kind.ROW || kind == Kind.CELL
 
     /** The background each shape has with the glass look off. */
     fun classicRes(kind: Kind): Int = when (kind) {
@@ -39,7 +46,7 @@ object Glass {
         Kind.PILL -> R.drawable.bg_pill
         Kind.CHIP -> R.drawable.bg_chip
         Kind.MORE_ICON -> R.drawable.bg_more_icon
-        Kind.ROW -> R.drawable.bg_row
+        Kind.ROW, Kind.CELL -> R.drawable.bg_row
     }
 
     /**
@@ -70,7 +77,7 @@ object Glass {
             Kind.POPUP, Kind.DIALOG_POPUP -> R.dimen.radius_popup
             Kind.PILL -> R.dimen.radius_pill
             Kind.CHIP -> R.dimen.radius_chip
-            Kind.ROW -> R.dimen.radius_row
+            Kind.ROW, Kind.CELL -> R.dimen.radius_row
             Kind.CIRCLE, Kind.MORE_ICON -> return half
         }
         return minOf(res.getDimension(classic), half)
@@ -83,7 +90,7 @@ object Glass {
      * it is (the wallpaper, a picture), with nothing copied or blurred for it.
      */
     fun drawable(context: Context, kind: Kind): Drawable =
-        if (inPlayer(context)) GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+        if (inPlayer(context)) GlassDrawable(context, kind, if (isRow(kind)) null else backdropFor(context))
         else GlassDrawable(context, kind, null, calm = true)
 
     /**
@@ -104,7 +111,7 @@ object Glass {
 
     /** The glass of [overlay], whatever the setting. */
     fun overlayDrawable(context: Context, kind: Kind): GlassDrawable {
-        if (inPlayer(context)) return GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+        if (inPlayer(context)) return GlassDrawable(context, kind, if (isRow(kind)) null else backdropFor(context))
         val behind = pageGlassFor(context)
         val glass = GlassDrawable(context, kind, behind, calm = true, overlay = true)
         behind?.register(glass)

@@ -2,38 +2,31 @@ package app.fireplayer.live.ui
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Shader
+import app.fireplayer.ui.GlassBakes
 import app.fireplayer.ui.GlassStyle
 import kotlin.math.ceil
 
 /**
- * What one kind of [GlassPatch] is made of, all from the shared browsing style ([GlassStyle]): [coats] of [fill], the
- * faint light from above ([sheen]) and the outline ([edge]: the hairline all round and [highlight] along the top).
+ * What each kind of [GlassPatch] is made of: a flat surface of the shared browsing style ([GlassStyle.Surface]: coats
+ * of a fill, the faint light from above and the outline).
  */
-internal class PatchLook(
-    val fill: Int,
-    val coats: Int = 1,
-    val sheen: Boolean = false,
-    val edge: Boolean = true,
-    val highlight: Int = GlassStyle.HIGHLIGHT,
-) {
-    companion object {
-        /** A programme cell: barely lighter than the page behind it, a hairline round it, a gentle top highlight. */
-        val CELL = PatchLook(GlassStyle.ROW_FILL, highlight = GlassStyle.ROW_HIGHLIGHT)
-        /** The cell the focus rests on while the groups column has it: a second coat, so a shade lighter. */
-        val CELL_SELECTED = PatchLook(GlassStyle.ROW_FILL, coats = 2, highlight = GlassStyle.ROW_HIGHLIGHT)
-        /** A row whose listings aren't loaded yet: the fill alone, no outline. */
-        val CELL_EMPTY = PatchLook(GlassStyle.ROW_FILL, edge = false)
-        /** A channel logo's tile: the glass of the app's buttons, dark under white and coloured logos. */
-        val TILE = PatchLook(GlassStyle.CONTROL_TINT, sheen = true)
-        /** The tile behind dark ink: the same glass frosted light ([LogoPlate.GLASS_LIGHT]). */
-        val TILE_LIGHT = PatchLook(LogoPlate.GLASS_LIGHT, sheen = true)
-    }
+internal object PatchLook {
+    /**
+     * A programme cell: the cell glass ([GlassStyle.CELL]), named once in the shared style because the Search tab's bar
+     * and history pods are made of it too ([app.fireplayer.ui.Glass.Kind.CELL]).
+     */
+    val CELL = GlassStyle.CELL
+    /** The cell the focus rests on while the groups column has it: a second coat, so a shade lighter. */
+    val CELL_SELECTED = CELL.copy(coats = 2)
+    /** A row whose listings aren't loaded yet: the fill alone, no outline. */
+    val CELL_EMPTY = CELL.copy(edge = false)
+    /** A channel logo's tile: the glass of the app's buttons, dark under white and coloured logos. */
+    val TILE = GlassStyle.Surface(GlassStyle.CONTROL_TINT, sheen = true)
+    /** The tile behind dark ink: the same glass frosted light ([LogoPlate.GLASS_LIGHT]). */
+    val TILE_LIGHT = GlassStyle.Surface(LogoPlate.GLASS_LIGHT, sheen = true)
 }
 
 /** Where a [GlassPatch] is cut and placed (pure, unit-tested). */
@@ -76,7 +69,7 @@ internal object PatchMath {
  */
 internal class GlassPatch(
     private val density: Float,
-    private val look: PatchLook,
+    private val look: GlassStyle.Surface,
     /** The corner radius, px, for a patch this many px tall. */
     private val radiusFor: (h: Int) -> Float,
 ) {
@@ -120,43 +113,14 @@ internal class GlassPatch(
         canvas.drawBitmap(bmp, src, dst, stamp)
     }
 
-    /** The patch [h] px tall, drawn as the shared style draws its surfaces: tint, sheen, hairline, top highlight. */
+    /** The patch [h] px tall, drawn as the shared style draws its surfaces ([GlassBakes.surface]). */
     private fun bake(h: Int): Bitmap {
         val r = PatchMath.radius(radiusFor(h), h)
         radius = r
         cap = PatchMath.cap(r)
         val w = PatchMath.width(cap)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val rect = RectF(0f, 0f, w.toFloat(), h.toFloat())
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        p.color = look.fill
-        for (i in 0 until look.coats) c.drawRoundRect(rect, r, r, p)
-        if (look.sheen) {
-            p.shader = LinearGradient(0f, 0f, 0f, h * GlassStyle.SHEEN_SHARE, GlassStyle.SHEEN, 0x00FFFFFF, Shader.TileMode.CLAMP)
-            c.drawRoundRect(rect, r, r, p)
-            p.shader = null
-        }
-        if (look.edge) {
-            val hair = GlassStyle.hairlinePx(density)
-            val half = hair / 2f
-            p.style = Paint.Style.STROKE
-            p.strokeWidth = hair
-            p.color = GlassStyle.HAIRLINE
-            val inner = RectF(rect).apply { inset(half, half) }
-            val ir = (r - half).coerceAtLeast(0f)
-            c.drawRoundRect(inner, ir, ir, p)
-            // The highlight follows the top edge round the corners: the shape less itself moved down a little.
-            val line = Path().apply { addRoundRect(rect, r, r, Path.Direction.CW) }
-            val lower = Path().apply {
-                addRoundRect(RectF(rect).apply { offset(0f, GlassStyle.HIGHLIGHT_DP * density) }, r, r, Path.Direction.CW)
-            }
-            if (line.op(lower, Path.Op.DIFFERENCE)) {
-                p.style = Paint.Style.FILL
-                p.color = look.highlight
-                c.drawPath(line, p)
-            }
-        }
+        GlassBakes.surface(Canvas(bmp), RectF(0f, 0f, w.toFloat(), h.toFloat()), r, look, density)
         bitmap = bmp
         return bmp
     }

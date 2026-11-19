@@ -4,14 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.TextPaint
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -22,21 +22,24 @@ import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.ImageLoader
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
 
 /**
  * A page's banner (216 dp; My List's 186): the title's picture, sharp ([HeaderArt]), under a separate dark shading
- * ([Shade]: strongest behind the words on the left, easing out towards the right, with a little more along the
- * bottom), and on it the title (40 sp; a long name a size smaller), a facts line (12.5 sp: year, genres, rating,
- * length), two lines of story, the Watch now and Details buttons ([actions]) and, centred near the bottom, dots for
- * the rotation. A fine outline is drawn over the picture ([Glass.edge]).
+ * ([Shade]: round the words at the top left and down behind the buttons, the rest of the picture left clear), and on
+ * it, at the top left, the title as its logo ([HeaderTitle]; its name where it has none), a facts line (12.5 sp: year,
+ * genres, rating, length) and two lines of story; at the bottom left the Watch now and Details buttons ([actions]);
+ * and, centred near the bottom, dots for the rotation. A fine outline is drawn over the picture ([Glass.edge]).
  *
  * While idle it goes through the page's feed (Top 10, or Popular's first 10) about every 8 s ([HeaderRotation]), the
- * text fading out and in and the picture crossfading; while focus is in the page's Continue row it shows the chosen
- * card's title instead: the words at once, the picture half a second later (so a held D-pad decodes nothing). While
- * one of its buttons has focus it stays on the title it shows. Its text views have fixed sizes, so new words only
- * redraw them. The buttons' keys go to the page ([Listener]).
+ * words and the logo fading out and in together and the picture crossfading; while focus is in the page's Continue row
+ * it shows the chosen card's title instead: the words at once, the picture half a second later (so a held D-pad
+ * decodes nothing). With focus on one of its buttons it goes on turning once no key has been pressed for that long
+ * (from a Continue card's title too); the buttons act on the title whose words are showing ([shownCard],
+ * [HeaderPress]). Its words have fixed boxes, so new ones only redraw them. The buttons' keys go to the page
+ * ([Listener]).
  */
 @SuppressLint("ViewConstructor")
 class VodHeader(
@@ -63,6 +66,8 @@ class VodHeader(
     private val main = Handler(Looper.getMainLooper())
     private val rotation = HeaderRotation()
     private var feed: List<Title> = emptyList()
+    /** The feed's logos have been asked for ahead ([fetchLogosAhead]). */
+    private var logosAhead = false
     private var following: Card? = null
 
     /** Whether anything else (a window, the settings window) asks it to hold still; asked at each turn. */
@@ -71,7 +76,7 @@ class VodHeader(
     /** The picture fills the card (Home), or is a box at its right whose left edge is eased away (the wider cards). */
     private val whole = VodSizes.backdropW(cardW) >= cardW
     private val art = HeaderArt(context, HeaderArt.ArtSpec.BANNER).apply { if (!whole) leftFade = VodSizes.BANNER_FADE_LEFT_TO }
-    private val shade = Shade(context)
+    private val shade = Shade(context, t, cardW)
 
     /**
      * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade]):
@@ -87,8 +92,9 @@ class VodHeader(
         override fun hasOverlappingRendering() = false
     }.apply { orientation = LinearLayout.VERTICAL }
 
-    private val textW = t.dp(cardW - 2 * VodSizes.HEADER_INSET)
-    private val title = TitleLine(context, t)
+    /** The words' column: the title's box, the facts and the story are all this wide. */
+    private val textW = t.dp(VodSizes.storyW(cardW))
+    private val title = HeaderTitle(context, t, cardW)
     private val facts = t.label(context, VodSizes.FACTS)
     private val story = t.label(context, VodSizes.STORY).apply {
         // Always two lines, in a box two lines tall (see init): new words never change its height, so they're only
@@ -97,10 +103,10 @@ class VodHeader(
     }
     private val pillSpec = Buttons.PillSpec(
         height = VodSizes.HEADER_BUTTON_H,
-        pad = VodSizes.BUTTON_PAD,
-        text = VodSizes.BUTTON,
-        icon = VodSizes.BUTTON_ICON,
-        iconGap = VodSizes.BUTTON_ICON_GAP,
+        pad = VodSizes.HEADER_BUTTON_PAD,
+        text = VodSizes.HEADER_BUTTON,
+        icon = VodSizes.HEADER_BUTTON_ICON,
+        iconGap = VodSizes.HEADER_BUTTON_ICON_GAP,
     )
     private val watch = Buttons.ActionPill(context, t, pillSpec).apply { set(WATCH_NOW, R.drawable.ic_play) }
     private val details = Buttons.ActionPill(context, t, pillSpec).apply { set(DETAILS, null) }
@@ -124,17 +130,17 @@ class VodHeader(
         story.setShadowLayer(shadow, 0f, shadowDy, VodSizes.HEADER_TEXT_SHADOW_COLOR)
         words.addView(title, LinearLayout.LayoutParams(textW, t.dp(VodSizes.HEADER_TITLE_H)))
         words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.HEADER_FACTS_GAP) })
-        words.addView(story, LinearLayout.LayoutParams(t.dp(VodSizes.storyW(cardW)), story.lineHeight * VodSizes.HEADER_STORY_LINES).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
-        // The words stand on the buttons (or, without them, on the card's bottom margin): whatever the card's height.
+        words.addView(story, LinearLayout.LayoutParams(textW, story.lineHeight * VodSizes.HEADER_STORY_LINES).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
+        // The words at the card's top left, whatever its height; the buttons at its bottom left.
         addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.START
+            gravity = Gravity.TOP or Gravity.START
             leftMargin = t.dp(VodSizes.HEADER_INSET)
-            bottomMargin = t.dp(if (actions) VodSizes.headerWordsBottom() else VodSizes.HEADER_BUTTONS_BOTTOM)
+            topMargin = t.dp(VodSizes.HEADER_TOP)
         })
         if (actions) {
             buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)))
             buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
-                leftMargin = t.dp(VodSizes.BUTTON_GAP)
+                leftMargin = t.dp(VodSizes.HEADER_BUTTON_GAP)
             })
             addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
@@ -143,7 +149,12 @@ class VodHeader(
             })
             for ((which, pill) in listOf(Button.WATCH to watch, Button.DETAILS to details)) {
                 Tokens.focusEffect(pill, Tokens.GROW_PILL, null) { has -> onButtonFocus(has) }
-                pill.setOnKeyListener { _, keyCode, event -> listener?.onHeaderKey(which, keyCode, event) ?: false }
+                pill.setOnKeyListener { _, keyCode, event ->
+                    // Any key here: the wait for the next title starts again.
+                    rotation.key(now())
+                    schedule()
+                    listener?.onHeaderKey(which, keyCode, event) ?: false
+                }
             }
         }
         addView(dots, LayoutParams(t.dp(VodSizes.DOTS_W), t.dp(VodSizes.DOTS_H)).apply {
@@ -195,8 +206,20 @@ class VodHeader(
 
     // ---- The buttons ---------------------------------------------------------------------------------------------
 
-    /** The title the banner shows, as a card (the Continue card it follows, with its episode): what its buttons act on. */
+    /**
+     * The title whose words the banner shows, as a card (the Continue card it follows, with its episode): what its
+     * buttons act on. While it turns, this changes with the words, in the middle of their fade ([showText]).
+     */
     val shownCard: Card? get() = following?.takeIf { it.title.id == shown?.id } ?: shown?.let { Card(it) }
+
+    /**
+     * The page has moved the card's top [px] out of view (a first row of posters lifts the page a little): the words
+     * move down to stay clear of the cut ([VodSizes.headerWordsShift]). A translation only; nothing is laid out.
+     */
+    fun setHiddenTop(px: Float) {
+        val y = t.dpf(VodSizes.headerWordsShift(px / t.density))
+        if (words.translationY != y) words.translationY = y
+    }
 
     /** Whether one of the buttons has focus. */
     val hasButtonFocus: Boolean get() = watch.isFocused || details.isFocused
@@ -209,7 +232,7 @@ class VodHeader(
 
     private val buttonsLeft = Runnable {
         if (hasButtonFocus) return@Runnable
-        rotation.unhold(now())
+        rotation.leaveButtons(now())
         schedule()
         listener?.onHeaderFocus(false)
     }
@@ -221,11 +244,11 @@ class VodHeader(
             main.post(buttonsLeft)
             return
         }
-        if (rotation.held) return
-        // The title shown stays while a button has focus: a turn on its way is dropped.
-        rotation.hold()
-        main.removeCallbacks(turn)
-        main.removeCallbacks(warmNext)
+        // From one button to the other: the key that did it has started the wait again already.
+        if (rotation.onButtons) return
+        // It goes on turning here, after a full wait with no key pressed.
+        rotation.focusButtons(now())
+        schedule()
         listener?.onHeaderFocus(true)
     }
 
@@ -240,6 +263,8 @@ class VodHeader(
         }
         val showing = feed.getOrNull(rotation.index)?.id
         feed = list
+        logosAhead = false
+        fetchLogosAhead()
         rotation.setFeed(list.size, now(), keepIndex = false)
         val keep = list.indexOfFirst { it.id == showing }
         if (keep > 0) rotation.jumpTo(keep, now())
@@ -251,11 +276,12 @@ class VodHeader(
     /** Focus is on [card] in the Continue row: its title shows, the picture after half a second. */
     fun follow(card: Card) {
         following = card
-        rotation.follow()
-        main.removeCallbacks(turn)
+        rotation.follow(now())
         main.removeCallbacks(followArt)
         showText(card.title, card.caption)
         updateDots()
+        // No turn while it follows, unless focus is on the buttons.
+        schedule()
         main.postDelayed(followArt, FOLLOW_ART_MS)
     }
 
@@ -281,19 +307,32 @@ class VodHeader(
     fun resume() {
         if (!rotation.paused) return
         rotation.resume(now())
-        // The picture let go while hidden comes back.
+        // The picture and the logo let go while hidden come back.
         val c = following
         if (c != null) art.show(c.title.background) else feed.getOrNull(rotation.index)?.let { art.show(it.background) }
+        title.show(shown)
+        fetchLogosAhead()
         schedule()
     }
 
-    /** Lets the pictures go (the page is hidden or stopped). */
+    /** Lets the pictures and the logo go (the page is hidden or stopped). */
     fun release() {
         pause()
         art.release()
+        title.release()
     }
 
     private val followArt = Runnable { following?.let { art.show(it.title.background) } }
+
+    /**
+     * The feed's logos reach the disk ahead of their turns (bytes only, on the loader's background thread), once per
+     * feed and only while the banner shows: a turn then never waits on the network for one.
+     */
+    private fun fetchLogosAhead() {
+        if (logosAhead || rotation.paused) return
+        logosAhead = true
+        for (i in feed.indices) ImageLoader.prefetch(feed[i].logo)
+    }
 
     private val turn = Runnable {
         if (blocked()) {
@@ -302,16 +341,22 @@ class VodHeader(
             schedule()
             return@Runnable
         }
-        if (rotation.advanceIfDue(now())) {
+        if (rotation.advanceIfDue(now(), followedIsCurrent())) {
+            // With focus on a button it has left the Continue card it was on: the feed goes on.
+            following = null
             showFeedTitle(fadeText = true)
             updateDots()
         }
         schedule()
     }
 
+    /** Whether the Continue card followed is the very title the feed is on (a turn from it then goes one further). */
+    private fun followedIsCurrent(): Boolean = following?.title?.id.let { it != null && it == feed.getOrNull(rotation.index)?.id }
+
     private val warmNext = Runnable {
-        val next = rotation.nextIndex()
-        if (next >= 0) art.warm(feed.getOrNull(next)?.background)
+        val next = feed.getOrNull(rotation.nextIndex(followedIsCurrent())) ?: return@Runnable
+        art.warm(next.background)
+        title.warm(next)
     }
 
     private fun schedule() {
@@ -320,7 +365,7 @@ class VodHeader(
         val wait = rotation.delayFrom(now())
         if (wait < 0) return
         main.postDelayed(turn, wait)
-        // The next picture decoded ahead, so the switch never waits on it.
+        // The next picture and logo decoded ahead, so the switch never waits on them.
         main.postDelayed(warmNext, (wait - WARM_AHEAD_MS).coerceAtLeast(0))
     }
 
@@ -338,9 +383,12 @@ class VodHeader(
             return
         }
         words.animate().cancel()
+        // The old words fade out, the title changes with nothing showing ([showText]: the logo, the words and what the
+        // buttons act on, together), the new ones fade in.
         words.animate().alpha(0f).setDuration(TEXT_FADE_MS).withEndAction {
-            // Unless the banner has turned to something else meanwhile (a card followed, a button focused).
+            // Unless the banner has turned to something else meanwhile (a card followed).
             if (following == null) showText(feed.getOrNull(rotation.index), null)
+            words.alpha = 0f
             words.animate().alpha(1f).setDuration(TEXT_FADE_MS).start()
         }.start()
     }
@@ -349,8 +397,9 @@ class VodHeader(
         words.animate().cancel()
         words.alpha = 1f
         shown = title
-        this.title.set(title?.name.orEmpty())
-        facts.text = title?.let { RowRules.facts(it, caption) }.orEmpty()
+        // Off screen (paused) the logo waits, as the picture does: [resume] shows it then.
+        if (rotation.paused) this.title.release() else this.title.show(title)
+        facts.text = title?.let { VodSizes.headerFacts(RowRules.facts(it, caption), textW.toFloat(), factsWidth) }.orEmpty()
         story.text = title?.description.orEmpty()
         // No title, no buttons (and nothing for focus to land on); focus on one moves on before they hide (a hidden
         // view holding focus would hand it anywhere).
@@ -360,6 +409,8 @@ class VodHeader(
         }
     }
 
+    private val factsWidth: (String) -> Float = { facts.paint.measureText(it) }
+
     private fun now() = SystemClock.uptimeMillis()
 
     private fun updateDots() {
@@ -368,64 +419,20 @@ class VodHeader(
     }
 
     /**
-     * The banner's name: one line in its fixed box, drawn here so a name of another size is only redrawn. It's the
-     * large size unless the name is too wide for the box at that size; then a size smaller, cut short if it must be.
+     * The banner's dark shading, a layer of its own over the picture (which stays sharp and whole under it), in the
+     * glass style's window colour: an oval of shade round the words at the top left, reaching down the left side behind
+     * the buttons, and a second layer rising towards the bottom for the dots ([VodSizes.HEADER_SHADE_ALPHAS],
+     * [VodSizes.HEADER_SHADE_BOTTOM_ALPHAS]). Both ease out to nothing and are dithered, so neither ends in a line and
+     * the rest of the picture is left clear. Its shaders are made once per size; it never moves.
      */
-    private class TitleLine(context: Context, private val t: Tokens) : View(context) {
-        private val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = t.faceOf(VodSizes.HEADER_TITLE.weight)
-            color = t.colorOf(VodSizes.HEADER_TITLE)
-            setShadowLayer(t.dpf(VodSizes.HEADER_TEXT_SHADOW), 0f, t.dpf(VodSizes.HEADER_TEXT_SHADOW_DY), VodSizes.HEADER_TEXT_SHADOW_COLOR)
-        }
-        private val scaled = resources.displayMetrics.scaledDensity
-        private var name = ""
-        private var line: CharSequence = ""
-        private var fittedFor = -1
-        /** Both sizes stand on the large size's baseline. */
-        private val baselineUp: Float
-
-        init {
-            paint.textSize = VodSizes.HEADER_TITLE_SP * scaled
-            baselineUp = paint.descent()
-            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-
-        fun set(text: String) {
-            if (text == name) return
-            name = text
-            fittedFor = -1
-            invalidate()
-        }
-
-        private fun fit() {
-            fittedFor = width
-            val room = width.toFloat().coerceAtLeast(1f)
-            paint.textSize = VodSizes.HEADER_TITLE_SP * scaled
-            paint.textSize = VodSizes.headerTitleSp(paint.measureText(name), room) * scaled
-            line = TextUtils.ellipsize(name, paint, room, TextUtils.TruncateAt.END)
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            if (name.isEmpty() || width <= 0) return
-            if (fittedFor != width) fit()
-            canvas.drawText(line, 0, line.length, 0f, height - baselineUp, paint)
-        }
-    }
-
-    /**
-     * The banner's dark shading, a layer of its own over the picture (which stays sharp and whole under it): from the
-     * left, strongest behind the words and easing out towards the right, and a second one rising towards the bottom
-     * ([VodSizes.HEADER_SHADE_ALPHAS], [VodSizes.HEADER_SHADE_BOTTOM_ALPHAS]), in the glass style's window colour.
-     * Both ease out to nothing, so neither ends in a line. Its shaders are made once per size; it never moves.
-     */
-    private class Shade(context: Context) : View(context) {
+    private class Shade(context: Context, private val t: Tokens, private val cardW: Float) : View(context) {
         var radius = 0f
             set(v) {
                 if (field == v) return
                 field = v
                 invalidate()
             }
-        private val across = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
+        private val round = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
         private val below = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
         private val box = RectF()
 
@@ -436,10 +443,17 @@ class VodHeader(
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             box.set(0f, 0f, w.toFloat(), h.toFloat())
             val rgb = GlassStyle.WINDOW_SOLID and 0x00FFFFFF
-            across.shader = LinearGradient(
-                0f, 0f, w.toFloat(), 0f,
+            // The oval: a circle of shade about its centre, stretched down to its reach ([VodSizes.headerShadeAt]).
+            val bx = t.dpf(VodSizes.headerShadeX(cardW))
+            val by = t.dpf(VodSizes.headerShadeY())
+            val cx = VodSizes.HEADER_SHADE_CX * bx
+            val cy = VodSizes.HEADER_SHADE_CY * by
+            val rx = VodSizes.HEADER_SHADE_RX * bx
+            val ry = VodSizes.HEADER_SHADE_RY * by
+            round.shader = RadialGradient(
+                cx, cy, rx,
                 IntArray(VodSizes.HEADER_SHADE_ALPHAS.size) { (VodSizes.HEADER_SHADE_ALPHAS[it] shl 24) or rgb }, null, Shader.TileMode.CLAMP,
-            )
+            ).apply { setLocalMatrix(Matrix().apply { setScale(1f, ry / rx, cx, cy) }) }
             below.shader = LinearGradient(
                 0f, h * VodSizes.HEADER_SHADE_BOTTOM_FROM, 0f, h.toFloat(),
                 IntArray(VodSizes.HEADER_SHADE_BOTTOM_ALPHAS.size) { (VodSizes.HEADER_SHADE_BOTTOM_ALPHAS[it] shl 24) or rgb }, null, Shader.TileMode.CLAMP,
@@ -448,7 +462,7 @@ class VodHeader(
 
         override fun onDraw(canvas: Canvas) {
             if (width <= 0) return
-            canvas.drawRoundRect(box, radius, radius, across)
+            canvas.drawRoundRect(box, radius, radius, round)
             canvas.drawRoundRect(box, radius, radius, below)
         }
     }

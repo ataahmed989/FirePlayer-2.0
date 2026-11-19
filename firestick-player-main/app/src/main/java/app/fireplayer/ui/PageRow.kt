@@ -23,6 +23,8 @@ class PageRow(
     context: Context,
     iconRes: Int?,
     val text: TextView = TextView(context),
+    /** The row's glass: [Glass.Kind.ROW], or [Glass.Kind.CELL] for a pod in the cell glass (the Search tab's). */
+    private val kind: Glass.Kind = Glass.Kind.ROW,
 ) : RowLayout(context, ContextCompat.getColorStateList(context, R.color.sel_text_row)) {
 
     val icon: ImageView? = iconRes?.let { res -> ImageView(context).apply { setImageResource(res) } }
@@ -48,7 +50,7 @@ class PageRow(
     }
 
     /** The look changed: the row's fill made again. */
-    fun applyLook() = Glass.background(this, Glass.Kind.ROW)
+    fun applyLook() = Glass.background(this, kind)
 
     companion object {
         /** A row's height and the gap under it in a list, dp. */

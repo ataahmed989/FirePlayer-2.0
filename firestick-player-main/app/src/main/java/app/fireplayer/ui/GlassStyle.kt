@@ -9,7 +9,7 @@ package app.fireplayer.ui
  *
  * Every value of that style is here, so tuning it is one edit. The shapes are [Glass.Kind]s and are made through
  * [Glass]: [Glass.background] for a surface in the page, [Glass.overlay] for a window over it, [Glass.edge] for an
- * outline alone. The player's glass (the film behind it) and full-screen Live TV's keep their own look
+ * outline alone. A flat surface's makings are a [Surface]. The player's glass (the film behind it) and full-screen Live TV's keep their own look
  * ([GlassDrawable]'s bright film, glaze, bevel and rim), which this doesn't change.
  */
 object GlassStyle {
@@ -41,6 +41,29 @@ object GlassStyle {
     /** A row on glass (a list's rows, the Settings tab's): barely lighter than its window. */
     const val ROW_FILL = 0x12FFFFFF
     const val ROW_HIGHLIGHT = 0x1FFFFFFF
+
+    // ---- Flat surfaces in the page ----------------------------------------------------------------------------------
+
+    /**
+     * What a flat piece of glass in the page is made of: [coats] of [fill] over whatever is behind it, the faint light
+     * from above ([sheen]) and the outline ([edge]: the hairline all round and [highlight] along the top). Drawn by
+     * [GlassBakes.surface], whether it's stamped many times a frame (the guide's cells and logo tiles) or is a view's
+     * background ([Glass.Kind.CELL]).
+     */
+    data class Surface(
+        val fill: Int,
+        val coats: Int = 1,
+        val sheen: Boolean = false,
+        val edge: Boolean = true,
+        val highlight: Int = HIGHLIGHT,
+    )
+
+    /**
+     * The cell glass: a programme cell of the guide, and the Search tab's bar and history pods ([Glass.Kind.CELL]).
+     * Barely lighter than the page behind it, a hairline round it and a gentle highlight along its top. Named here
+     * once: tuning it changes the guide's cells and the Search tab's pods together.
+     */
+    val CELL = Surface(ROW_FILL, highlight = ROW_HIGHLIGHT)
 
     // ---- Borders ------------------------------------------------------------------------------------------------
 

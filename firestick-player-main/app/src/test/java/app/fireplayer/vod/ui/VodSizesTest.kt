@@ -149,8 +149,12 @@ class VodSizesTest {
         val posters = VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true)
         near(292.16f, posters, 0.01f)
         near(28.16f, RowMath.pageTarget(0, 0, posters, VodSizes.VIEWPORT_H) { top }, 0.01f)
-        // Most of the banner still shows, its words and buttons with it.
-        assertTrue(VodSizes.headerTextTop() > 28.16f)
+        // Most of the banner still shows, its words and buttons with it: the words, which start nearer the card's top
+        // than that, move down to stay whole under the cut, and still keep off the buttons.
+        assertTrue(VodSizes.HEADER_TOP < 28.16f)
+        val shift = VodSizes.headerWordsShift(28.16f)
+        near(VodSizes.HEADER_TOP_KEEP, VodSizes.HEADER_TOP + shift - 28.16f, 0.01f)
+        assertTrue(VodSizes.headerWordsEnd() + shift <= VodSizes.headerButtonsTop() - VodSizes.HEADER_WORDS_MIN_GAP)
         val wide = VodSizes.rowShownH(RowStyle.WIDE, header = true, large = true)
         assertEquals(0f, RowMath.pageTarget(0, 0, wide, VodSizes.VIEWPORT_H) { top })
     }
@@ -166,41 +170,109 @@ class VodSizesTest {
 
     @Test
     fun headerParts() {
-        // The words stand on the buttons, the buttons above the dots.
-        near(71f, VodSizes.headerWordsBottom())
+        // Tuning round 1: the words at the top left, the buttons at the bottom left, one margin round them.
+        assertEquals(24f, VodSizes.HEADER_INSET)
+        assertEquals(VodSizes.HEADER_INSET, VodSizes.HEADER_TOP)
+        assertEquals(VodSizes.HEADER_INSET, VodSizes.HEADER_BUTTONS_BOTTOM)
+        // The block: the title's box (24..76), the facts (83..98), two lines of story (103..138.2).
         near(35.2f, VodSizes.headerStoryH(), 0.001f)
-        near(35.8f, VodSizes.headerTextTop(), 0.001f)
+        near(114.2f, VodSizes.headerWordsH(), 0.001f)
+        near(138.2f, VodSizes.headerWordsEnd(), 0.001f)
+        // The buttons (158..192) stand clear of it, and above the dots (202..207).
+        assertEquals(158f, VodSizes.headerButtonsTop())
+        assertTrue(VodSizes.headerButtonsTop() - VodSizes.headerWordsEnd() >= 16f)
         assertTrue(VodSizes.HEADER_BUTTONS_BOTTOM >= VodSizes.DOTS_BOTTOM + VodSizes.DOTS_H + 8f)
+        // A focused button's growth (4%, about its centre) stays inside the card with room to spare.
+        assertTrue(VodSizes.HEADER_BUTTON_H * 0.02f < VodSizes.HEADER_BUTTONS_BOTTOM - 8f)
         // The backdrop: at most 2.6 header heights wide, right-aligned; Home's fills its card.
         assertEquals(496f, VodSizes.backdropW(VodSizes.homeHeaderW()))
         near(561.6f, VodSizes.backdropW(VodSizes.tabHeaderW()), 0.001f)
-        near(470f, VodSizes.storyW(VodSizes.tabHeaderW()))
-        near(321.2f, VodSizes.storyW(VodSizes.homeHeaderW()), 0.001f)
-        // The story stays inside the text column.
-        assertTrue(VodSizes.storyW(VodSizes.homeHeaderW()) <= VodSizes.homeHeaderW() - 2 * VodSizes.HEADER_INSET)
+        // The words' column: 300 dp on Home (the picture's subject stays clear of it), 400 on the wide cards.
+        assertEquals(300f, VodSizes.storyW(VodSizes.homeHeaderW()))
+        assertEquals(400f, VodSizes.storyW(VodSizes.tabHeaderW()))
+        assertTrue(VodSizes.HEADER_INSET + VodSizes.storyW(VodSizes.homeHeaderW()) <= VodSizes.homeHeaderW() - VodSizes.HEADER_CLEAR)
     }
 
     @Test
-    fun theBannersTitleStepsDownForALongName() {
-        assertEquals(40f, VodSizes.headerTitleSp(measured = 300f, room = 444f))
-        assertEquals(40f, VodSizes.headerTitleSp(measured = 444f, room = 444f))
-        assertEquals(30f, VodSizes.headerTitleSp(measured = 444.5f, room = 444f))
-        // Both sizes fit the title's box (a line is 1.2 x its size).
+    fun theBannersTitleIsItsLogoInASmallBoxAtTheTopLeft() {
+        // Up to 210 x 52 dp on Home, 240 x 52 on the wide cards: clearly smaller than the 40 sp name it replaces
+        // (a 48 dp line as wide as the name).
+        near(210f, VodSizes.headerLogoW(VodSizes.homeHeaderW()), 0.001f)
+        assertEquals(240f, VodSizes.headerLogoW(VodSizes.tabHeaderW()))
+        assertEquals(52f, VodSizes.HEADER_TITLE_H)
+        assertTrue(VodSizes.headerLogoW(VodSizes.tabHeaderW()) <= VodSizes.storyW(VodSizes.tabHeaderW()))
+        // Kept in memory no larger than it's shown: under 200 KB each at the Max's 2 px per dp.
+        val bytes = (VodSizes.headerLogoW(VodSizes.tabHeaderW()) * 2f) * (VodSizes.HEADER_TITLE_H * 2f) * 4f
+        assertTrue(bytes < 200f * 1024f)
+        // Decoded with room for the empty margins logos come with.
+        assertTrue(VodSizes.HEADER_LOGO_DECODE >= 2)
+        // The box waits for a logo only briefly, and no longer than a followed card's picture takes to come.
+        assertTrue(VodSizes.HEADER_LOGO_WAIT_MS in 200L..VodSizes.FOLLOW_ART_MS)
+    }
+
+    @Test
+    fun aTitleWithoutALogoShowsItsNameSmallerThanBefore() {
+        assertEquals(28f, VodSizes.headerTitleSp(measured = 200f, room = 300f))
+        assertEquals(28f, VodSizes.headerTitleSp(measured = 300f, room = 300f))
+        assertEquals(21f, VodSizes.headerTitleSp(measured = 300.5f, room = 300f))
+        assertTrue(VodSizes.HEADER_TITLE_SP < 40f)
+        // One line of the large size, or two of the small, fit the title's box (a line is 1.2 x its size).
         assertTrue(VodSizes.HEADER_TITLE.lineSp <= VodSizes.HEADER_TITLE_H)
-        assertTrue(VodSizes.HEADER_TITLE_LONG.lineSp <= VodSizes.HEADER_TITLE_H)
+        assertTrue(VodSizes.HEADER_TITLE_LINES * VodSizes.HEADER_TITLE_LONG.lineSp <= VodSizes.HEADER_TITLE_H)
+    }
+
+    @Test
+    fun theWordsMoveDownOnlyWhileThePageHidesTheCardsTop() {
+        assertEquals(0f, VodSizes.headerWordsShift(0f))
+        // Nothing until the cut comes near the words.
+        assertEquals(0f, VodSizes.headerWordsShift(VodSizes.HEADER_TOP - VodSizes.HEADER_TOP_KEEP))
+        near(4f, VodSizes.headerWordsShift(VodSizes.HEADER_TOP - VodSizes.HEADER_TOP_KEEP + 4f), 0.001f)
+        // Never into the buttons, however far the page goes (the banner is sliding away by then).
+        val most = VodSizes.headerWordsShift(10_000f)
+        near(VodSizes.headerButtonsTop() - VodSizes.HEADER_WORDS_MIN_GAP, VodSizes.headerWordsEnd() + most, 0.001f)
+        var last = 0f
+        for (hidden in 0..300) {
+            val shift = VodSizes.headerWordsShift(hidden.toFloat())
+            assertTrue(shift >= last && shift <= most)
+            last = shift
+        }
+    }
+
+    @Test
+    fun theFactsLineShowsWholeFactsOnly() {
+        val measure: (String) -> Float = { it.length * 6f }
+        val line = "S1 E1 · 22m left · 2005–2008 · Animation · Action · ★ 9.3 · 23 min"
+        // Room for all of it: as it is.
+        assertEquals(line, VodSizes.headerFacts(line, 1_000f, measure))
+        // Home's 300 dp column: the last facts go, never half of one.
+        assertEquals("S1 E1 · 22m left · 2005–2008 · Animation · Action", VodSizes.headerFacts(line, 300f, measure))
+        assertEquals("S1 E1 · 22m left", VodSizes.headerFacts(line, 100f, measure))
+        // The first stays even when it's too wide (the view cuts it short); a line of one fact is left alone.
+        assertEquals("S1 E1", VodSizes.headerFacts(line, 10f, measure))
+        assertEquals("2024", VodSizes.headerFacts("2024", 10f, measure))
+        assertEquals("", VodSizes.headerFacts("", 300f, measure))
     }
 
     @Test
     fun theBannersShadingEasesOutToNothing() {
-        val across = VodSizes.HEADER_SHADE_ALPHAS
-        // Strongest at the left, never rising, clear at the right; no flat rectangle (it changes all the way).
-        assertTrue(across.first() >= 0xD0 && across.last() == 0)
-        for (i in 1 until across.size) assertTrue(across[i] < across[i - 1])
-        // No step bigger than a quarter of the whole: no seam.
-        for (i in 1 until across.size) assertTrue(across[i - 1] - across[i] <= 0x40)
+        val steps = VodSizes.HEADER_SHADE_ALPHAS
+        // Strongest round the words, never rising on the way out, clear at its end.
+        assertEquals(VodSizes.HEADER_SHADE_MAX, steps.first())
+        assertEquals(0, steps.last())
+        for (i in 1 until steps.size) assertTrue(steps[i] <= steps[i - 1])
+        // Eased both ways: no step bigger than an eighth of the whole (no seam), and it starts and ends gently (no line
+        // where the shade begins to fall or where it ends).
+        for (i in 1 until steps.size) assertTrue(steps[i - 1] - steps[i] <= VodSizes.HEADER_SHADE_MAX / 8)
+        assertTrue(steps[steps.size - 2] <= 6)
+        val hold = (VodSizes.HEADER_SHADE_HOLD * VodSizes.HEADER_SHADE_STEPS).toInt()
+        assertEquals(VodSizes.HEADER_SHADE_MAX, steps[hold])
+        assertTrue(steps[hold] - steps[hold + 1] <= 6)
         val below = VodSizes.HEADER_SHADE_BOTTOM_ALPHAS
         assertEquals(0, below.first())
         for (i in 1 until below.size) assertTrue(below[i] > below[i - 1])
+        // Lighter and lower than before (it was 55% from half way down): the picture's lower half shows.
+        assertTrue(below.last() <= 0x50)
+        assertTrue(VodSizes.HEADER_SHADE_BOTTOM_FROM >= 0.6f)
         // A wide card's gradient the same way: clear at its start, darkest at the bottom.
         assertEquals(0, VodSizes.WIDE_SCRIM_ALPHAS.first())
         assertEquals(VodSizes.SCRIM_BOTTOM ushr 24, VodSizes.WIDE_SCRIM_ALPHAS.last())
@@ -216,14 +288,57 @@ class VodSizesTest {
     }
 
     @Test
+    fun theBannersShadeIsRoundTheWordsAndLeavesThePictureClear() {
+        val home = VodSizes.homeHeaderW()
+        val wordsEnd = VodSizes.HEADER_INSET + VodSizes.storyW(home)
+        fun shade(x: Float, y: Float) = VodSizes.headerShade(x, y, home)
+        // Behind the logo and the words' start: dark enough for white and pale ink.
+        assertTrue(shade(VodSizes.HEADER_INSET, VodSizes.HEADER_TOP) >= 0.75f)
+        assertTrue(shade(VodSizes.HEADER_INSET + 100f, VodSizes.HEADER_TOP + 26f) >= 0.7f)
+        assertTrue(shade(VodSizes.HEADER_INSET, VodSizes.headerWordsEnd()) >= 0.7f)
+        // Behind the buttons at the bottom left (their glass has its own tint): Watch now, then Details' far end.
+        val buttonsY = VodSizes.headerButtonsTop() + VodSizes.HEADER_BUTTON_H / 2f
+        assertTrue(shade(VodSizes.HEADER_INSET + 58f, buttonsY) >= 0.5f)
+        assertTrue(shade(VodSizes.HEADER_INSET + 196f, buttonsY) >= 0.25f)
+        // Where the story ends it is fading, though still there (the words have their own soft shadow).
+        val end = shade(wordsEnd, VodSizes.headerWordsEnd() - 9f)
+        assertTrue(end > 0.15f && end < 0.3f)
+        // The picture's subject, just right of the words, is clearer than it was (27% there before), and from there on
+        // the picture is as good as bare: its right side, its top right corner, its lower middle (62% before).
+        assertTrue(shade(340f, 100f) < 0.24f)
+        assertTrue(shade(400f, 100f) < 0.1f)
+        assertTrue(shade(450f, 60f) < 0.05f)
+        assertTrue(shade(home, 0f) < 0.02f)
+        assertEquals(0f, shade(home, VodSizes.HEADER_H / 2f))
+        assertTrue(shade(300f, 180f) < 0.2f)
+        // It only ever falls away from the words: along a row, and down a column right of the buttons.
+        for (y in listOf(30f, 100f, 180f)) {
+            var last = 1f
+            for (x in 0..home.toInt() step 8) {
+                val a = shade(x.toFloat(), y)
+                assertTrue(a <= last + 0.0001f)
+                last = a
+            }
+        }
+        // The wide cards (Movies, TV Shows, My List): the same shade round their wider block, gone before the part of
+        // the picture that shows whole (its left edge is eased away up to 40% of its box).
+        val wide = VodSizes.tabHeaderW()
+        val pictureFrom = wide - VodSizes.backdropW(wide) * (1f - VodSizes.BANNER_FADE_LEFT_TO)
+        near(505f, pictureFrom, 0.1f)
+        assertTrue(VodSizes.headerShade(pictureFrom + 60f, 100f, wide) < 0.06f)
+        assertEquals(0f, VodSizes.headerShade(wide - 100f, 100f, wide))
+        assertTrue(VodSizes.headerShade(VodSizes.HEADER_INSET + 100f, VodSizes.HEADER_TOP + 26f, wide) >= 0.7f)
+        // The same place in the block, the same shade, whichever the card.
+        near(shade(wordsEnd, 100f), VodSizes.headerShade(VodSizes.HEADER_INSET + VodSizes.storyW(wide), 100f, wide), 0.001f)
+    }
+
+    @Test
     fun myListsBannerLeavesARowOfPostersWholeUnderIt() {
         assertEquals(246f, VodSizes.fixedRowsTop())
         val room = VodSizes.SCREEN_H - VodSizes.fixedRowsTop()
         assertTrue(room >= VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true))
-        // Without buttons its words still start well inside the card.
-        val top = VodSizes.MY_LIST_HEADER_H - VodSizes.HEADER_BUTTONS_BOTTOM - VodSizes.headerStoryH() - VodSizes.HEADER_STORY_GAP -
-            VodSizes.FACTS.lineSp - VodSizes.HEADER_FACTS_GAP - VodSizes.HEADER_TITLE_H
-        assertTrue(top >= 20f)
+        // Without buttons its words (the same block at its top left) end well inside the shorter card.
+        assertTrue(VodSizes.headerWordsEnd() <= VodSizes.MY_LIST_HEADER_H - VodSizes.HEADER_INSET)
     }
 
     @Test

@@ -9,6 +9,27 @@ class GlassStyleTest {
 
     private fun rgb(r: Int, g: Int, b: Int) = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 
+    // ---- The cell glass (the guide's programme cells; the Search tab's bar and history pods) --------------------------
+
+    @Test fun theCellGlassIsTheRowFillWithAHairlineAndAGentleHighlight() {
+        val cell = GlassStyle.CELL
+        assertEquals(GlassStyle.ROW_FILL, cell.fill)
+        assertEquals(1, cell.coats)
+        assertTrue(cell.edge)
+        assertEquals(GlassStyle.ROW_HIGHLIGHT, cell.highlight)
+        assertTrue(!cell.sheen)
+        // A surface is outlined and lit like the app's other glass unless it says otherwise.
+        assertEquals(GlassStyle.HIGHLIGHT, GlassStyle.Surface(GlassStyle.CONTROL_TINT).highlight)
+        assertTrue(GlassStyle.Surface(GlassStyle.CONTROL_TINT).edge)
+    }
+
+    @Test fun aSearchPodIsARowInTheCellGlass() {
+        // Its own kind, last in the list (the kinds' order is part of the drawings' memory keys).
+        assertEquals(Glass.Kind.entries.last(), Glass.Kind.CELL)
+        // A row either way: it sits on the page with no film of its own, and nothing else is one.
+        assertEquals(listOf(Glass.Kind.ROW, Glass.Kind.CELL), Glass.Kind.entries.filter { Glass.isRow(it) })
+    }
+
     // ---- When the page under a window is copied again ---------------------------------------------------------------
 
     @Test fun aChangeIsCopiedOnceItHasSettled() {

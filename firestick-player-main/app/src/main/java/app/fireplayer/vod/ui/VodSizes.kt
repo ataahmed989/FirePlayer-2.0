@@ -10,6 +10,7 @@ import app.fireplayer.vod.RowStyle
 import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Films & Shows' one look holder: every size, text style, colour and motion value of the Home, Movies and TV Shows
@@ -143,36 +144,62 @@ internal object VodSizes {
     const val CLOCK_W = 300f
     const val CLOCK_GAP = 14f
 
-    // Header text: the title (one line; a name too wide for it steps down a size, then is cut short), the facts
-    // line, two lines of story, then the Watch now and Details buttons, all standing on the dots at the bottom.
-    const val HEADER_INSET = 26f
-    const val HEADER_TITLE_SP = 40f
-    const val HEADER_TITLE_LONG_SP = 30f
-    /** The title's box: one line of the large size (Figtree's line is 1.2 x its size). */
-    const val HEADER_TITLE_H = 48f
+    // The banner's words (tuning round 1): at the top left the title's box (its logo, or its name where it has none),
+    // the facts line and two lines of story, in one column ([storyW]); at the bottom left the Watch now and Details
+    // buttons; the dots centred near the bottom. One margin on the left, the top and under the buttons.
+    const val HEADER_INSET = 24f
+    const val HEADER_TOP = 24f
+    /** The title's box: the logo stands in it at the left and bottom (its visible part), or the name does. */
+    const val HEADER_TITLE_H = 52f
+    /** The name on one line; one too wide for the column at that size, on up to two lines of the smaller size. */
+    const val HEADER_TITLE_SP = 28f
+    const val HEADER_TITLE_LONG_SP = 21f
+    const val HEADER_TITLE_LINES = 2
+    /** The logo: at most this share of the column, and never wider than this (210 dp on Home, 240 on the wide cards). */
+    const val HEADER_LOGO_SHARE = 0.7f
+    const val HEADER_LOGO_MAX = 240f
+    /**
+     * A logo is decoded with this many times its box (logos come with wide empty margins), then cut to its visible part
+     * and kept no larger than it's shown (image thread), so one in memory is at most the box's pixels.
+     */
+    const val HEADER_LOGO_DECODE = 2
+    /** How long the title's box waits, empty, for a logo that isn't in memory yet; then it shows the name instead. */
+    const val HEADER_LOGO_WAIT_MS = 500L
     const val HEADER_FACTS_SP = 12.5f
     const val HEADER_STORY_SP = 13f
-    const val HEADER_STORY_MAX = 470f
-    /** The story ends this far across the card: the picture's brightest part stays clear of it. */
-    const val HEADER_STORY_SHARE = 0.70f
+    /**
+     * The words' column: never wider than [HEADER_STORY_MAX], and ending at least [HEADER_CLEAR] from the card's right
+     * edge, where the picture's subject is (300 dp on Home, 400 on the wide cards).
+     */
+    const val HEADER_STORY_MAX = 400f
+    const val HEADER_CLEAR = 172f
     const val HEADER_STORY_LINES = 2
-    const val HEADER_FACTS_GAP = 4f
-    const val HEADER_STORY_GAP = 7f
-    /** The buttons: under the story, above the dots. Their height is [HEADER_BUTTON_H]; the rest are the title page's. */
-    const val HEADER_BUTTONS_GAP = 11f
-    const val HEADER_BUTTONS_BOTTOM = 26f
-    /** The banner's Watch now and Details: a little lower than the title page's action buttons ([BUTTON_H]). */
+    const val HEADER_FACTS_GAP = 7f
+    const val HEADER_STORY_GAP = 5f
+    /** The banner's Watch now and Details, at the bottom left: this far up, this tall, and their pill's own sizes. */
+    const val HEADER_BUTTONS_BOTTOM = 24f
     const val HEADER_BUTTON_H = 34f
+    const val HEADER_BUTTON_PAD = 14f
+    const val HEADER_BUTTON_GAP = 12f
+    const val HEADER_BUTTON_ICON = 15f
+    const val HEADER_BUTTON_ICON_GAP = 7f
+    /**
+     * While the page hides the card's top (a first row of posters moves the page up a little), the words stay
+     * [HEADER_TOP_KEEP] under the cut: they move down, as far as leaves [HEADER_WORDS_MIN_GAP] above the buttons
+     * ([headerWordsShift]).
+     */
+    const val HEADER_TOP_KEEP = 6f
+    const val HEADER_WORDS_MIN_GAP = 8f
     /** A soft shadow under the header's words, so they read where the picture is bright: blur, drop, colour. */
-    const val HEADER_TEXT_SHADOW = 3f
+    const val HEADER_TEXT_SHADOW = 3.5f
     const val HEADER_TEXT_SHADOW_DY = 1f
-    const val HEADER_TEXT_SHADOW_COLOR = 0x8C000000.toInt()
+    const val HEADER_TEXT_SHADOW_COLOR = 0xA6000000.toInt()
     /** The rotation's dots: the box, the current one's bar, the gap between, the bottom margin. */
     const val DOTS_W = 130f
     const val DOTS_H = 5f
     const val DOT_BAR = 14f
     const val DOT_GAP = 5f
-    const val DOTS_BOTTOM = 11f
+    const val DOTS_BOTTOM = 9f
     const val DOT_ON = 0xFFFFFFFF.toInt()
     const val DOT_OFF = 0x59FFFFFF
 
@@ -288,14 +315,30 @@ internal object VodSizes {
      */
     const val BANNER_FADE_LEFT_TO = 0.40f
     /**
-     * The banner's shading, drawn over the picture in the glass style's window colour: from the left, strongest behind
-     * the words and easing out towards the right (alpha at even steps across the card), and a second one rising from
-     * [HEADER_SHADE_BOTTOM_FROM] of the height to its strongest at the bottom ([HEADER_SHADE_BOTTOM_ALPHAS], even
-     * steps). Both ease in and out, so neither has a visible end.
+     * The banner's shading, drawn over the picture in the glass style's window colour, in two layers that both ease out
+     * to nothing (no flat rectangle, no line where either ends):
+     *
+     * - Behind the words: an oval of shade round the block at the top left (the logo, the facts, the story), reaching
+     *   down the left side behind the buttons. It's strongest ([HEADER_SHADE_MAX]) out to [HEADER_SHADE_HOLD] of its
+     *   reach and eased out from there ([headerShadeAlpha]), gone before the picture's subject, so the picture's right
+     *   and lower parts show as they are. Its centre and reach are in units of the block (its right end across, its
+     *   bottom down: [headerShadeX], [headerShadeY]): the centre above and left of the card ([HEADER_SHADE_CX],
+     *   [HEADER_SHADE_CY]), the reach [HEADER_SHADE_RX] across and [HEADER_SHADE_RY] down. So it follows the block on
+     *   every card.
+     * - Along the bottom, for the dots: rising from [HEADER_SHADE_BOTTOM_FROM] of the height to its strongest at the
+     *   bottom edge ([HEADER_SHADE_BOTTOM_ALPHAS], even steps).
      */
-    val HEADER_SHADE_ALPHAS = intArrayOf(0xE6, 0xE0, 0xCC, 0xA6, 0x70, 0x3A, 0x12, 0x00)
-    const val HEADER_SHADE_BOTTOM_FROM = 0.5f
-    val HEADER_SHADE_BOTTOM_ALPHAS = intArrayOf(0x00, 0x1F, 0x5C, 0x8C)
+    const val HEADER_SHADE_MAX = 0xCC
+    const val HEADER_SHADE_HOLD = 0.35f
+    const val HEADER_SHADE_CX = -0.25f
+    const val HEADER_SHADE_CY = -0.6f
+    const val HEADER_SHADE_RX = 1.86f
+    const val HEADER_SHADE_RY = 3.76f
+    /** The gradient's steps from its centre to its end (even; fine enough that its easing has no corner). */
+    const val HEADER_SHADE_STEPS = 20
+    val HEADER_SHADE_ALPHAS: IntArray = IntArray(HEADER_SHADE_STEPS + 1) { headerShadeAlpha(it / HEADER_SHADE_STEPS.toFloat()) }
+    const val HEADER_SHADE_BOTTOM_FROM = 0.68f
+    val HEADER_SHADE_BOTTOM_ALPHAS = intArrayOf(0x00, 0x0D, 0x29, 0x4D)
 
     // ---- Text styles (one place; Tokens.label makes the views) ----
 
@@ -303,6 +346,7 @@ internal object VodSizes {
     val CLOCK = TextStyle(13f, Weight.REGULAR, Ink.MUTED)
     val HEADER_TITLE = TextStyle(HEADER_TITLE_SP, Weight.BOLD)
     val HEADER_TITLE_LONG = TextStyle(HEADER_TITLE_LONG_SP, Weight.BOLD)
+    val HEADER_BUTTON = TextStyle(13f, Weight.SEMIBOLD)
     /** The header's facts line (and the title page's): the sizing page's pale blue-grey. */
     val FACTS = TextStyle(HEADER_FACTS_SP, Weight.REGULAR, Ink.OWN, 0xFFC3CFDC.toInt())
     val STORY = TextStyle(HEADER_STORY_SP, Weight.REGULAR, Ink.MUTED, lineGap = 2f)
@@ -539,21 +583,76 @@ internal object VodSizes {
 
     fun backdropW(cardW: Float): Float = min(cardW, BACKDROP_ASPECT * HEADER_H)
 
-    /** The header's story: two lines, kept clear of the backdrop's brightest part. */
-    fun storyW(cardW: Float): Float = min(cardW * HEADER_STORY_SHARE - HEADER_INSET, HEADER_STORY_MAX)
+    /** The banner's words' column (the title's box, the facts, the story): kept clear of the picture's subject. */
+    fun storyW(cardW: Float): Float = min(cardW - HEADER_INSET - HEADER_CLEAR, HEADER_STORY_MAX)
+
+    /** The room a banner's logo has across (its box is [HEADER_TITLE_H] tall). */
+    fun headerLogoW(cardW: Float): Float = min(storyW(cardW) * HEADER_LOGO_SHARE, HEADER_LOGO_MAX)
 
     /** The story's box: its lines with their gaps (Figtree's line is 1.2 x its size). */
     fun headerStoryH(): Float = HEADER_STORY_LINES * (STORY.lineSp + STORY.lineGap)
 
-    /** The header's words stand on the buttons: their bottom, up from the card's. */
-    fun headerWordsBottom(): Float = HEADER_BUTTONS_BOTTOM + HEADER_BUTTON_H + HEADER_BUTTONS_GAP
+    /** The words' block: the title's box, the facts line and the story, with the gaps between. */
+    fun headerWordsH(): Float = HEADER_TITLE_H + HEADER_FACTS_GAP + FACTS.lineSp + HEADER_STORY_GAP + headerStoryH()
 
-    /** The header text's top (the title's box), with the facts line one line high. */
-    fun headerTextTop(): Float =
-        HEADER_H - headerWordsBottom() - headerStoryH() - HEADER_STORY_GAP - FACTS.lineSp - HEADER_FACTS_GAP - HEADER_TITLE_H
+    /** Where the words end (the story's last line), down from the card's top. */
+    fun headerWordsEnd(): Float = HEADER_TOP + headerWordsH()
 
-    /** The banner's title: [HEADER_TITLE_SP], or [HEADER_TITLE_LONG_SP] for a name [measured] wider than [room] at that size. */
+    /** The buttons' top, down from the top of a card [cardH] tall. */
+    fun headerButtonsTop(cardH: Float = HEADER_H): Float = cardH - HEADER_BUTTONS_BOTTOM - HEADER_BUTTON_H
+
+    /**
+     * How far down the words move while the page hides the top [hidden] dp of the card: enough to stay
+     * [HEADER_TOP_KEEP] under the cut, never closer than [HEADER_WORDS_MIN_GAP] to the buttons.
+     */
+    fun headerWordsShift(hidden: Float): Float {
+        val most = (headerButtonsTop() - HEADER_WORDS_MIN_GAP - headerWordsEnd()).coerceAtLeast(0f)
+        return (hidden - (HEADER_TOP - HEADER_TOP_KEEP)).coerceIn(0f, most)
+    }
+
+    /** The banner's name: [HEADER_TITLE_SP], or [HEADER_TITLE_LONG_SP] for a name [measured] wider than [room] at that size. */
     fun headerTitleSp(measured: Float, room: Float): Float = if (measured > room) HEADER_TITLE_LONG_SP else HEADER_TITLE_SP
+
+    /**
+     * The facts line as the banner shows it: as many of [line]'s facts (" · " between them), from the first, as are
+     * no wider than [room] by [measure]; never a fact cut short. The first always stays.
+     */
+    fun headerFacts(line: String, room: Float, measure: (String) -> Float): String {
+        if (measure(line) <= room) return line
+        val parts = line.split(FACTS_BETWEEN)
+        for (n in parts.size - 1 downTo 2) {
+            val shorter = parts.subList(0, n).joinToString(FACTS_BETWEEN)
+            if (measure(shorter) <= room) return shorter
+        }
+        return parts.first()
+    }
+    const val FACTS_BETWEEN = " · "
+
+    /** The shade's strength (0..255) [t] of the way from its centre (0) to its end (1): held, then eased both ways. */
+    fun headerShadeAlpha(t: Float): Int {
+        val s = ((t - HEADER_SHADE_HOLD) / (1f - HEADER_SHADE_HOLD)).coerceIn(0f, 1f)
+        return (HEADER_SHADE_MAX * (1f - s * s * (3f - 2f * s))).roundToInt()
+    }
+
+    /** The words' block the shade is drawn round, dp from the card's top left: its right end, its bottom. */
+    fun headerShadeX(cardW: Float): Float = HEADER_INSET + storyW(cardW)
+    fun headerShadeY(): Float = headerWordsEnd()
+
+    /** How far out of the shade a point of the card is (dp from its top left): 0 at the centre, 1 where it ends. */
+    fun headerShadeAt(x: Float, y: Float, cardW: Float): Float {
+        val bx = headerShadeX(cardW)
+        val by = headerShadeY()
+        val dx = (x - HEADER_SHADE_CX * bx) / (HEADER_SHADE_RX * bx)
+        val dy = (y - HEADER_SHADE_CY * by) / (HEADER_SHADE_RY * by)
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    /** The shade's strength there, 0..1, as the gradient draws it (straight between its steps). */
+    fun headerShade(x: Float, y: Float, cardW: Float): Float {
+        val t = headerShadeAt(x, y, cardW).coerceIn(0f, 1f) * HEADER_SHADE_STEPS
+        val i = t.toInt().coerceAtMost(HEADER_SHADE_STEPS - 1)
+        return (HEADER_SHADE_ALPHAS[i] + (HEADER_SHADE_ALPHAS[i + 1] - HEADER_SHADE_ALPHAS[i]) * (t - i)) / 255f
+    }
 
     /** The grid: 5 posters across the content's width, rows 30 dp apart. */
     fun gridW(): Float = GRID_COLUMNS * GRID_POSTER_W + (GRID_COLUMNS - 1) * GRID_GAP

@@ -3,6 +3,7 @@ package app.fireplayer.live.ui
 import app.fireplayer.ui.GlassStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -66,6 +67,15 @@ class GlassPatchTest {
         assertEquals(2, PatchLook.CELL_SELECTED.coats)
         // A row still loading: the fill alone.
         assertFalse(PatchLook.CELL_EMPTY.edge)
+    }
+
+    @Test fun aProgrammeCellIsTheSharedCellGlass() {
+        // One material, named once in the shared style: the guide stamps it, the Search tab's bar and history pods are
+        // a glass kind made of it (GlassStyleTest), and both are drawn by the same code (GlassBakes.surface).
+        assertSame(GlassStyle.CELL, PatchLook.CELL)
+        // The guide's two variations start from it, so tuning the cell glass tunes them too.
+        assertEquals(GlassStyle.CELL.copy(coats = 2), PatchLook.CELL_SELECTED)
+        assertEquals(GlassStyle.CELL.copy(edge = false), PatchLook.CELL_EMPTY)
     }
 
     @Test fun cellsStaySeeThrough() {
