@@ -5,6 +5,7 @@ import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.TextStyle.Ink
 import app.fireplayer.shell.TextStyle.Weight
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.PageRow
 import app.fireplayer.vod.RowStyle
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -92,6 +93,28 @@ internal object VodSizes {
     /** The backdrop box: at most this many header heights wide, right-aligned in the card, this far inside its edge. */
     const val BACKDROP_ASPECT = 2.6f
     const val HEADER_ART_INSET = 1f
+    /** My List: its header holds still, and its rows scroll under it from here to the screen's bottom. */
+    fun fixedRowsTop(): Float = VIEWPORT_TOP + HEADER_H + HEADER_GAP
+
+    // The Search tab: its bar (the Settings tab's row, [PageRow]) where the header would be, the round trash button
+    // beside it (the title page's round buttons, at the bar's height), the history list under it (Settings rows too),
+    // and the wait after the last key before the results are asked for.
+    const val SEARCH_BAR_H = PageRow.ROW_DP
+    const val SEARCH_TRASH = PageRow.ROW_DP
+    const val SEARCH_TRASH_ICON = 18f
+    const val SEARCH_TRASH_GAP = 12f
+    /** Room under the trash button for its name, which shows while it is focused. */
+    const val SEARCH_TRASH_LABEL = 22f
+    /** Between the bar and what's under it (the history list, the first row of results). */
+    const val SEARCH_GAP = HEADER_GAP
+    /** The history list's room at the screen's bottom. */
+    const val SEARCH_LIST_BOTTOM = 16f
+    const val SEARCH_WAIT_MS = 500L
+    /** The bar's hint words: the row's own text colour (light, or dark on the white focused row) at this alpha. */
+    const val SEARCH_HINT_ALPHA = 0x8C
+    fun searchBarW(): Float = tabHeaderW() - SEARCH_TRASH_GAP - SEARCH_TRASH
+    fun searchListTop(): Float = VIEWPORT_TOP + SEARCH_BAR_H + SEARCH_GAP
+
     /** The clock's fixed width beside the page's name, and the gap before it. */
     const val CLOCK_W = 300f
     const val CLOCK_GAP = 14f
@@ -203,6 +226,8 @@ internal object VodSizes {
     val ROW_TITLE_STYLE = TextStyle(ROW_TITLE, Weight.BOLD, Ink.OWN, 0xFFE3E9F0.toInt())
     val CHIP = TextStyle(14f, Weight.SEMIBOLD)
     val EMPTY = TextStyle(18f, Weight.SEMIBOLD)
+    /** A page's short line where its rows would be (My List with nothing in it, Search with no history yet). */
+    val NOTE = TextStyle(15f, Weight.REGULAR, Ink.MUTED)
     val TRY_AGAIN = TextStyle(15f, Weight.SEMIBOLD)
     val NOTICE = TextStyle(15f, Weight.REGULAR)
     val CARD_NAME = TextStyle(12.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())

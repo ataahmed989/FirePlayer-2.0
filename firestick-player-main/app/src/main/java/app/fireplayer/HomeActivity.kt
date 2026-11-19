@@ -40,6 +40,7 @@ import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.titles.TitleService
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.PageRow
 import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.GlassSource
 import app.fireplayer.ui.ImageLoader
@@ -306,7 +307,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val isLive = tab == NavRail.Tab.LIVE
         live.root.visibility = if (isLive) View.VISIBLE else View.GONE
         settingsPage.visibility = if (tab == NavRail.Tab.SETTINGS) View.VISIBLE else View.GONE
-        // Home, Movies or TV Shows (the others hidden, their pictures let go).
+        // Search, Home, Movies, TV Shows or My List (the others hidden, their pictures let go).
         vodPages.show(tab)
         if (isLive) {
             live.start()
@@ -319,9 +320,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun focusPage() {
         when (rail.selected) {
-            NavRail.Tab.HOME, NavRail.Tab.MOVIES, NavRail.Tab.SHOWS -> vodPages.current?.takeFocus()
             NavRail.Tab.LIVE -> live.takeFocus()
             NavRail.Tab.SETTINGS -> settingsRows.firstOrNull()?.requestFocus()
+            // Search, Home, Movies, TV Shows, My List.
+            else -> vodPages.current?.takeFocus()
         }
     }
 
@@ -479,33 +481,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun addRow(list: LinearLayout, label: String, icon: Int, onClick: (View) -> Unit): View {
         val density = resources.displayMetrics.density
-        val colors = ContextCompat.getColorStateList(this, R.color.sel_text_row)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isFocusable = true
-            isClickable = true
-            Glass.background(this, Glass.Kind.ROW)
-            minimumHeight = (ROW_DP * density).toInt()
-            val h = (14 * density).toInt()
-            setPadding(h, 0, h, 0)
-        }
-        val iconView = ImageView(this).apply {
-            setImageResource(icon)
-            imageTintList = colors
-            isDuplicateParentStateEnabled = true
-        }
-        val size = (20 * density).toInt()
-        row.addView(iconView, LinearLayout.LayoutParams(size, size).apply { marginEnd = (12 * density).toInt() })
-        row.addView(TextView(this).apply {
-            text = label
-            typeface = ResourcesCompat.getFont(this@HomeActivity, R.font.figtree_600)
-            setTextColor(colors)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            isDuplicateParentStateEnabled = true
-            isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val row = PageRow(this, icon).apply { text.text = label }
         row.setOnClickListener { onClick(it) }
         // Up from the top row of a column goes to its bottom one and the other way round, like the settings lists;
         // left and right go across, to the row beside it (or the rail).
@@ -529,7 +505,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // changes over full screen; the live page re-makes its controls over the film itself.
         val film = filmOn
         filmOn = false
-        for (row in settingsRows) Glass.background(row, Glass.Kind.ROW)
+        for (row in settingsRows) (row as? PageRow)?.applyLook()
         rail.applyLook()
         filmOn = film && Glass.on
         live.applyLook()
@@ -915,8 +891,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         )
 
         // The Settings tab's sizes, in dp (see settingsColumns).
-        private const val ROW_DP = 44
-        private const val ROW_GAP_DP = 8
+        private const val ROW_DP = PageRow.ROW_DP.toInt()
+        private const val ROW_GAP_DP = PageRow.GAP_DP.toInt()
         private const val TITLE_DP = 34
         private const val TITLE_GAP_DP = 16
         private const val SAFE_EDGE_DP = 27

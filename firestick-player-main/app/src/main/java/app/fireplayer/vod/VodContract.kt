@@ -90,14 +90,26 @@ sealed class Source {
      */
     data class Catalog(val kind: Kind, val catalog: String, val genre: String? = null) : Source()
 
-    /** TMDB's weekly trending list, first 10, mapped to IMDb ids. Needs the user's TMDB key; empty without it. */
-    data class Trending(val kind: Kind) : Source()
+    /**
+     * TMDB's weekly trending list, first 10, mapped to IMDb ids. Needs the user's TMDB key; empty without it. [kind]
+     * null: films and series in turn (ranked 1 to 10 together), a row added in Settings › Rows.
+     */
+    data class Trending(val kind: Kind?) : Source()
 
     /** FirePlayer's Continue Watching: films, series, or both ([kind] null). Empty until playback records some. */
     data class ContinueWatching(val kind: Kind?) : Source()
 
     /** FirePlayer's My List (a saved-title list, independent of Real-Debrid). */
     data object MyList : Source()
+
+    /** My List's films or its series only ([kind]), the latest added first: the My List tab's two rows. */
+    data class MyListOf(val kind: Kind) : Source()
+
+    /**
+     * Cinemeta's search for [query] among [kind] (the Search tab), in Cinemeta's order; empty for a blank query. Answered
+     * once, fresh (kept in memory a few minutes, never on disk).
+     */
+    data class Search(val kind: Kind, val query: String) : Source()
 
     /** The next unwatched episode of series the user is following. Empty until playback records some. */
     data class NextEpisodes(val kind: Kind = Kind.SERIES) : Source()
@@ -433,8 +445,15 @@ fun playTarget(episodes: List<Episode>, last: LastPlayed?, now: Long): PlayTarge
 }
 
 interface VodRepository {
-    /** The rows of [page] in order (only the ones switched on). Rows whose source turns out empty are hidden by the page. */
+    /**
+     * The rows of [page] in the viewer's order (Settings › Rows; the defaults until they change it), only the ones
+     * switched on. Rows whose source turns out empty are hidden by the page.
+     */
     fun rows(page: Page): List<RowSpec>
+
+    /** Called on the main thread when Settings › Rows changes a page's rows: each page asks [rows] again. */
+    fun addRowsListener(listener: () -> Unit) {}
+    fun removeRowsListener(listener: () -> Unit) {}
 
     /**
      * Cards for [row], up to [limit] starting at [skip]. [onCards] is called first with whatever is cached (fresh =

@@ -480,6 +480,27 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
     mark covers only the episodes aired when it was set), so after new episodes air it offers Mark watched again;
     before the episodes are known it follows the show's own mark. The callout chip comes from the data's one rule
     (Callouts.choose), the same the data tests check against the research's expected page.
+- 2026-11-19 · Films & Shows step 4, My List and Search tabs (rail: Search first, above Home; My List after TV
+  Shows). Both are the same VodPage as Home, Movies and TV Shows (chosen by VodTab), so rows, header, hold window,
+  title pages and See all are the shared parts; all sizes in VodSizes.
+  - My List: two poster rows, "My List · Movies" and "My List · Series", newest added first, 15 then See all; an empty
+    row hides, both empty shows "Titles you add with + show up here". The header never slides away and follows the
+    focused title (words at once, picture after 0.5 s, no rotation); the rows glide under it. + / − in the hold window
+    or on a title page changes the rows at once.
+  - Search (user's request): no header; a full-width bar (magnifier, "Search films and shows") beside the round trash
+    button. The bar and the history rows are the Settings tab's row, now one shared PageRow (Settings uses it too).
+    Results (Cinemeta search, 0.5 s after typing stops or at once on Done) are "Movies" and "TV Shows" rows, each only
+    when it has titles. A search is kept when submitted or when a result is opened; OK on a history row searches it
+    and puts focus on the bar to edit; holding OK offers Remove; the trash asks "Clear search history?". Up from the
+    results goes to the bar (results stay); Back from the results or with words in the bar goes back to the empty bar
+    and history, Back again to the rail; coming to Search from another tab always opens that starting view.
+- 2026-11-19 · Settings › Rows: a Rows category with a window each for Home, Movies and TV Shows. Switch rows on or
+  off, Reorder rows (the shared move list of Reorder playlists and Manage groups), Add a row (the kinds the pages
+  already have, same RowSpec/RowStyle/TitleRow; Top 10 for films, series or both only with a TMDB key; a genre from
+  Cinemeta's list), remove added rows, Reset to default (asks first). No row twice on a page. Stored per page in the
+  app's settings file; nothing stored keeps the defaults. Pages rebuild at once, rows that stay keep their cards; with
+  every row off the page says so.
+- 2026-11-19 · User: short-film filter: declined by the user (short films stay in the rows and results).
 
 ## Concept references (local preview artifacts)
 

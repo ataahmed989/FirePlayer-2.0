@@ -10,7 +10,7 @@ class SettingsCategoryTest {
         assertEquals(
             listOf(
                 "Playlists & EPG", "Live TV", "Playback", "Remote & skipping", "Subtitles & audio", "Look",
-                "Accounts & services", "Add-ons", "This TV", "TiviMate titles", "App",
+                "Accounts & services", "Rows", "Add-ons", "This TV", "TiviMate titles", "App",
             ),
             SettingsCategory.entries.map { it.title },
         )
@@ -53,6 +53,8 @@ class SettingsCategoryTest {
             "Manage playlists", "Manage EPG sources", "Live TV buffer",
             // Films & Shows step 3: the add-ons and This TV.
             "Torrentio", "MediaFusion", "Check again", "Best for this TV",
+            // Films & Shows step 4: Settings › Rows, a window per page.
+            "Home", "Movies", "TV Shows",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

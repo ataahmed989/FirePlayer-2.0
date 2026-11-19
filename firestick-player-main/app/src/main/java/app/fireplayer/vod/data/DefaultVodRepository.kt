@@ -57,6 +57,7 @@ class DefaultVodRepository(
     private val net: Executor,
     private val lookups: Executor,
     private val clock: () -> Long = System::currentTimeMillis,
+    rowStore: RowLayoutStore = RowLayoutStore.Memory(),
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -64,11 +65,16 @@ class DefaultVodRepository(
     /** The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). */
     val library = VodLibrary(libraryStore, clock, io) { main.execute { listeners.forEach { it() } } }
 
+    /** Settings › Rows: each page's rows as the viewer set them (main thread). */
+    val rowSettings = RowSettings(rowStore) { newYear(it) }
+
     private val ids = IdMap(idStore, clock, io)
     private val pages = Lru<String, Stored<Cinemeta.Page>>(PAGES_KEPT)
     private val byId = Lru<String, Title>(TITLES_KEPT)
     private val byTmdb = Lru<String, Title>(TITLES_KEPT)
     private val top10 = ConcurrentHashMap<Kind, Stored<List<Card>>>()
+    /** The Search tab's answers by address, in memory only. */
+    private val found = Lru<String, Stored<List<Title>>>(SEARCHES_KEPT)
     private val metas = Lru<String, Stored<CinemetaDetails.Meta>>(DETAILS_KEPT)
     private val tmdbDetails = Lru<String, Stored<TmdbDetails.Extras?>>(DETAILS_KEPT)
     private val running = ConcurrentHashMap<String, FutureTask<*>>()
@@ -89,17 +95,23 @@ class DefaultVodRepository(
     override fun rows(page: Page): List<RowSpec> {
         val m = manifest
         if (m == null || !m.isFresh(clock())) refreshManifest()
-        return PageRows.rows(page, newYear(if (page == Page.SHOWS) Kind.SERIES else Kind.MOVIE))
+        return rowSettings.rows(page)
     }
+
+    override fun addRowsListener(listener: () -> Unit) = rowSettings.addListener(listener)
+
+    override fun removeRowsListener(listener: () -> Unit) = rowSettings.removeListener(listener)
 
     override fun load(row: RowSpec, skip: Int, limit: Int, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
         val req = Req()
         val sink: (List<Card>, Boolean) -> Unit = { cards, fresh -> post(req) { onCards(cards, fresh) } }
         when (val s = row.source) {
             is Source.Catalog -> catalogCards(resolve(s), skip, limit, req) { titles, fresh -> sink(titles.map { Card(it) }, fresh) }
-            is Source.Trending -> trendingCards(s.kind, skip, limit, req, sink)
+            is Source.Trending -> s.kind?.let { trendingCards(it, skip, limit, req, sink) } ?: trendingBoth(skip, limit, req, sink)
             is Source.ContinueWatching -> local(req, skip, limit, sink) { library.continueWatching(s.kind) }
             Source.MyList -> local(req, skip, limit, sink) { library.myList().map { Card(it) } }
+            is Source.MyListOf -> local(req, skip, limit, sink) { library.myList().filter { it.kind == s.kind }.map { Card(it) } }
+            is Source.Search -> searchCards(s, skip, limit, req, sink)
             is Source.NextEpisodes -> local(req, skip, limit, sink) { nextEpisodes() }
             // Chips come from genres().
             is Source.Genres -> local(req, skip, limit, sink) { emptyList() }
@@ -554,6 +566,41 @@ class DefaultVodRepository(
     }
 
     /**
+     * The Search tab's titles for [s], one answer (fresh = true) to [sink] on a background thread: kept in memory
+     * [Cinemeta.SEARCH_FRESH_MS] (a few minutes, never on disk), else fetched; a failed fetch gives the older answer, else
+     * none. A request cancelled before its turn (the viewer typed on) is never sent.
+     */
+    private fun searchCards(s: Source.Search, skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
+        val query = s.query.trim()
+        if (query.isEmpty()) {
+            local(req, skip, limit, sink) { emptyList() }
+            return
+        }
+        val url = Cinemeta.searchUrl(s.kind, query)
+        val stored = found[url]
+        if (stored != null && stored.isFresh(clock())) {
+            local(req, skip, limit, sink) { stored.value.map { Card(it) } }
+            return
+        }
+        net.execute {
+            if (req.cancelled) return@execute
+            val titles = fetchFound(url, s.kind)?.value ?: stored?.value.orEmpty()
+            if (!req.cancelled) sink(titles.map { Card(it) }.window(skip, limit), true)
+        }
+    }
+
+    /** A Search tab answer, fetched once however many ask; null on failure. Its titles aren't learned (they're thin). */
+    private fun fetchFound(url: String, kind: Kind): Stored<List<Title>>? = single("found|$url") {
+        try {
+            val titles = Cinemeta.parseSearch(http.get(url), kind).titles
+            Stored(titles, clock(), Cinemeta.SEARCH_FRESH_MS).also { found[url] = it }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Cinemeta search not read: ${t.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
      * This week's Top 10 place of [id] (1..10) from the stored list, kept for a day; null without a usable key or
      * outside it. Never stored with the details.
      */
@@ -704,6 +751,37 @@ class DefaultVodRepository(
                 val fresh = refreshTop10(kind)
                 sink((fresh ?: stored?.value.orEmpty()).window(skip, limit), true)
             }
+        }
+    }
+
+    /** Films' and series' Top 10 in turn, ranked 1 to 10 together (a Top 10 row added for both). */
+    private fun trendingBoth(skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
+        val mix = TopMix { cards, fresh -> sink(cards.window(skip, limit), fresh) }
+        for (kind in Kind.entries) trendingCards(kind, 0, TmdbTrending.WANTED, req) { cards, fresh -> mix.update(kind, cards, fresh) }
+    }
+
+    /**
+     * Puts films' and series' Top 10 together as each answers: films and series in turn, ranked again from 1. Passed
+     * on once both have answered, again when it changes, and last with fresh = true once both are fresh.
+     */
+    internal class TopMix(private val emit: (List<Card>, Boolean) -> Unit) {
+        private val cards = HashMap<Kind, List<Card>>()
+        private val settled = HashSet<Kind>()
+        private var sent: List<Card>? = null
+        private var sentFresh = false
+
+        @Synchronized
+        fun update(kind: Kind, list: List<Card>, fresh: Boolean) {
+            cards[kind] = list
+            if (fresh) settled += kind
+            if (!Kind.entries.all { it in cards }) return
+            val mixed = TmdbTrending.interleave(cards[Kind.MOVIE].orEmpty(), cards[Kind.SERIES].orEmpty())
+                .mapIndexed { i, c -> c.copy(rank = i + 1) }
+            val done = Kind.entries.all { it in settled }
+            if (mixed == sent && (sentFresh || !done)) return
+            sent = mixed
+            sentFresh = done
+            emit(mixed, done)
         }
     }
 
@@ -905,6 +983,8 @@ class DefaultVodRepository(
         private const val TAG = "FirePlayerVod"
         private const val PAGES_KEPT = 24
         private const val TITLES_KEPT = 1500
+        /** Search answers kept in memory (both kinds of the last few queries). */
+        private const val SEARCHES_KEPT = 16
         /** A Top 10 made while TMDB failed part-way, or a pause after "too many requests": asked again after this. */
         const val RETRY_MS = 10 * 60_000L
         const val REFUSED_KEPT_MS = 24 * 3600_000L

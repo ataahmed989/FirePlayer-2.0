@@ -6,20 +6,19 @@ import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import app.fireplayer.shell.NavRail
-import app.fireplayer.vod.Page
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.data.VodRepositories
 import java.util.EnumMap
 
 /**
- * The shell's Films & Shows tabs (Home, Movies, TV Shows): a [VodPage] for each, made the first time its tab opens, in
+ * The shell's Films & Shows tabs (Search, Home, Movies, TV Shows, My List): a [VodPage] for each, made the first time its tab opens, in
  * the shell's page container. Only the selected one is shown and running; the others are hidden with their timers
  * stopped and pictures let go. The pages get their titles from the app's one repository ([VodRepositories]: Cinemeta,
  * TMDB and the library on this TV).
  */
 class VodPages(private val context: Context, private val host: VodPage.Host, private val container: FrameLayout) {
 
-    private val pages = EnumMap<Page, VodPage>(Page::class.java)
+    private val pages = EnumMap<VodTab, VodPage>(VodTab::class.java)
     private var started = false
 
     /** The page shown, or null on another tab. */
@@ -86,10 +85,12 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
         null
     }
 
-    private fun pageOf(tab: NavRail.Tab): Page? = when (tab) {
-        NavRail.Tab.HOME -> Page.HOME
-        NavRail.Tab.MOVIES -> Page.MOVIES
-        NavRail.Tab.SHOWS -> Page.SHOWS
+    private fun pageOf(tab: NavRail.Tab): VodTab? = when (tab) {
+        NavRail.Tab.SEARCH -> VodTab.SEARCH
+        NavRail.Tab.HOME -> VodTab.HOME
+        NavRail.Tab.MOVIES -> VodTab.MOVIES
+        NavRail.Tab.SHOWS -> VodTab.SHOWS
+        NavRail.Tab.MY_LIST -> VodTab.MY_LIST
         else -> null
     }
 
