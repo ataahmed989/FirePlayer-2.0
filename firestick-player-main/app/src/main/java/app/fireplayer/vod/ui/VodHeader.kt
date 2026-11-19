@@ -87,7 +87,7 @@ class VodHeader(
         setLines(VodSizes.HEADER_STORY_LINES)
     }
     private val pillSpec = Buttons.PillSpec(
-        height = VodSizes.BUTTON_H,
+        height = VodSizes.HEADER_BUTTON_H,
         pad = VodSizes.BUTTON_PAD,
         text = VodSizes.BUTTON,
         icon = VodSizes.BUTTON_ICON,
@@ -122,11 +122,11 @@ class VodHeader(
             bottomMargin = t.dp(if (actions) VodSizes.headerWordsBottom() else VodSizes.HEADER_BUTTONS_BOTTOM)
         })
         if (actions) {
-            buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.BUTTON_H)))
-            buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.BUTTON_H)).apply {
+            buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)))
+            buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
                 leftMargin = t.dp(VodSizes.BUTTON_GAP)
             })
-            addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.BUTTON_H)).apply {
+            addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
                 leftMargin = t.dp(VodSizes.HEADER_INSET)
                 bottomMargin = t.dp(VodSizes.HEADER_BUTTONS_BOTTOM)

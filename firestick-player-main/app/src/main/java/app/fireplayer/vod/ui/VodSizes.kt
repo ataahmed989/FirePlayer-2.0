@@ -158,9 +158,11 @@ internal object VodSizes {
     const val HEADER_STORY_LINES = 2
     const val HEADER_FACTS_GAP = 4f
     const val HEADER_STORY_GAP = 7f
-    /** The buttons: under the story, above the dots. Their sizes are the title page's ([BUTTON_H] and the rest). */
+    /** The buttons: under the story, above the dots. Their height is [HEADER_BUTTON_H]; the rest are the title page's. */
     const val HEADER_BUTTONS_GAP = 11f
     const val HEADER_BUTTONS_BOTTOM = 26f
+    /** The banner's Watch now and Details: a little lower than the title page's action buttons ([BUTTON_H]). */
+    const val HEADER_BUTTON_H = 34f
     /** A soft shadow under the header's words, so they read where the picture is bright: blur, drop, colour. */
     const val HEADER_TEXT_SHADOW = 3f
     const val HEADER_TEXT_SHADOW_DY = 1f
@@ -544,7 +546,7 @@ internal object VodSizes {
     fun headerStoryH(): Float = HEADER_STORY_LINES * (STORY.lineSp + STORY.lineGap)
 
     /** The header's words stand on the buttons: their bottom, up from the card's. */
-    fun headerWordsBottom(): Float = HEADER_BUTTONS_BOTTOM + BUTTON_H + HEADER_BUTTONS_GAP
+    fun headerWordsBottom(): Float = HEADER_BUTTONS_BOTTOM + HEADER_BUTTON_H + HEADER_BUTTONS_GAP
 
     /** The header text's top (the title's box), with the facts line one line high. */
     fun headerTextTop(): Float =
