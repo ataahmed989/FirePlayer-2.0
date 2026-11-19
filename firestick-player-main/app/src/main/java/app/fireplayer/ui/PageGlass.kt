@@ -65,6 +65,8 @@ class PageGlass(
     private var running = true
     /** The page couldn't be drawn into a picture: windows keep their dark fill. */
     private var failed = false
+    /** No change under the windows is copied before this uptime ([holdUntil]). */
+    private var heldUntil = 0L
 
     override val navigating = false
     override var screenScale = GlassStyle.BACKDROP_SCALE.toFloat()
@@ -156,9 +158,24 @@ class PageGlass(
         for (d in drawables.keys) d.forgetFilm()
     }
 
-    private val refresh = Runnable {
+    /**
+     * Glass showing this picture is in motion until [uptimeMs] (the tab rail widening): a change under it isn't copied
+     * before then, so no copy lands in the middle of the motion; it is copied once that time has come. A window
+     * appearing is still copied for at once ([onGlassAppeared]).
+     */
+    fun holdUntil(uptimeMs: Long) {
+        if (uptimeMs > heldUntil) heldUntil = uptimeMs
+    }
+
+    private val refresh: Runnable = Runnable {
         pending = false
         if (!running) return@Runnable
+        if (SystemClock.uptimeMillis() < heldUntil) {
+            // Glass over the page is in motion: looked at again once that has ended.
+            pending = true
+            handler.postAtTime(refresh, heldUntil)
+            return@Runnable
+        }
         if (!anySeen()) {
             // The last window went: what changes under nothing isn't copied, only remembered as changed.
             active = false
