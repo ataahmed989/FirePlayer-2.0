@@ -14,6 +14,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
+import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
 
@@ -23,8 +24,9 @@ import app.fireplayer.ui.ImageTarget
  * is under it shows through and nothing is blurred or masked per frame. A new title's picture crossfades in over the
  * old one ([ArtSpec.fadeMs]): one view redrawn, nothing laid out.
  *
- * Two uses, one part: the page banner's picture ([ArtSpec.BANNER], [ArtSpec.BANNER_WHOLE]: sharp, decoded at the size
- * it's shown, 650 ms, Glass Home's hero fade; the banner's dark shading is drawn over it separately, by [VodHeader]) and
+ * Two uses, one part: the page banner's picture ([ArtSpec.BANNER]: sharp and whole, decoded at the size it's shown,
+ * crossfading in 650 ms, Glass Home's hero fade; where its box is narrower than the card its left edge is covered
+ * ([leftFade]) so it has no edge, and the banner's dark shading is drawn over it separately, by [VodHeader]) and
  * the title page's full-screen backdrop ([ArtSpec.TITLE]: decoded at 960 x 540 px, drawn over the whole screen
  * ([frame]) and shown first from a small copy ([hold], [preview]) that the real one crossfades over in 140 ms).
  */
@@ -35,7 +37,8 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
      * How a backdrop is decoded and shown: [decodeW] x [decodeH] px (0: the view's size, or half of it with [half]),
      * the fade baked into it, the memory key's suffix for that bake, where the crop sits ([cropY]) and the crossfade's
      * length. With [keep] false a picture leaves the decoded pictures' memory once another has faded in over it (a
-     * banner's, 2 MB each: the rotation decodes the next one ahead anyway).
+     * banner's, 2 MB each: the rotation decodes the next one ahead anyway). [opaque]: nothing is baked clear in its
+     * pictures, so the one before stays whole under the next while that fades in (the banner never dims between two).
      */
     class ArtSpec(
         val decodeW: Int,
@@ -46,20 +49,12 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         val fadeMs: Long,
         val half: Boolean = true,
         val keep: Boolean = true,
+        val opaque: Boolean = false,
     ) {
         companion object {
-            /**
-             * A banner's picture where its box is narrower than the card (Movies, TV Shows, My List): sharp, its left
-             * edge alone fading to clear ([VodSizes.BANNER_FADE_LEFT_TO]) so it has no edge on the card.
-             */
+            /** A page banner's picture: sharp (decoded at the size it's shown) and whole. */
             val BANNER = ArtSpec(
-                0, 0, fadeLeft(VodSizes.BANNER_FADE_LEFT_TO), "|banner", VodSizes.ART_CROP_Y, VodSizes.HERO_FADE_MS,
-                half = false, keep = false,
-            )
-
-            /** A banner's picture that fills its card (Home): sharp and whole. */
-            val BANNER_WHOLE = ArtSpec(
-                0, 0, { it }, "|whole", VodSizes.ART_CROP_Y, VodSizes.HERO_FADE_MS, half = false, keep = false,
+                0, 0, { it }, "|banner", VodSizes.ART_CROP_Y, VodSizes.HERO_FADE_MS, half = false, keep = false, opaque = true,
             )
 
             /** Step 1's page headers: clear at the left edge to solid over 45% (eased), solid to clear over the bottom 35%. */
@@ -103,21 +98,6 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
                 c.drawRect(0f, 0f, w, h, p)
                 out
             }
-
-            /** As [fade], the left edge alone: clear at the picture's left edge to solid at [to] of its width (eased). */
-            fun fadeLeft(to: Float): (Bitmap) -> Bitmap = { src ->
-                val out = if (src.isMutable && src.config == Bitmap.Config.ARGB_8888) src else src.copy(Bitmap.Config.ARGB_8888, true).also { src.recycle() }
-                val w = out.width.toFloat()
-                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
-                p.shader = LinearGradient(
-                    0f, 0f, w * to, 0f,
-                    IntArray(VodSizes.FADE_ALPHAS.size) { VodSizes.FADE_ALPHAS[it] shl 24 },
-                    VodSizes.FADE_STOPS,
-                    Shader.TileMode.CLAMP,
-                )
-                Canvas(out).drawRect(0f, 0f, w, out.height.toFloat(), p)
-                out
-            }
         }
     }
 
@@ -140,6 +120,20 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
             field = v
             invalidate()
         }
+
+    /**
+     * The share of the picture's width, from its left edge, over which it's covered by the card's own dark colour
+     * (solid at the edge, easing to nothing): a banner's picture box that starts inside its card has no edge there.
+     * Drawn over the picture, which stays whole; 0 for none.
+     */
+    var leftFade = 0f
+        set(v) {
+            if (field == v) return
+            field = v
+            makeCover()
+            invalidate()
+        }
+    private val coverPaint = Paint()
 
     private var shown: Bitmap? = null
     private var shownShader: BitmapShader? = null
@@ -235,8 +229,25 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         invalidate()
     }
 
+    private fun makeCover() {
+        val w = (frame ?: box).width() * leftFade
+        if (w <= 0f) {
+            coverPaint.shader = null
+            return
+        }
+        val rgb = GlassStyle.WINDOW_TINT and 0x00FFFFFF
+        val n = VodSizes.FADE_ALPHAS.size
+        val left = (frame ?: box).left
+        // The baked fades' easing, the other way round: solid at the edge, clear at the end.
+        coverPaint.shader = LinearGradient(
+            left, 0f, left + w, 0f,
+            IntArray(n) { ((0xFF - VodSizes.FADE_ALPHAS[it]) shl 24) or rgb }, VodSizes.FADE_STOPS, Shader.TileMode.CLAMP,
+        )
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         box.set(0f, 0f, w.toFloat(), h.toFloat())
+        makeCover()
         if (w > 0 && h > 0 && wantedUrl != null && (imageKey == null || (spec.decodeW <= 0 && oldw > 0 && (w != oldw || h != oldh)))) show(wantedUrl)
     }
 
@@ -297,9 +308,14 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
 
     override fun onDraw(canvas: Canvas) {
         val b = before
-        if (b != null && fade < 1f) draw(canvas, b, beforeShader, 1f - fade, beforeCover)
+        // Opaque pictures: the one before stays whole under the next (an exact crossfade); others fade out as it comes.
+        if (b != null && fade < 1f) draw(canvas, b, beforeShader, if (spec.opaque) 1f else 1f - fade, beforeCover)
         val s = shown ?: return
         draw(canvas, s, shownShader, fade, shownCover)
+        if (leftFade > 0f && coverPaint.shader != null) {
+            val f = frame ?: box
+            canvas.drawRect(f.left, f.top, f.left + f.width() * leftFade, f.bottom, coverPaint)
+        }
     }
 
     private fun draw(canvas: Canvas, bmp: Bitmap, shader: BitmapShader?, alpha: Float, cover: Boolean) {

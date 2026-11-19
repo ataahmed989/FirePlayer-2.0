@@ -254,11 +254,12 @@ internal object VodSizes {
     /** The chosen row: a soft fill with the cards' white ring, this thick, this far inside the row's top and bottom. */
     const val RECENT_FOCUS_RING = 2f
     const val RECENT_FOCUS_INSET = 3f
-    /** The scrollbar: its width, its distance from the window's right edge, and its colours (track, thumb). */
+    /**
+     * The scrollbar: its width and its distance from the window's right edge. Its colours are the glass style's (the
+     * track a row's fill, the thumb the highlight).
+     */
     const val RECENT_BAR_W = 2f
     const val RECENT_BAR_RIGHT = 6f
-    const val RECENT_BAR_TRACK = 0x14FFFFFF
-    const val RECENT_BAR_THUMB = 0x59FFFFFF
     const val RECENT_SCROLL_MS = 160L
 
     // Motion.
@@ -279,8 +280,9 @@ internal object VodSizes {
     const val HEADER_FADE_BOTTOM_FROM = 0.65f
     /**
      * The banner's picture is sharp (decoded at the size it's shown) and whole; where its box is narrower than the
-     * card (Movies, TV Shows, My List) its left edge alone fades to clear over this share of the box, so it has no
-     * edge. The dark shading over it is separate ([HEADER_SHADE_ALPHAS]).
+     * card (Movies, TV Shows, My List) its left edge is eased away over this share of the box (the card's own dark
+     * colour over it, by [FADE_ALPHAS]), so it has no edge. The dark shading over it is separate
+     * ([HEADER_SHADE_ALPHAS]).
      */
     const val BANNER_FADE_LEFT_TO = 0.40f
     /**

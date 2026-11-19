@@ -234,14 +234,14 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         val top = body.top.toFloat()
         val h = body.height.toFloat()
         bar.set(right - w, top, right, top + h)
-        barPaint.color = VodSizes.RECENT_BAR_TRACK
+        barPaint.color = GlassStyle.ROW_FILL
         canvas.drawRoundRect(bar, w / 2f, w / 2f, barPaint)
         val thumbH = h * showing / n
         val most = ((n - showing) * rowH).toFloat()
         val at = if (most > 0f) (-list.translationY / most).coerceIn(0f, 1f) else 0f
         val y = top + (h - thumbH) * at
         bar.set(right - w, y, right, y + thumbH)
-        barPaint.color = VodSizes.RECENT_BAR_THUMB
+        barPaint.color = GlassStyle.HIGHLIGHT
         canvas.drawRoundRect(bar, w / 2f, w / 2f, barPaint)
     }
 

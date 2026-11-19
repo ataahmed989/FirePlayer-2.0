@@ -68,9 +68,9 @@ class VodHeader(
     /** Whether anything else (a window, the settings window) asks it to hold still; asked at each turn. */
     var blocked: () -> Boolean = { false }
 
-    /** The picture fills the card (Home), or is a box at its right whose left edge fades out (the wider cards). */
+    /** The picture fills the card (Home), or is a box at its right whose left edge is eased away (the wider cards). */
     private val whole = VodSizes.backdropW(cardW) >= cardW
-    private val art = HeaderArt(context, if (whole) HeaderArt.ArtSpec.BANNER_WHOLE else HeaderArt.ArtSpec.BANNER)
+    private val art = HeaderArt(context, HeaderArt.ArtSpec.BANNER).apply { if (!whole) leftFade = VodSizes.BANNER_FADE_LEFT_TO }
     private val shade = Shade(context)
 
     /** Fades as one without an offscreen layer: its texts don't overlap. */
