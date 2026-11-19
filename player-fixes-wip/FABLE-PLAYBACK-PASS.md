@@ -56,8 +56,23 @@ Rules for the whole pass:
    start thresholds); on a stall or a recoverable error, recover automatically — re-open the same source at the same
    position, refresh an expired link once, then follow the agreed switching rules (§6.5) — so the user is never left
    on a frozen picture or an error screen when a retry or the next source would work. Log each recovery.
-7. Unit tests for the pure logic (pacer decisions, buffer tiers, lost-frame counting, the OK-again rule, timers,
-   the recovery rules).
+7. **Title matching and details (user):** make sure the player always knows the right title and episode, and get
+   its details faster: plays from Films & Shows must use the ids handed over (IMDb tt, TMDB id, season/episode) and
+   never fall back to name matching; plays from elsewhere (IPTV, outside apps) keep name matching but check and improve
+   it (fewer wrong matches, cached answers, no repeated look-ups). Look for a better or cheaper way to fetch what the
+   player shows (title, episode name, artwork) — e.g. reuse what the title page already loaded.
+8. **Episode features in the player (user):** for shows played from Films & Shows, the player's episode features must
+   all appear and work — the Episodes sheet (seasons and episodes from Cinemeta, watched marks and progress from the
+   library), Next episode / autoplay next, and anything else FirePlayer 1.0 offers for episodes — using the agreed
+   next-episode source rule (§6.5) and the library, not the IPTV provider logic.
+9. **Skip intro / recap / credits (user):** optimise how skip times are matched and fetched for the Skip buttons now
+   that exact ids and season/episode are known (match by id first, cache answers, look up early enough that the
+   button is ready when the intro starts, no wrong-episode matches); check the credits/outro button and Next-episode
+   timing work for add-on plays.
+10. **Anything else worth optimising** that the review turns up (start-up, memory, network calls, decoding), within
+   the rules above.
+11. Unit tests for the pure logic (pacer decisions, buffer tiers, lost-frame counting, the OK-again rule, timers,
+   the recovery rules, id-based matching, skip-time matching).
 
 ## Part 2 — Live TV player (after Part 1)
 
