@@ -21,6 +21,7 @@ import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.LaunchLog
 import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
+import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -554,6 +555,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var launchNote = ""
 
     private fun launchMark(step: String) = launch.mark(step, SystemClock.elapsedRealtime())
+    /** When Back (or the film's end) began closing this screen; 0 when it isn't closing. For the "leave" line in the log. */
+    private var leftAt = 0L
     /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
@@ -814,7 +817,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
+        val releaseFrom = SystemClock.elapsedRealtime()
         releasePlayer()
+        // For the log on the TV: how long after Back this screen was taken down, and how long letting go of the player
+        // held the app's main thread (the page is on screen by then).
+        if (leftAt > 0) {
+            val now = SystemClock.elapsedRealtime()
+            android.util.Log.i(PlaybackDiag.TAG, "leave stop +${now - leftAt}ms · player let go in ${now - releaseFrom}ms")
+            leftAt = 0L
+        }
         // Nothing for auto sync to listen to till the player is back (onStart builds it; its tracks start it again).
         if (::autoSync.isInitialized) autoSync.playerGone()
         pausedForSwitch = false
@@ -1107,6 +1118,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             damageSkips = damageSkips,
             frameCounts = diag.counts,
             byteMeter = diag.meter,
+            freshLinks = source != null,
         )
         vsyncFix = vsync.also { it.start() }
         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
@@ -1440,6 +1452,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Lets TiviMate know where we stopped (MX Player result contract). */
     private fun finishWithResult(animate: Boolean = true) {
         val p = player
+        leftAt = SystemClock.elapsedRealtime()
         val result = Intent("com.mxtech.intent.result.VIEW")
         // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
         // file:// link would crash the app on newer Android.
@@ -1881,7 +1894,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // for a few seconds after a jump, while the old connection still counts against the limit.
         // A live channel's server may answer 404 for a moment while its source restarts; that one is tried again.
         val permanent = (status == 404 || status == 410) && !p.isCurrentMediaItemLive
-        val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
+        // From the add-ons, a refused link (401, 403 too: expired, or made for another address) stays refused: the
+        // failure table asks the add-on for a fresh one at once, instead of this link again for up to a minute.
+        val refusedLink = source != null && Recovery.linkRefused(status)
+        val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent && !refusedLink
         // The player has already tried a few times by the time an error comes, so the time counts from when the
         // viewer started waiting, not from the error.
         if (retries == 0) {
@@ -1895,6 +1911,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (network && retries < MAX_RETRIES && (retries == 0 || nextRoundEndsAt - firstErrorAt < RETRY_WINDOW_MS)) {
             retries++
             val step = if (status != null && status in 400..499) 3_000L else 1_000L
+            if (source != null) android.util.Log.i(PlaybackDiag.TAG, "recovery error ${error.errorCode}" +
+                (status?.let { " (HTTP $it)" } ?: "") + ": same link again in ${step * retries / 1000} s (try $retries of $MAX_RETRIES)")
             retryQuietly(step * retries)
             return
         }
@@ -2115,12 +2133,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private val showBuffering = Runnable {
-        buffering.visibility = View.VISIBLE
+        // Over a picture that stopped to load, the ring fades in (its alpha only) instead of popping up.
+        if (buffering.visibility != View.VISIBLE) {
+            buffering.alpha = 0f
+            buffering.visibility = View.VISIBLE
+            buffering.animate().alpha(1f).setDuration(RING_FADE_MS).start()
+        }
         handler.removeCallbacks(updateBufferingInfo)
         handler.post(updateBufferingInfo)
     }
 
     private fun hideBuffering() {
+        // Gone at once (the film plays), and whole again for wherever it's next put up without a fade.
+        buffering.animate().cancel()
+        buffering.alpha = 1f
         buffering.visibility = View.GONE
         bufferingInfo.visibility = View.GONE
         handler.removeCallbacks(updateBufferingInfo)
@@ -2834,11 +2860,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun lookUpSegments(entry: Entry, duration: Long, again: Boolean = false) {
         val g = guide
+        // From the add-ons: the IMDb id and the season and episode handed over say which film or episode this is
+        // (no name, no TMDB key and no guide needed to ask SkipDB / IntroDB), whatever else is known by now.
+        val vod = source?.request?.takeIf { entry.storeKey != null }
         // Not for a half-hour joined from two of TMDB's episodes: the times known are each one's alone.
-        val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE && !it.joined }
-        val film = ep == null && entry.info.episode == null && !NextEpisode.isEpisodeLink(entry.uri)
-        val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: if (film) "film" else "-") +
-            "|" + duration / 1000
+        val ep = if (vod != null) null
+        else guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE && !it.joined }
+        val film = vod == null && ep == null && entry.info.episode == null && !NextEpisode.isEpisodeLink(entry.uri)
+        val want = entry.key + "|" + (vod?.let { PlayerMeta.skipKey(it) } ?: ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" }
+            ?: if (film) "film" else "-") + "|" + duration / 1000
         if (want == segmentsFor && !again) return
         val fresh = want != segmentsFor
         if (fresh) {
@@ -2860,8 +2890,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A second, short connection to read the start of the file: only where previews are allowed one too.
         val readChapters = !known && prefs.seekPreviews && uri.scheme?.startsWith("http") == true &&
             uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
-        // From the add-ons: the IMDb id and episode are known (no TMDB key needed to ask SkipDB / IntroDB).
-        val vod = source?.request
         val online = vod != null || tmdb.isConfigured && (ep != null || film)
         if (!online && !readChapters && knownChapters == null) return
         // The first look-up is still reading the chapters: asked again once it has.
@@ -2871,27 +2899,49 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val app = applicationContext
         val showId = g?.tmdbId ?: 0
         val fixed = if (film) matchFor(entry)?.tmdbId else null
+        // From the add-ons: the length to weigh IntroDB's times against is the episode's own where the show's details
+        // give it (the show's usual length otherwise), or the film's.
+        val vodMinutes = if (vod == null) 0 else PlayerMeta.runtimeMinutes(vod, vodDetails)
+        val tmdbReady = tmdb.isConfigured
         if (segmentWorker.isShutdown) return
         segmentWorker.execute {
             if (segmentsFor != want || segmentsAsked != asked) return@execute
-            val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
-            // Only what the chapters don't say is asked for.
-            val db = if (!online || (chapters?.intro != null && chapters.creditsAt != null)) null else runCatching {
+            fun askDatabases(): Segments? = runCatching {
                 if (vod != null) {
-                    SkipTimes.find(app, vod.imdbId, vod.season, vod.episode, duration, TitleDetails.runtimeMinutes(vod.target.title.runtime) ?: 0, sync)
+                    // A title the catalogue only has TMDB's id for: its IMDb id is TMDB's to give.
+                    val imdb = if (SkipTimes.isImdbId(vod.imdbId)) vod.imdbId
+                    else vod.tmdbId?.takeIf { tmdbReady }?.let { tmdb.ids(it, vod.season != null)?.imdb }
+                    imdb?.let { SkipTimes.find(app, it, vod.season, vod.episode, duration, vodMinutes, sync) }
                 } else if (ep != null) {
                     tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin, sync) }
                 } else {
-                    val id = fixed ?: filmTmdbId(entry)
-                    tmdb.ids(id, false)?.let { SkipTimes.find(app, it.imdb, null, null, duration, it.runtime, sync) }
+                    // A film by its name: only one TMDB confirms, never its nearest guess (another film's times).
+                    val id = fixed ?: sureFilmTmdb(entry)
+                    if (id > 0) tmdb.ids(id, false)?.let { SkipTimes.find(app, it.imdb, null, null, duration, it.runtime, sync) } else null
                 }
             }.onFailure { android.util.Log.w("FirePlayerSegments", "Look-up failed", it) }.getOrNull()
+            // From the add-ons the databases come first: their answers are mostly on disk by now (asked while the
+            // sources were found, SkipTimes.warm), so Skip intro is ready before the file's own chapters have been read
+            // over a second connection, which then take their place where they say more.
+            val first = vod != null && online && readChapters && !again
+            val early = if (first) askDatabases() else null
+            if (early != null) handler.post {
+                if (isFinishing || segmentsFor != want || segmentsAsked != asked || segments != null) return@post
+                takeSegments(early)
+                android.util.Log.i("FirePlayerSegments", "From ${early.from}, before the file's chapters: recap ${early.recap}, " +
+                    "intro ${early.intro}, credits ${early.creditsAt}")
+            }
+            val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
+            // Only what the chapters don't say is asked for.
+            val db = if (!online || (chapters?.intro != null && chapters.creditsAt != null)) null
+            else if (first) early else askDatabases()
             val found = chapters?.or(db) ?: db
             handler.post {
                 if (readChapters) chapterSegments[key] = chapters
                 if (isFinishing || segmentsFor != want || segmentsAsked != asked) return@post
-                // Asked again (auto sync's offsets changed): a button or pod on screen stays where it is till it goes.
-                if (again && (skipButton.visibility == View.VISIBLE || skipPod.visibility == View.VISIBLE)) {
+                // Asked again (auto sync's offsets changed), or the chapters came after the databases' answer: a button
+                // or pod on screen stays where it is till it goes.
+                if ((again || early != null) && (skipButton.visibility == View.VISIBLE || skipPod.visibility == View.VISIBLE)) {
                     segmentsWaiting = found
                     segmentsWait = true
                 } else {
@@ -3125,7 +3175,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** The film TMDB confirms for this name (see [Tmdb.verify]), under TMDB's name and year; null when it isn't sure. Blocks. */
     private fun verifiedFilm(info: TitleInfo): TitleInfo? {
         val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
-        return tmdb.verify(info.searchQuery, year, false)?.let { TitleInfo.parse(it.label, null) }
+        // Confirmed before (this run of the app), or not found lately: the answer is known without asking again.
+        val match = tmdb.cached(info.searchQuery, year, false)
+            ?: if (tmdb.recentlyMissed(info.searchQuery, year, false)) null else tmdb.verify(info.searchQuery, year, false)
+        return match?.let { TitleInfo.parse(it.label, null) }
     }
 
     /**
@@ -5385,8 +5438,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 else (listed.ifEmpty { listOf(Copies.Copy(entry.rawTitle.orEmpty(), uri, measuredQuality(uri), true,
                     NextEpisode.portal(uri).orEmpty())) }) + elsewhere + played
             }
+            // The film as found just above (a sure match, remembered: not asked for again), never TMDB's nearest guess,
+            // whose language would be another film's.
             val original = if (!tmdb.isConfigured) null else runCatching {
-                val id = if (show) showTmdb else filmTmdbId(entry)
+                val id = if (show) showTmdb else sureFilmTmdb(entry)
                 if (id > 0) tmdb.about(id, show)?.originalLanguage else null
             }.getOrNull()
             handler.post {
@@ -5865,7 +5920,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (!tmdb.isConfigured) return 0
         val info = entry.info
         val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
-        return (tmdb.cached(info.searchQuery, year, false) ?: tmdb.verify(info.searchQuery, year, false))?.id ?: 0
+        tmdb.cached(info.searchQuery, year, false)?.let { return it.id }
+        // Not found the last few days: not asked again every time something wants to know.
+        if (tmdb.recentlyMissed(info.searchQuery, year, false)) return 0
+        return tmdb.verify(info.searchQuery, year, false)?.id ?: 0
     }
 
     /** A title without its year: "The Matrix" of "The Matrix (1999)". */
@@ -5882,6 +5940,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val info = entry.info
         val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        // A match TMDB confirmed before is the answer, without asking again; its nearest guess only when there's none.
+        tmdb.cached(info.searchQuery, year, false)?.let { return it.id }
         return tmdb.find(info.searchQuery, year, false)?.id ?: 0
     }
 
@@ -6629,6 +6689,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val NOTE_MS = 4_000L
         /** How long a picture subtitle that wasn't read ahead is kept back while it's read. */
         const val PICTURE_READ_WAIT_MS = 700L
+        /** The loading ring's fade-in over a film that stopped to load. */
+        const val RING_FADE_MS = 150L
         const val MAX_RETRIES = 4
         const val RETRY_WINDOW_MS = 75_000L
         const val MAX_DEVICE_RETRIES = 3

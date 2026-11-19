@@ -129,6 +129,7 @@ object PlayerFactory {
         serverSwitch: ServerSwitch? = null,
         readOnlyMemory: Boolean = false,
         meter: ByteMeter? = null,
+        readTimeoutMs: Int = 12_000,
     ): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
@@ -138,7 +139,7 @@ object PlayerFactory {
             // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over. The
             // same for one that goes quiet in the middle of the film: a skip can't get past a read that's waiting.
             .setConnectTimeoutMs(12_000)
-            .setReadTimeoutMs(12_000)
+            .setReadTimeoutMs(readTimeoutMs)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
         // The film's bytes are counted as they come, for the download speed in the log (DownloadRate).
         if (meter != null) httpFactory.setTransferListener(meter)
@@ -287,10 +288,15 @@ object PlayerFactory {
         frameCounts: FrameCounts = FrameCounts(),
         /** Counts the film's bytes as they come from the network (see [DownloadRate]). */
         byteMeter: ByteMeter? = null,
+        /** The film's link can be had afresh from its add-on (see [FreshLinks]): a refused one isn't asked again. */
+        freshLinks: Boolean = false,
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
-        val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch, meter = byteMeter)
+        val dataSourceFactory = dataSourceFactory(
+            context, headers, serverSwitch, meter = byteMeter,
+            readTimeoutMs = if (freshLinks) FreshLinks.READ_TIMEOUT_MS else 12_000,
+        )
 
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
@@ -352,7 +358,7 @@ object PlayerFactory {
             .setSeekParameters(FILM_SEEK)
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
-        val retryPolicy = FilmRetryPolicy(serverSwitch)
+        val retryPolicy = FilmRetryPolicy(serverSwitch, freshLinks)
 
         if (!useAss) {
             val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
@@ -410,7 +416,11 @@ object PlayerFactory {
  * Everything else (dropped connections, 400/401, HLS and DASH) keeps Media3's spacing and limit.
  */
 @OptIn(UnstableApi::class)
-private class FilmRetryPolicy(private val serverSwitch: ServerSwitch) : DefaultLoadErrorHandlingPolicy(RETRIES) {
+private class FilmRetryPolicy(
+    private val serverSwitch: ServerSwitch,
+    /** A refused link is final here: its add-on is asked for a fresh one instead (see [FreshLinks]). */
+    private val freshLinks: Boolean = false,
+) : DefaultLoadErrorHandlingPolicy(RETRIES) {
     // Whether the latest load error was a refusal of the film, or a server not answering. On the playback thread.
     @Volatile private var refused = false
     @Volatile private var unanswered = false
@@ -430,6 +440,12 @@ private class FilmRetryPolicy(private val serverSwitch: ServerSwitch) : DefaultL
         // Gone from the server: the error shows at once instead of after 10 s of asking again. Not for a live channel
         // (no known end), whose server may answer 404 for a moment while its source restarts.
         if (progressive && (code == 404 || code == 410) && data.mediaEndTimeMs != C.TIME_UNSET) return C.TIME_UNSET
+        // From the add-ons: a refused link (401, 403 too) stays refused. The error shows at once, and the fresh link
+        // is asked for then, not after ten seconds of asking the old one.
+        if (freshLinks && progressive && FreshLinks.refused(code)) {
+            refused = false
+            return C.TIME_UNSET
+        }
         return if (refused && loadErrorInfo.errorCount <= REFUSED_RETRIES) minOf(delay, 1_000L) else delay
     }
 
@@ -534,6 +550,11 @@ private class FilmLoadControl(
     @Volatile var wait: BufferWait? = null
         private set
 
+    // How much of this film was loaded ahead the last time the buffer was full (what fits, FilmMemory.roomUs); 0 until
+    // it has been, and for another film. On the playback thread only.
+    private var fullUs = 0L
+    private var fullPeriod: Any? = null
+
     /** The memory the film's loaded part holds now, in bytes: any thread (Media3's allocator answers under its lock). */
     val allocatedBytes: Long get() = inner.allocator.totalBytesAllocated.toLong()
 
@@ -553,7 +574,13 @@ private class FilmLoadControl(
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
         val now = SystemClock.elapsedRealtime()
-        val neededUs = if (!parameters.rebuffering) {
+        // What fits: as measured when the buffer was last full. Before it ever was, worked out from what's loaded, but
+        // only at a start or after a jump: in a stall the memory also holds what's kept behind, which would make the
+        // room look smaller than it is (and the wait too short, on a line too slow to ever fill the buffer).
+        val measured = if (fullPeriod == parameters.mediaPeriodId.periodUid) fullUs else 0L
+        val room = if (parameters.rebuffering) measured
+        else FilmMemory.roomUs(measured, buffered, allocator.totalBytesAllocated.toLong(), limit.toLong())
+        val wantedUs = if (!parameters.rebuffering) {
             // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
             if (rate == null) 10_000_000L else maxOf(START_US, cushionFor(rate))
         } else {
@@ -569,6 +596,8 @@ private class FilmLoadControl(
             }
             maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
         }
+        // Never for all that fits in this TV's memory: half of it, where that's a few seconds of a high-quality film.
+        val neededUs = FilmMemory.waitUs(wantedUs, room, if (parameters.rebuffering) FilmMemory.STALL_WAIT_LEAST_US else START_US)
         // Whichever comes first ends the wait: enough film, or full memory.
         val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)
         wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
@@ -662,8 +691,15 @@ private class FilmLoadControl(
         val wanted = inner.shouldContinueLoading(parameters)
         val cap = capBytes
         if (cap < budgetBytes) freeLetGo(cap)
-        val full = cap < budgetBytes &&
-            allocator.totalBytesAllocated >= FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
+        val allocated = allocator.totalBytesAllocated
+        val limit = FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
+        // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits. (A live
+        // channel's is never read: shouldStartPlayback leaves those to Media3's own rule.)
+        if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US) {
+            fullUs = parameters.bufferedDurationUs
+            fullPeriod = parameters.mediaPeriodId.periodUid
+        }
+        val full = cap < budgetBytes && allocated >= limit
         return (wanted && !full).also { loading = it }
     }
 

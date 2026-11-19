@@ -16,8 +16,11 @@ import kotlin.math.abs
  */
 class Tmdb(private val key: () -> String, private val memory: Memory) {
 
-    /** The player's: its key from Settings, matches kept only while it runs. */
-    constructor(prefs: Prefs) : this({ prefs.tmdbApiKey }, Memory.inProcess())
+    /**
+     * The player's: its key from Settings, matches kept while the app runs, in one memory for every player screen (a
+     * film played again, or the next one of the same name, isn't matched again).
+     */
+    constructor(prefs: Prefs) : this({ prefs.tmdbApiKey }, Memory.shared)
 
     /** Where matches are kept, by what was asked. */
     interface Memory {
@@ -25,6 +28,9 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         fun put(key: String, value: String)
 
         companion object {
+            /** One memory for the app's whole run. */
+            val shared: Memory by lazy { inProcess() }
+
             fun inProcess(): Memory = object : Memory {
                 private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
                 override fun get(key: String) = map[key]
@@ -539,9 +545,12 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
     fun verify(): Pair<Boolean, String>? = runCatching { request("authentication", emptyList()) }.exceptionOrNull()
         ?.let { (it is HttpError && (it.code == 401 || it.code == 403)) to (it.message ?: "Couldn't reach TMDB") }
 
+    /** TMDB's answer to a search, asked once: the same one again within [SEARCH_KEPT_MS] is the answer kept. */
     private fun search(path: String, query: String, extra: Pair<String, String>?): JSONArray {
         val params = listOfNotNull("query" to query, "include_adult" to "false", extra)
-        return JSONObject(request(path, params)).optJSONArray("results") ?: JSONArray()
+        return SEARCHES.getOrAsk("$path|$query|${extra?.first.orEmpty()}=${extra?.second.orEmpty()}") {
+            JSONObject(request(path, params)).optJSONArray("results") ?: JSONArray()
+        }
     }
 
     private fun request(path: String, params: List<Pair<String, String>>): String {
@@ -610,6 +619,9 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         const val MISS_KEPT_S = 3 * 24 * 3600L
         // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
         const val MAX_TAG_LENGTH = 4
+        // Searches answered lately, whichever screen asked (they're only read, never changed).
+        const val SEARCH_KEPT_MS = 30 * 60_000L
+        val SEARCHES = RecentAnswers<JSONArray>(max = 24, keptMs = SEARCH_KEPT_MS)
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

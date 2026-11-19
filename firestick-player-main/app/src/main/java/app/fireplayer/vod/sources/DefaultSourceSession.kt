@@ -190,6 +190,8 @@ internal class DefaultSourceSession(
     override fun failureOf(errorCode: Int, httpStatus: Int?): Failure =
         PlayerErrors.failureOf(errorCode, httpStatus, repo.online(), playingOffer?.addon)
 
+    override fun online(): Boolean = repo.online()
+
     override fun maySwitch(now: Long): Boolean =
         startedOnce && switches < MAX_SWITCHES && now - lastSwitchAt >= SWITCH_GAP_MS
 

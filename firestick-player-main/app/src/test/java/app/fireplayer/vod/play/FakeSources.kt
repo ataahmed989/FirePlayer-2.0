@@ -187,7 +187,19 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
         return step
     }
 
-    override fun failureOf(errorCode: Int, httpStatus: Int?) = Failure(if (httpStatus == 404) FailureKind.FILE else FailureKind.UNKNOWN)
+    /** The TV's network is away, as the test sets it. */
+    var netDown = false
+
+    override fun failureOf(errorCode: Int, httpStatus: Int?) = Failure(
+        when {
+            netDown -> FailureKind.NO_INTERNET
+            httpStatus == 404 -> FailureKind.FILE
+            httpStatus == 403 -> FailureKind.LINK_EXPIRED
+            else -> FailureKind.UNKNOWN
+        },
+    )
+
+    override fun online() = !netDown
 
     override fun maySwitch(now: Long) = switchAllowed
 
