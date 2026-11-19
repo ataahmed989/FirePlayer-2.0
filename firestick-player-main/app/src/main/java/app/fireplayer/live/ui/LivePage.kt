@@ -27,6 +27,7 @@ import app.fireplayer.playback.PlayerHost
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.SidePanel
 import java.util.Date
 import java.util.concurrent.Executors
@@ -123,7 +124,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val details = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     /** The channel's logo on its plate, before its name on the details' top line (as in the guide's rows). */
     private val detailLogo = LogoView(ctx)
-    private val detailChannel = t.label(ctx, 15f, t.regular, t.text)
+    private val detailChannel = t.label(ctx, 16f, t.regular, t.text)
     private val detailStar = android.widget.ImageView(ctx)
     private val detailTitle = t.label(ctx, 25f, t.bold)
     private val detailMeta = t.label(ctx, 14.5f, t.regular, t.text)
@@ -191,12 +192,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val miniH = t.dp(207)
     private val gap = t.dp(LiveWidths.GAP)
     /**
-     * The details' logo box (a little smaller than the guide rows' since those grew: the details keep their size), and
-     * the room before the name when there's one.
+     * The details' logo tile ([LiveWidths]: large, the logo fitted inside with its shape kept), and the room before the
+     * name when there's one.
      */
-    private val detailLogoW = t.dp(46)
-    private val detailLogoH = t.dp(26)
-    private val detailNameInset = detailLogoW + t.dp(10)
+    private val detailLogoW = t.dp(LiveWidths.DETAIL_LOGO_W)
+    private val detailLogoH = t.dp(LiveWidths.DETAIL_LOGO_H)
+    private val detailNameInset = detailLogoW + t.dp(LiveWidths.DETAIL_NAME_GAP)
     private val openInset = railSpace + columnW + gap
     private val closedInset = gap
 
@@ -231,9 +232,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // The top line: [logo] Channel name … star. Its height is the logo's, logo or not, so the lines under it never
         // move; a channel without a logo has its name moved over to the start by a transform ([showDetailLogo]).
         val head = FrameLayout(ctx)
+        detailLogo.pad(LiveWidths.DETAIL_LOGO_PAD_X, LiveWidths.DETAIL_LOGO_PAD_Y)
         head.addView(detailLogo, FrameLayout.LayoutParams(detailLogoW, detailLogoH, Gravity.LEFT or Gravity.CENTER_VERTICAL))
-        head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL).apply {
-            leftMargin = detailNameInset; rightMargin = t.dp(34)
+        // Beside the logo, centred on it; a long name takes a second line there. As tall as the line whatever it says,
+        // so a new channel's name only redraws it.
+        detailChannel.maxLines = 2
+        detailChannel.gravity = Gravity.CENTER_VERTICAL
+        head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, detailLogoH).apply {
+            leftMargin = detailNameInset; rightMargin = t.dp(LiveWidths.DETAIL_STAR)
         })
         detailStar.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
         head.addView(detailStar, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
@@ -241,7 +247,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Full width, one line each: a new channel's text only redraws them (nothing is laid out again as focus moves).
         detailTitle.maxLines = 1
         detailTitle.ellipsize = android.text.TextUtils.TruncateAt.END
-        details.addView(detailTitle, wide(top = 2))
+        details.addView(detailTitle, wide(top = LiveWidths.DETAIL_TITLE_GAP))
         detailMeta.maxLines = 1
         detailMeta.ellipsize = android.text.TextUtils.TruncateAt.END
         detailMeta.alpha = 0.85f
@@ -405,7 +411,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // No panels (user's concepts): the column, details and guide sit on the wallpaper.
         sidebarPanel.background = null
         details.background = null
-        columnRule.setBackgroundColor(if (Glass.on) 0x1FFFFFFF else 0x14FFFFFF)
+        // Glass: the column's edge is the shared hairline (about a pixel on the TV), as the guide's rules are.
+        columnRule.setBackgroundColor(if (Glass.on) GlassStyle.HAIRLINE else 0x14FFFFFF)
+        val ruleW = if (Glass.on) GlassStyle.hairlinePx(t.density).toInt().coerceAtLeast(1) else t.dp(1)
+        columnRule.layoutParams?.let { if (it.width != ruleW) { it.width = ruleW; columnRule.requestLayout() } }
         Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         popup.applyLook()

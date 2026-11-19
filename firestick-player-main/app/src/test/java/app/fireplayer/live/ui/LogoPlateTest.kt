@@ -63,6 +63,51 @@ class LogoPlateTest {
         assertEquals(LogoPlate.SOFT, LogoPlate.color(false))
     }
 
+    // ---- The glass look's tiles -----------------------------------------------------------------------------------
+
+    private fun lightOnGlass(px: IntArray) = LogoPlate.light(px, darkInk = LogoPlate.DARK_INK_GLASS)
+
+    @Test fun onGlassOnlyReallyDarkInkGetsTheLightTile() {
+        // Black and dark grey wordmarks vanish on dark glass: the light tile.
+        assertTrue(lightOnGlass(logo(0xFF000000.toInt(), 0.3f)))
+        assertTrue(lightOnGlass(logo(0xFF404040.toInt(), 0.3f)))
+        // Pure blue too.
+        assertTrue(lightOnGlass(logo(0xFF0000FF.toInt(), 0.3f)))
+        // White, mid grey and red stay on the dark tile, as they stay on the classic soft plate.
+        assertFalse(lightOnGlass(logo(0xFFFFFFFF.toInt(), 0.3f)))
+        assertFalse(lightOnGlass(logo(0xFF808080.toInt(), 0.3f)))
+        assertFalse(lightOnGlass(logo(0xFFFF0000.toInt(), 0.3f)))
+    }
+
+    @Test fun theDarkGlassTileKeepsInkTheClassicSoftPlateCouldNot() {
+        // A deep red (luminance about 0.13): too dark for the classic soft plate, but it reads better on the dark
+        // glass tile than on the light one, so fewer tiles are light in the glass look.
+        val deepRed = logo(0xFFD00000.toInt(), 0.3f)
+        assertTrue(LogoPlate.light(deepRed))
+        assertFalse(lightOnGlass(deepRed))
+        assertTrue(LogoPlate.DARK_INK_GLASS < LogoPlate.DARK_INK)
+        // A logo with its own background is just framed there too.
+        assertFalse(lightOnGlass(IntArray(400) { if (it % 10 == 0) 0xFFFFFFFF.toInt() else 0xFF000000.toInt() }))
+    }
+
+    @Test fun theLightTileIsFrostedNotSolid() {
+        // See-through enough that what's behind tints it (the classic light plate is 80%), light enough for black ink.
+        val alpha = LogoPlate.GLASS_LIGHT ushr 24
+        assertTrue(alpha in 0x80..0xB8)
+        assertTrue(alpha < (LogoPlate.LIGHT ushr 24))
+        assertEquals(LogoPlate.LIGHT and 0xFFFFFF, LogoPlate.GLASS_LIGHT and 0xFFFFFF)
+    }
+
+    @Test fun aTilesCornersFollowItsHeight() {
+        // Glass, at 2 px per dp: a guide row's 28 dp tile has about 6 dp corners, the details' 42 dp tile about 9 dp.
+        assertEquals(12.3f, LogoPlate.radius(56f, glass = true, density = 2f), 0.1f)
+        assertEquals(18.5f, LogoPlate.radius(84f, glass = true, density = 2f), 0.1f)
+        // Classic: 4 dp as before on plates up to a guide row's; the larger details plate's grow with it.
+        assertEquals(8f, LogoPlate.radius(56f, glass = false, density = 2f), 0.001f)
+        assertEquals(8f, LogoPlate.radius(40f, glass = false, density = 2f), 0.001f)
+        assertEquals(12f, LogoPlate.radius(84f, glass = false, density = 2f), 0.001f)
+    }
+
     // The large logo's plate (LogoBadge): 92 px high with 18 x 12 px of room, so the logo's box is 68 px high.
 
     private fun badge(w: Int, h: Int) = LogoPlate.badgeWidth(w, h, height = 92, padX = 18f, padY = 12f, minWidth = 92, maxWidth = 208)

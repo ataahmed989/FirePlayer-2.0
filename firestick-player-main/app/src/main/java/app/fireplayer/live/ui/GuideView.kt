@@ -21,6 +21,7 @@ import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.Programme
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ListMath
 import java.util.Date
 import java.util.Locale
@@ -33,8 +34,11 @@ import kotlin.math.roundToInt
  * thousands of channels cost no more than ten; programmes are asked for a few screens around what is visible
  * ([Callbacks.needProgrammes]) and arrive from a background loader.
  *
- * It draws no panel of its own: the rows, cells and header sit straight on the page's wallpaper (classic: dark rounded
- * cells; glass: light tints with a rim).
+ * It draws no panel of its own: the rows, cells and header sit straight on the page's wallpaper. Classic: dark rounded
+ * cells. Glass: each cell is a piece of the shared browsing glass ([GlassStyle], [GlassPatch]): barely lighter than
+ * the wallpaper that shows through it (the page's one soft backdrop: no cell copies or blurs anything of its own), a
+ * one-pixel hairline, a gentle highlight along its top edge. The titles, logos, the white focus highlight and the now
+ * line are drawn over that at full strength.
  *
  * The D-pad moves a focus cell: up/down keep the same time column (and go round from the last channel to the first and
  * back on a fresh press), left/right step programme by programme, and the time window scrolls in half-hour steps.
@@ -61,7 +65,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     var callbacks: Callbacks? = null
     var clock: () -> Long = System::currentTimeMillis
 
-    /** The look: glass draws cells as light tints with a rim; classic as dark rounded cells. Same geometry either way. */
+    /** The look: glass draws cells as pieces of the shared glass; classic as dark rounded cells. Same geometry either way. */
     var glass = false
         set(v) { field = v; invalidate() }
 
@@ -173,7 +177,15 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.regular; textSize = t.dpf(14f) * fontScale(); color = t.text }
     private val datePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = t.semibold; textSize = t.dpf(14f) * fontScale(); color = t.accent }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(1f) }
+    /**
+     * Glass look: a programme cell, the cell the focus rests on while the column has it, and a row still loading.
+     * Each is drawn once for the rows' height and stamped per cell ([GlassPatch]): nothing per frame but the stamps.
+     */
+    private val cellGlass = GlassPatch(t.density, PatchLook.CELL) { radiusGlass }
+    private val cellSelectedGlass = GlassPatch(t.density, PatchLook.CELL_SELECTED) { radiusGlass }
+    private val cellEmptyGlass = GlassPatch(t.density, PatchLook.CELL_EMPTY) { radiusGlass }
+    /** Glass look: the header's rule and the lines between channel rows are the shared hairline, a pixel on the TV. */
+    private val glassHairline = GlassStyle.hairlinePx(t.density)
     private val nowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent; strokeWidth = t.dpf(2f) }
     /** Channel logos on their plates (paints made once). */
     private val plates = PlateDrawer(t.density)
@@ -690,8 +702,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             slot += GuideCells.SLOT_MS
         }
         canvas.restore()
-        fill.color = if (glass) GLASS_RULE else CLASSIC_RULE
-        canvas.drawRect(0f, headerH - t.dpf(1f), width.toFloat(), headerH, fill)
+        fill.color = if (glass) GlassStyle.HAIRLINE else CLASSIC_RULE
+        canvas.drawRect(0f, headerH - if (glass) glassHairline else t.dpf(1f), width.toFloat(), headerH, fill)
     }
 
     /** "Tue, Nov 17 · 5:28 PM", made again when the minute changes. */
@@ -715,16 +727,17 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val playing = keys[r] == playingKey
         val cy = top + rowH / 2
         // A hairline between channel rows; no fill behind them.
-        fill.color = if (glass) GLASS_DIVIDER else CLASSIC_DIVIDER
-        canvas.drawRect(0f, top + rowH - hairline, channelW - gap / 2, top + rowH, fill)
+        fill.color = if (glass) GlassStyle.HAIRLINE else CLASSIC_DIVIDER
+        canvas.drawRect(0f, top + rowH - if (glass) glassHairline else hairline, channelW - gap / 2, top + rowH, fill)
 
         canvas.drawText(numbers[r], numberRight, baseline(cy, numberPaint), numberPaint)
 
         val lx = numberRight + logoGap
         val url = ch.logo
         val logo = if (url != null) callbacks?.logo(url) else null
-        if (logo != null) {
-            // On its plate, so dark logos show on the dark wallpaper too (the same plate as the details' and full screen's).
+        if (logo != null || glass) {
+            // On its plate, so dark logos show on the dark wallpaper too (the same plate as the details'). Glass: every
+            // row has the same tile, with a logo or (none, or still on its way) without.
             plates.draw(canvas, logo, lx, cy - logoH / 2, lx + logoW, cy + logoH / 2)
         } else {
             fill.color = LOGO_EMPTY
@@ -775,7 +788,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val row = rows[keys[r]]
         if (row == null) {
             // Not loaded yet: one faint bar, no text.
-            fill.color = if (glass) GLASS_EMPTY else CLASSIC_EMPTY
+            if (glass) {
+                cellEmptyGlass.draw(canvas, channelW + gap / 2, top + gap / 2, w - gap / 2, top + rowH - gap / 2)
+                return
+            }
+            fill.color = CLASSIC_EMPTY
             rect.set(channelW + gap / 2, top + gap / 2, w - gap / 2, top + rowH - gap / 2)
             canvas.drawRoundRect(rect, radius, radius, fill)
             return
@@ -790,22 +807,16 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             val x0 = GuideCells.cellLeft(cell.start, drawWs, channelW, pxPerMin, gap)
             val x1 = GuideCells.cellRight(cell.stop, drawWs, channelW, w, pxPerMin, gap)
             if (x1 - x0 < 1f) continue
-            rect.set(x0, top + gap / 2, x1, top + rowH - gap / 2)
             val isFocus = i == focusIndex
             // The focus cell while the column has the focus: a shade lighter, its title semibold (no white).
             val selected = isFocus && !gridFocused
-            fill.color = when {
-                glass && selected -> GLASS_SELECTED
-                glass -> GLASS_CELL
-                selected -> CLASSIC_SELECTED
-                else -> CLASSIC_CELL
-            }
-            canvas.drawRoundRect(rect, radius, radius, fill)
             if (glass) {
-                val h = rim.strokeWidth / 2
-                rect.inset(h, h)
-                rim.color = GLASS_RIM
-                canvas.drawRoundRect(rect, radius - h, radius - h, rim)
+                // On whole pixels (the patch's own rule), so every cell's hairline is the same crisp pixel.
+                (if (selected) cellSelectedGlass else cellGlass).draw(canvas, x0, top + gap / 2, x1, top + rowH - gap / 2)
+            } else {
+                rect.set(x0, top + gap / 2, x1, top + rowH - gap / 2)
+                fill.color = if (selected) CLASSIC_SELECTED else CLASSIC_CELL
+                canvas.drawRoundRect(rect, radius, radius, fill)
             }
             val avail = (x1 - x0 - 2 * textInset).toInt()
             if (avail > t.dpf(12f)) {
@@ -846,6 +857,14 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             minOf(glide.right + windowX, width - gap / 2), glide.bottom - scrollY,
         )
         if (highlight.width() < 1f) return
+        if (glass && !glide.moving && windowX == 0f) {
+            // At rest it covers its cell exactly: on the same whole pixels as the glass under it.
+            val top = PatchMath.snap(highlight.top)
+            highlight.set(
+                PatchMath.snap(highlight.left).toFloat(), top.toFloat(),
+                PatchMath.snap(highlight.right).toFloat(), (top + PatchMath.snap(highlight.height())).toFloat(),
+            )
+        }
         val radius = cellRadius()
         canvas.save()
         canvas.clipRect(channelW, headerH, width.toFloat(), rowsBottom)
@@ -927,13 +946,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         const val CLASSIC_EMPTY = 0x99252A31.toInt()
         const val CLASSIC_DIVIDER = 0x14FFFFFF
         const val CLASSIC_RULE = 0x2EFFFFFF
-        // Glass: light tints with a lighter rim.
-        const val GLASS_CELL = 0x17FFFFFF
-        const val GLASS_SELECTED = 0x2EFFFFFF
-        const val GLASS_EMPTY = 0x0DFFFFFF
-        const val GLASS_RIM = 0x33FFFFFF
-        const val GLASS_DIVIDER = 0x17FFFFFF
-        const val GLASS_RULE = 0x38FFFFFF
+        // Glass: every value is the shared style's ([GlassStyle], through [PatchLook] and the hairline).
+        /** Classic: where a channel without a logo would have one. */
         const val LOGO_EMPTY = 0x1FFFFFFF
         /** Past programmes and gaps ("No information"). */
         const val TEXT_DIM = 0x99F4F2EE.toInt()

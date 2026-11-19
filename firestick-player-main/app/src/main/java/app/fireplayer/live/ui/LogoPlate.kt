@@ -9,15 +9,21 @@ import android.util.AttributeSet
 import android.view.View
 import app.fireplayer.R
 import app.fireplayer.shell.Tokens
-
-/** A channel logo as decoded, with the plate it's drawn on (chosen once, as it loads: [LogoPlate.light]). */
-class Logo(val bitmap: Bitmap, val light: Boolean)
+import app.fireplayer.ui.Glass
 
 /**
- * The plate behind every channel logo (guide rows, the details beside the miniature, the full-screen channel line),
- * so logos stand out from the dark wallpaper in both looks. Most logos sit on a soft see-through light plate: white
- * and coloured ones stay bright on it. Dark ink on a see-through background (a black or grey wordmark) would still
- * vanish there, so those get a light plate instead. Pure, unit-tested.
+ * A channel logo as decoded, with the plate it's drawn on, chosen once as it loads ([LogoPlate.light]): [light] in the
+ * classic look, [lightOnGlass] on the glass look's tiles (darker than the classic soft plate, so fewer logos need it).
+ */
+class Logo(val bitmap: Bitmap, val light: Boolean, val lightOnGlass: Boolean = light)
+
+/**
+ * The plate behind every channel logo (guide rows, the details beside the miniature, Home's recent channels), so
+ * logos stand out from the dark wallpaper in both looks. Classic: most logos sit on a soft see-through light plate
+ * ([SOFT]), on which white and coloured ones stay bright; dark ink on a see-through background (a black or grey
+ * wordmark) would still vanish there, so those get a light plate ([LIGHT]). Glass look: every logo sits on the same
+ * rounded glass tile ([PatchLook.TILE]: the dark glass of the app's buttons, with its hairline and top highlight), and
+ * only dark ink gets that tile frosted light ([GLASS_LIGHT]). Pure, unit-tested.
  */
 object LogoPlate {
     /** White at 20%: over the dark wallpaper (or glass) a soft lighter tile; white logos keep their contrast. */
@@ -33,7 +39,30 @@ object LogoPlate {
     /** Logos covering at least this much of their box with their own background bring it with them: [SOFT] just frames them. */
     const val OWN_BACKGROUND = 0.9f
 
+    /**
+     * Glass look: the tile behind dark ink, a light frost at 65% (what's behind still tints it, so it's glass, not a
+     * grey block); black ink reads on it at about 8 to 1.
+     */
+    const val GLASS_LIGHT = 0xA6E6E8EB.toInt()
+    /**
+     * Glass look: the darkest a logo's ink may be on average and still sit on the dark tile. Lower than [DARK_INK]
+     * because the dark tile is darker than [SOFT]: again about where ink reads equally on both tiles.
+     */
+    const val DARK_INK_GLASS = 0.10f
+    /** Glass look: a tile's corner radius as a share of its height (6 dp on a guide row's 28 dp tile, 9 dp on the details'). */
+    const val TILE_RADIUS = 0.22f
+    /** Classic: the plate's corner radius, dp, on a plate up to [CLASSIC_RADIUS_FOR_DP] tall; a larger plate's grows with it. */
+    const val CLASSIC_RADIUS_DP = 4f
+    const val CLASSIC_RADIUS_FOR_DP = 28f
+    /** The room round a logo on a guide row's tile, dp; a larger tile names its own ([PlateDrawer]). */
+    const val PAD_X_DP = 3f
+    const val PAD_Y_DP = 2f
+
     fun color(light: Boolean): Int = if (light) LIGHT else SOFT
+
+    /** The corner radius, px, of a tile or plate [h] px tall in the look named ([glass]) at this [density]. */
+    fun radius(h: Float, glass: Boolean, density: Float): Float =
+        if (glass) h * TILE_RADIUS else CLASSIC_RADIUS_DP * density * maxOf(1f, h / (CLASSIC_RADIUS_FOR_DP * density))
 
     /**
      * How wide a [LogoBadge] of [height] is for a logo of [logoW] x [logoH] pixels: the logo fills the height left
@@ -58,11 +87,12 @@ object LogoPlate {
     }
 
     /**
-     * Whether a logo needs [LIGHT]: from its first [count] pixels ([argb], unpremultiplied, as Bitmap.getPixels gives
-     * them), the average luminance of its ink (weighted by how opaque each pixel is), unless it has a background of its
-     * own. A fully see-through logo has nothing to show either way: [SOFT].
+     * Whether a logo needs the light plate ([LIGHT]; with [darkInk] = [DARK_INK_GLASS], the glass look's light tile):
+     * from its first [count] pixels ([argb], unpremultiplied, as Bitmap.getPixels gives them), the average luminance of
+     * its ink (weighted by how opaque each pixel is), unless it has a background of its own. A fully see-through logo
+     * has nothing to show either way: [SOFT].
      */
-    fun light(argb: IntArray, count: Int = argb.size): Boolean {
+    fun light(argb: IntArray, count: Int = argb.size, darkInk: Float = DARK_INK): Boolean {
         val n = minOf(count, argb.size)
         var ink = 0.0
         var lum = 0.0
@@ -75,7 +105,7 @@ object LogoPlate {
         }
         if (ink <= 0.0) return false
         if (ink / n >= OWN_BACKGROUND) return false
-        return lum / ink < DARK_INK
+        return lum / ink < darkInk
     }
 
     /** sRGB channel value to linear light, once for all 256 values. */
@@ -87,29 +117,34 @@ object LogoPlate {
 
 /**
  * Draws a logo on its plate inside a box: the plate fills the box (every logo gets the same tile, so a column of them
- * lines up), the logo is fitted inside it with a little room around. Its paints and rects are made once: drawing
- * allocates nothing (the guide draws one per row, every frame while it moves).
+ * lines up), the logo is fitted inside it, its shape kept, with [padXDp] and [padYDp] of room around. Glass look: the
+ * rounded glass tile ([GlassPatch], drawn once and stamped); classic: the flat plate. Its paints and rects are made
+ * once: drawing allocates nothing (the guide draws one per row, every frame while it moves).
  */
-class PlateDrawer(density: Float) {
+class PlateDrawer(private val density: Float, padXDp: Float = LogoPlate.PAD_X_DP, padYDp: Float = LogoPlate.PAD_Y_DP) {
     private val plate = Paint(Paint.ANTI_ALIAS_FLAG)
     private val image = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val box = RectF()
     private val fit = RectF()
-    private val radius = 4f * density
-    private val padX = 3f * density
-    private val padY = 2f * density
+    private val padX = padXDp * density
+    private val padY = padYDp * density
+    private val tile = GlassPatch(density, PatchLook.TILE) { h -> LogoPlate.radius(h.toFloat(), true, density) }
+    private val tileLight = GlassPatch(density, PatchLook.TILE_LIGHT) { h -> LogoPlate.radius(h.toFloat(), true, density) }
 
     /** [logo] on its plate in the box [l], [t], [r], [b]; with no logo yet (on its way), the soft plate alone. */
     fun draw(canvas: Canvas, logo: Logo?, l: Float, t: Float, r: Float, b: Float) {
-        box.set(l, t, r, b)
-        plate.color = LogoPlate.color(logo != null && logo.light)
-        canvas.drawRoundRect(box, radius, radius, plate)
+        if (Glass.on) {
+            (if (logo != null && logo.lightOnGlass) tileLight else tile).draw(canvas, l, t, r, b)
+        } else {
+            box.set(l, t, r, b)
+            plate.color = LogoPlate.color(logo != null && logo.light)
+            val radius = LogoPlate.radius(b - t, false, density)
+            canvas.drawRoundRect(box, radius, radius, plate)
+        }
         val bmp = logo?.bitmap ?: return
         if (bmp.width <= 0 || bmp.height <= 0) return
-        val w = r - l - 2 * padX
-        val h = b - t - 2 * padY
-        if (w <= 0f || h <= 0f) return
-        val s = minOf(w / bmp.width, h / bmp.height)
+        val s = LogoPlate.fitScale(bmp.width, bmp.height, r - l - 2 * padX, b - t - 2 * padY)
+        if (s <= 0f) return
         val bw = bmp.width * s
         val bh = bmp.height * s
         val cx = (l + r) / 2
@@ -120,16 +155,22 @@ class PlateDrawer(density: Float) {
 }
 
 /**
- * A channel logo on its plate, for lines laid out once (the details' top line, the full-screen channel line): a new
- * logo only redraws it, nothing is laid out again (an ImageView lays out again whenever its picture's size changes).
+ * A channel logo on its plate, for lines laid out once (the details' top line, Home's recent channels): a new logo
+ * only redraws it, nothing is laid out again (an ImageView lays out again whenever its picture's size changes).
  */
 class LogoView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
-    private val drawer = PlateDrawer(resources.displayMetrics.density)
+    private var drawer = PlateDrawer(resources.displayMetrics.density)
     private var logo: Logo? = null
     private var plate = false
 
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    /** The room round the logo inside its plate, dp, for a plate larger than a guide row's (the details' logo). */
+    fun pad(xDp: Float, yDp: Float) {
+        drawer = PlateDrawer(resources.displayMetrics.density, xDp, yDp)
+        invalidate()
     }
 
     /** [logo] on its plate; [plate] without a logo shows the plate alone (a logo on its way); neither draws nothing. */
