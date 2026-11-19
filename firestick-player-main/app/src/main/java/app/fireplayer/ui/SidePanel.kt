@@ -938,6 +938,22 @@ class SidePanel(private val activity: Activity) {
         }
     }
 
+    /**
+     * A block of text in a row's look (a title's whole story, its full cast), as many lines as it takes. It can take
+     * the selection, so a long window scrolls through it with Up and Down; OK does nothing.
+     */
+    fun textBlock(text: String): View {
+        val row = rows.base()
+        row.addView(rows.text(text).apply {
+            isSingleLine = false
+            maxLines = Int.MAX_VALUE
+            ellipsize = null
+            setLineSpacing(rows.dp(2).toFloat(), 1f)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        add(row)
+        return row
+    }
+
     /** Something shown in the list that isn't a row, such as a progress bar: the D-pad passes it by. */
     fun view(view: View, top: Int = 2, bottom: Int = 2) {
         list.addView(view, rows.listParams(top, bottom))

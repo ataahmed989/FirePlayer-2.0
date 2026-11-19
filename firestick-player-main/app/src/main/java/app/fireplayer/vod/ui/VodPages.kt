@@ -69,8 +69,11 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
         current?.trimImages()
     }
 
-    /** The shown page's keys (Back for its small window and See all). */
+    /** The shown page's keys (Back for its small window, its title pages and See all). */
     fun dispatchKey(event: KeyEvent): Boolean = current?.dispatchKey(event) ?: false
+
+    /** Whether a title page is open over the shown page. */
+    fun hasTitle(): Boolean = current?.hasTitle() == true
 
     /**
      * The repository, made the first time a page asks. Null if it couldn't be made: the page then shows "Couldn't load

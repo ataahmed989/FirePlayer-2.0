@@ -182,20 +182,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         moreItems[key]?.value?.let { if (it.text.toString() != text) it.text = text }
     }
 
-    private fun focusEffect(button: View, scale: Float, label: View?) {
-        button.setOnFocusChangeListener { v, hasFocus ->
-            val s = if (hasFocus) scale else 1f
-            v.animate().scaleX(s).scaleY(s).setDuration(Tokens.FADE_MS).setInterpolator(EASE).start()
-            if (label != null) {
-                label.pivotX = v.left + v.width / 2f - label.left
-                label.pivotY = v.top + v.height / 2f - label.top
-                if (hasFocus) label.visibility = VISIBLE
-                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(Tokens.FADE_MS).setInterpolator(EASE)
-                    .withEndAction { if (!v.isFocused) label.visibility = INVISIBLE }
-                    .start()
-            }
-        }
-    }
+    /** The app's one focus growth ([Tokens.focusEffect]), shared with the title page's buttons. */
+    private fun focusEffect(button: View, scale: Float, label: View?) = Tokens.focusEffect(button, scale, label)
 
     /** The look's surfaces, exactly as the VOD player gives its own (Glass.background keeps sizes). */
     fun applyLook() {
@@ -423,7 +411,6 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     }
 
     companion object {
-        private val EASE = DecelerateInterpolator(1.4f)
         /** The VOD player's icon-row items grow this much when selected. */
         private const val MORE_GROW = 1.06f
         /** A button that can't be used yet, as a disabled settings row. */

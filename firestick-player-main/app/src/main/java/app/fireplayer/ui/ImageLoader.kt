@@ -121,10 +121,15 @@ object ImageLoader {
 
     // ---- Any target, at an exact size ---------------------------------------------------------------------------
 
+    /** How a picture fills its size: centre-cropped to exactly it, or kept whole inside it (a title's logo). */
+    enum class Fit { CROP, INSIDE }
+
     /**
      * Puts the picture at [url] in [target], [widthPx] x [heightPx] exactly (centre-cropped; [cropY] moves the crop up
      * or down, 0.5 the middle), in [config]. [transform] runs on the image thread once, after the crop (the header's
-     * fade); [keySuffix] names it in the memory key. A null [url] clears the target.
+     * fade); [keySuffix] names it in the memory key. A null [url] clears the target. With [Fit.INSIDE] the picture
+     * keeps its shape and is at most that size (its key says so). [diskOnly]: only if its bytes are on disk already
+     * (a preview while the real picture loads); otherwise nothing comes and nothing is fetched.
      */
     fun load(
         url: String?,
@@ -135,14 +140,24 @@ object ImageLoader {
         transform: ((Bitmap) -> Bitmap)? = null,
         keySuffix: String = "",
         cropY: Float = 0.5f,
+        fit: Fit = Fit.CROP,
+        diskOnly: Boolean = false,
     ) {
         (target as? View)?.let { init(it.context) }
         if (url.isNullOrEmpty() || widthPx <= 0 || heightPx <= 0) {
             release(target)
             return
         }
-        val key = keyOf(url, widthPx, heightPx, keySuffix)
-        start(target, key) { Job(key, url, widthPx, heightPx, config, transform, cropY) }
+        val key = keyOf(url, widthPx, heightPx, keySuffix + if (fit == Fit.INSIDE) INSIDE_SUFFIX else "")
+        start(target, key) { Job(key, url, widthPx, heightPx, config, transform, cropY, fit == Fit.INSIDE, diskOnly) }
+    }
+
+    /**
+     * Forgets the decoded picture under [key] (a title page's 2 MB backdrop once the page is gone, so it doesn't push
+     * posters out of memory). Views showing it keep it until they let it go. Main thread.
+     */
+    fun drop(key: String) {
+        cache.remove(key)
     }
 
     /** The memory key of a picture loaded at an exact size. */
@@ -226,7 +241,9 @@ object ImageLoader {
     }
 
     const val TRIM_HALF = 0.5f
-    private const val FADE_MS = 160L
+    /** How long a picture that wasn't in memory fades in (image views and cards alike). */
+    const val FADE_MS = 160L
+    private const val INSIDE_SUFFIX = "|in"
 
     // ---- Jobs ----------------------------------------------------------------------------------------------------
 
@@ -239,6 +256,10 @@ object ImageLoader {
         val config: Bitmap.Config,
         val transform: ((Bitmap) -> Bitmap)?,
         val cropY: Float,
+        /** Kept whole inside w x h ([Fit.INSIDE]) rather than cropped to it. */
+        val inside: Boolean = false,
+        /** Only from disk: nothing is downloaded. */
+        val diskOnly: Boolean = false,
     ) : Runnable {
         /** False once nobody waits: the bytes still go to disk, but nothing is decoded. */
         @Volatile var wanted = true
@@ -251,12 +272,12 @@ object ImageLoader {
             var result: Bitmap? = null
             var skipped = false
             try {
-                val bytes = bytesFor(url)
+                val bytes = if (diskOnly) disk?.read(url) else bytesFor(url)
                 if (bytes != null) {
                     if (!wanted) {
                         skipped = true
                     } else {
-                        result = decode(bytes, w, h, config, cropY)
+                        result = if (inside) decodeInside(bytes, w, h, config) else decode(bytes, w, h, config, cropY)
                         if (result == null) {
                             block(url, FAILED_FOR_MS)
                         } else if (transform != null) {
@@ -321,7 +342,7 @@ object ImageLoader {
         if (!skipped) for (t in wanting) t.imageKey = null
         // Not decoded because nobody waited at the time, yet someone asks again now: once more, from the disk.
         if (skipped && (wanting.isNotEmpty() || job.warm)) {
-            val again = Job(job.key, job.url, job.w, job.h, job.config, job.transform, job.cropY)
+            val again = Job(job.key, job.url, job.w, job.h, job.config, job.transform, job.cropY, job.inside, job.diskOnly)
             again.warm = job.warm
             again.waiters += wanting
             jobs[job.key] = again
@@ -427,6 +448,28 @@ object ImageLoader {
         return out
     }
 
+    /** Decodes [bytes] whole, its shape kept, scaled to fit inside [w] x [h] (never enlarged): a title's logo. */
+    private fun decodeInside(bytes: ByteArray, w: Int, h: Int, config: Bitmap.Config): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val sw = bounds.outWidth
+        val sh = bounds.outHeight
+        if (sw <= 0 || sh <= 0) return null
+        val (ow, oh) = ImageFit.inside(sw, sh, w, h)
+        var sample = 1
+        while (sw / (sample * 2) >= ow && sh / (sample * 2) >= oh) sample *= 2
+        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = config
+        }) ?: return null
+        if (source.width == ow && source.height == oh && source.config == config) return source
+        val out = Bitmap.createBitmap(ow, oh, config)
+        val m = Matrix().apply { setScale(ow / source.width.toFloat(), oh / source.height.toFloat()) }
+        Canvas(out).drawBitmap(source, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+        source.recycle()
+        return out
+    }
+
     private const val MAX_BYTES = 4 shl 20
     private const val AHEAD_MAX = 32
     private const val FAILED_FOR_MS = 24L * 60 * 60 * 1000
@@ -447,5 +490,12 @@ object ImageFit {
         var sample = 1
         while (cropW / (sample * 2) >= w && cropH / (sample * 2) >= h) sample *= 2
         return sample
+    }
+
+    /** A [sw] x [sh] picture kept whole inside [w] x [h]: its size, its shape kept, never enlarged (at least 1 px). */
+    fun inside(sw: Int, sh: Int, w: Int, h: Int): Pair<Int, Int> {
+        if (sw <= 0 || sh <= 0) return 1 to 1
+        val scale = minOf(1f, minOf(w / sw.toFloat(), h / sh.toFloat()))
+        return (sw * scale).toInt().coerceAtLeast(1) to (sh * scale).toInt().coerceAtLeast(1)
     }
 }
