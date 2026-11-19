@@ -787,7 +787,8 @@ class VodPage(
             }
             column.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, row.bandHeight))
         }
-        r.addRowsListener(rowsListener)
+        // Settings › Rows changes Home's, Movies' and TV Shows' rows (My List's and Search's are fixed).
+        if (page != null) r.addRowsListener(rowsListener)
         if (resumed) r.addLibraryListener(libraryListener)
     }
 
@@ -796,9 +797,10 @@ class VodPage(
      * ones are made and loaded, rows taken off go (focus in one moves to the row now in its place, else the rail).
      */
     private fun applyRows() {
+        val p = page ?: return
         if (released || !rowsBuilt) return
         val r = repo ?: return
-        val specs = r.rows(page)
+        val specs = r.rows(p)
         if (specs == rows.map { it.spec }) return
         val old = rows.associateBy { it.spec }
         val made = ArrayList<TitleRow>()
