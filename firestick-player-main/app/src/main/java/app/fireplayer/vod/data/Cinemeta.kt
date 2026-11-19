@@ -22,6 +22,8 @@ object Cinemeta {
     const val PAGE_FRESH_MS = 4 * 3600_000L
     const val MANIFEST_FRESH_MS = 24 * 3600_000L
     const val META_FRESH_MS = 24 * 3600_000L
+    /** How long the Search tab keeps an answer (in memory only). */
+    const val SEARCH_FRESH_MS = 5 * 60_000L
 
     /** Catalog ids: Popular, New (by year), Featured. */
     const val TOP = "top"

@@ -99,6 +99,15 @@ sealed class Source {
     /** FirePlayer's My List (a saved-title list, independent of Real-Debrid). */
     data object MyList : Source()
 
+    /** My List's films or its series only ([kind]), the latest added first: the My List tab's two rows. */
+    data class MyListOf(val kind: Kind) : Source()
+
+    /**
+     * Cinemeta's search for [query] among [kind] (the Search tab), in Cinemeta's order; empty for a blank query. Answered
+     * once, fresh (kept in memory a few minutes, never on disk).
+     */
+    data class Search(val kind: Kind, val query: String) : Source()
+
     /** The next unwatched episode of series the user is following. Empty until playback records some. */
     data class NextEpisodes(val kind: Kind = Kind.SERIES) : Source()
 

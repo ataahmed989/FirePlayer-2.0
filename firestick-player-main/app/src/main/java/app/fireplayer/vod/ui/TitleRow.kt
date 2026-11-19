@@ -28,7 +28,8 @@ import app.fireplayer.vod.RowStyle
 class TitleRow(
     context: Context,
     private val t: Tokens,
-    val spec: RowSpec,
+    /** What the row shows. The Search tab's rows change it for each query ([RowSpec.source]; never the style). */
+    spec: RowSpec,
     private val listener: Listener,
     /** Whether the row shows its title above the cards. */
     val header: Boolean = true,
@@ -42,6 +43,12 @@ class TitleRow(
         fun onRowLeft(row: TitleRow): Boolean
         fun onItemKey(row: TitleRow, index: Int, keyCode: Int, event: KeyEvent): Boolean
     }
+
+    var spec: RowSpec = spec
+        set(v) {
+            require(v.style == field.style) { "A row keeps its style" }
+            field = v
+        }
 
     val style: RowStyle get() = spec.style
     val strip = CardStrip(context, t, spec.style)

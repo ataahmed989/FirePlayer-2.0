@@ -16,14 +16,21 @@ internal object RowRules {
     const val ROW_CARDS = 15
 
     fun isLibrary(source: Source): Boolean =
-        source is Source.MyList || source is Source.ContinueWatching || source is Source.NextEpisodes
+        isMyList(source) || source is Source.ContinueWatching || source is Source.NextEpisodes
+
+    /** My List, or its films or series alone (the My List tab's rows). */
+    fun isMyList(source: Source): Boolean = source is Source.MyList || source is Source.MyListOf
+
+    /** Whether [title], added to My List, goes into a row of [source]: My List's, or its own kind's. */
+    fun myListTakes(source: Source, title: Title): Boolean =
+        source is Source.MyList || (source is Source.MyListOf && source.kind == title.kind)
 
     /** Whether an answer can be acted on: not an empty cached one that fresh data will follow. */
     fun isFinal(source: Source, empty: Boolean, fresh: Boolean): Boolean = !empty || fresh || isLibrary(source)
 
     /**
      * Whether a row ends with a See all card: Cinemeta catalogs always (they go on and on), Top 10 never (it has only
-     * 10), the library's rows only past 15 ([total] is how many came back of the 16 asked for).
+     * 10), the library's rows and search results only past 15 ([total] is how many came back of the 16 asked for).
      */
     fun seeAll(source: Source, total: Int): Boolean = when {
         total <= 0 -> false

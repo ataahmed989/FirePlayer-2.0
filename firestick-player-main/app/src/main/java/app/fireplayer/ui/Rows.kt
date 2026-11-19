@@ -99,7 +99,7 @@ class CenterScrollView @JvmOverloads constructor(
  * The colours are set here rather than through duplicateParentState, which left the text of the
  * selected row light, and so invisible on its white background.
  */
-class RowLayout(context: Context, private val colors: ColorStateList?) : LinearLayout(context) {
+open class RowLayout(context: Context, private val colors: ColorStateList?) : LinearLayout(context) {
 
     override fun drawableStateChanged() {
         super.drawableStateChanged()

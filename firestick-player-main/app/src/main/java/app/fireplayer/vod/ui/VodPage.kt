@@ -1,5 +1,6 @@
 package app.fireplayer.vod.ui
 
+import android.app.Activity
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -12,9 +13,11 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
+import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.SidePanel
@@ -31,6 +34,9 @@ import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.data.SearchHistory
+import app.fireplayer.vod.data.SearchHistoryRules
+import app.fireplayer.vod.data.TabRows
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
@@ -47,6 +53,13 @@ import kotlin.math.abs
  * playback comes next (a later step), on See all or a genre opens [SeeAllPage]; OK held on a title opens the small
  * window ([HoldWindow]): + Add to list (or − Remove from list), Mark watched, and on Continue cards Remove.
  *
+ * My List ([VodTab.MY_LIST]) is the same page with two rows (its films, its series) under a header that never slides
+ * away and shows the focused title (the Continue row's rule: words at once, picture half a second later; no rotation);
+ * the rows glide under it. Search ([VodTab.SEARCH]) has no header: its bar and trash button ([SearchBar]) take the
+ * header's place, the history ([SearchHistoryList]) under them until results come, then two rows of results (films, TV
+ * shows), each only when it has titles. Up from the results goes back to the bar; Back from them goes back to the
+ * history (an empty bar), and Back again to the rail.
+ *
  * Lean: pictures only for the rows on screen and near the chosen card, let go when the page is hidden or stopped;
  * rows laid out once, then moved by translation and scale alone; cached rows shown at once and refreshed behind.
  */
@@ -54,7 +67,7 @@ class VodPage(
     private val ctx: Context,
     private val host: Host,
     private val repoOf: () -> VodRepository?,
-    val page: Page,
+    val tab: VodTab,
 ) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host {
 
     /** What the shell gives a page: the same as Live TV's (HomeActivity implements both). */
@@ -72,6 +85,10 @@ class VodPage(
 
     private val t = host.tokens
     private val main = Handler(Looper.getMainLooper())
+    /** The repository's page (Home, Movies, TV Shows); null on My List and Search. */
+    private val page: Page? = tab.page
+    private val myList = tab == VodTab.MY_LIST
+    private val search = tab == VodTab.SEARCH
     private var repoRef: VodRepository? = repoOf()
     override val repo: VodRepository? get() = repoRef
 
@@ -81,11 +98,22 @@ class VodPage(
     private val clockText = t.label(ctx, VodSizes.CLOCK)
     /** Under the name line; clips, so nothing shows above it. */
     private val viewport = FrameLayout(ctx)
-    private val column = PageColumn(ctx, t)
+    private val column = if (search) PageColumn(ctx, t, VodSizes.SEARCH_BAR_H, VodSizes.SEARCH_GAP) else PageColumn(ctx, t)
     private val headerBand = FrameLayout(ctx)
     private val headerW = if (page == Page.HOME) VodSizes.homeHeaderW() else VodSizes.tabHeaderW()
     private val header = VodHeader(ctx, t, headerW)
     private val window: RecentWindow? = if (page == Page.HOME) RecentWindow(ctx, t) else null
+    /** Search: the bar and the trash button in the header's place, the history under them, kept on this TV. */
+    private val searchBar: SearchBar? = if (search) SearchBar(ctx, t) else null
+    private val historyList: SearchHistoryList? = if (search) SearchHistoryList(ctx, t) else null
+    private val history: SearchHistory? = if (search) SearchHistory.of(ctx) else null
+    /** Search: the words the result rows are for ("": none, the history shows). */
+    private var query = ""
+    /** Search: the words a "nothing found" notice was shown for. */
+    private var noticeFor: String? = null
+    private var searchBackDown = false
+    /** My List: the title the header shows. */
+    private var headerId: String? = null
     private val rows = ArrayList<TitleRow>()
     private var rowsBuilt = false
     private var seeAll: SeeAllPage? = null
@@ -135,11 +163,7 @@ class VodPage(
     private var seeAllBackDown = false
     private val libraryListener: () -> Unit = { onLibraryChanged() }
 
-    private val pageName = when (page) {
-        Page.HOME -> "Home"
-        Page.MOVIES -> "Movies"
-        Page.SHOWS -> "TV Shows"
-    }
+    private val pageName = tab.title
 
     init {
         root.visibility = View.GONE
@@ -167,16 +191,52 @@ class VodPage(
             })
         }
         header.blocked = { host.overlayOpen() || hold.isOpen }
-        column.header = headerBand
+        when {
+            // My List: the header holds still above the rows, which glide under it.
+            myList -> root.addView(headerBand, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(VodSizes.HEADER_H)).apply {
+                topMargin = t.dp(VodSizes.VIEWPORT_TOP)
+            })
+            search -> searchBar?.let {
+                it.setPadding(pageX, 0, 0, 0)
+                column.header = it
+            }
+            else -> column.header = headerBand
+        }
         column.onRowsMoved = { onRowsMoved() }
         viewport.clipChildren = true
         viewport.addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(viewport, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            topMargin = t.dp(VodSizes.VIEWPORT_TOP)
+            topMargin = t.dp(if (myList) VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_TOP)
         })
+        historyList?.let { list ->
+            root.addView(list, FrameLayout.LayoutParams(t.dp(VodSizes.searchBarW()), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                leftMargin = pageX
+                topMargin = t.dp(VodSizes.searchListTop())
+                bottomMargin = t.dp(VodSizes.SEARCH_LIST_BOTTOM)
+            })
+            list.show(history?.entries.orEmpty())
+        }
+        searchBar?.let { bar ->
+            bar.onQuery = { words -> search(words) }
+            bar.onSubmit = { words ->
+                search(words)
+                rememberSearch()
+            }
+            bar.onArrow = { keyCode, fromTrash -> onBarArrow(keyCode, fromTrash) }
+            bar.onTrash = { confirmClearHistory() }
+            bar.onFocused = { onBarFocused() }
+        }
+        historyList?.apply {
+            onPick = { words -> onHistoryPick(words) }
+            onHold = { words, row -> onHistoryHold(words, row) }
+            onUpFromTop = { searchBar?.focusBar() }
+            onLeft = { host.focusRail() }
+        }
 
         // Nothing at all to show: a way to try again.
-        emptyText.text = "Couldn't load titles. Check the connection."
+        emptyText.text = if (myList) MY_LIST_EMPTY else "Couldn't load titles. Check the connection."
+        // My List with nothing in it: only the line (there's nothing to try again).
+        if (myList) emptyButton.visibility = View.GONE
         emptyButton.apply {
             setOnClickListener { retry() }
             setOnKeyListener { _, keyCode, event ->
@@ -224,6 +284,8 @@ class VodPage(
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
         titles.closeAll(focusBack = false)
         closeSeeAll(focusBack = false)
+        // Search opens on its history again, an empty bar, whenever its tab is chosen anew.
+        if (search) resetSearch(focus = false)
         pause()
         root.visibility = View.GONE
     }
@@ -246,6 +308,7 @@ class VodPage(
         for (row in rows) row.cancel?.cancel()
         headerCancel?.cancel()
         window?.release()
+        searchBar?.cancel()
         titles.release()
         seeAll?.release()
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
@@ -303,6 +366,8 @@ class VodPage(
     fun applyLook() {
         header.applyLook()
         window?.applyLook()
+        searchBar?.applyLook()
+        historyList?.applyLook()
         Glass.background(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         hold.applyLook()
@@ -332,6 +397,13 @@ class VodPage(
         }
         if (empty.visibility == View.VISIBLE) {
             emptyButton.requestFocus()
+            return
+        }
+        val bar = searchBar
+        if (bar != null) {
+            // Search: the results row chosen last while they show, else the bar.
+            val row = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
+            if (row == null || !row.focusChosen()) bar.focusBar()
             return
         }
         val row = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: firstReadyRow()
@@ -390,6 +462,17 @@ class VodPage(
             return true
         }
         seeAllBackDown = false
+        // Search: Back from the results (or words in the bar) goes back to the history, an empty bar; from there, to
+        // the rail (the shell's).
+        if (search && (searchBackDown || showsSearch())) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                searchBackDown = true
+            } else if (event.action == KeyEvent.ACTION_UP && searchBackDown) {
+                searchBackDown = false
+                resetSearch(focus = true)
+            }
+            return true
+        }
         return false
     }
 
@@ -415,9 +498,9 @@ class VodPage(
         focusedRow = row
         lastRow = row
         pageSpring.glideTo(targetFor(row))
-        if (row.spec.continueRow && !row.isSeeAll(index)) {
-            row.cards.getOrNull(index)?.let { header.follow(it) }
-        } else {
+        if ((row.spec.continueRow || myList) && !row.isSeeAll(index)) {
+            row.cards.getOrNull(index)?.let { followCard(it) }
+        } else if (!myList) {
             header.unfollow()
         }
         updateHeaderPause()
@@ -465,7 +548,9 @@ class VodPage(
     private fun moveRow(row: TitleRow, dir: Int) {
         val vis = visibleRows()
         val k = vis.indexOf(row)
-        vis.getOrNull(k + dir)?.focusChosen()
+        val to = vis.getOrNull(k + dir)
+        // Search: Up from the first row of results, back to the bar (the results stay).
+        if (to == null && dir < 0) searchBar?.focusBar() else to?.focusChosen()
     }
 
     private fun isOk(keyCode: Int) =
@@ -501,12 +586,16 @@ class VodPage(
     /** + Add to list / − Remove from list: the My List rows (and its See all) change at once. */
     override fun onListChanged(title: Title, inList: Boolean) {
         for (row in rows) {
-            if (row.spec.source !is Source.MyList) continue
+            val source = row.spec.source
+            if (!RowRules.isMyList(source)) continue
+            // My List's films or series alone: only a title of its kind comes in.
+            if (inList && !RowRules.myListTakes(source, title)) continue
+            if (!inList && row.cards.none { it.title.id == title.id }) continue
             val cards = RowRules.myListAfter(row.cards, title, inList)
             showCards(row, cards.take(ROW_CARDS), row.hasSeeAll || cards.size > ROW_CARDS, mine = true)
         }
         val sa = seeAll
-        if (!inList && sa != null && sa.isOpen && sa.spec?.source is Source.MyList) sa.remove(title.id)
+        if (!inList && sa != null && sa.isOpen && sa.spec?.source?.let { RowRules.isMyList(it) } == true) sa.remove(title.id)
     }
 
     /** [id] has left Continue Watching: its cards go from the continue rows (and their See all) now. */
@@ -547,6 +636,8 @@ class VodPage(
 
     private fun openTitle(card: Card, from: Origin, soon: Boolean = false) {
         if (repo == null) return
+        // Search: a result opened keeps its search in the history.
+        if (search) rememberSearch()
         press.cancel()
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
         if (pageSpring.moving) pageSpring.snap(pageSpring.target)
@@ -571,6 +662,8 @@ class VodPage(
         viewport.visibility = if (on || seeAll?.isOpen == true) View.INVISIBLE else View.VISIBLE
         seeAll?.cover(on)
         if (empty.visibility != View.GONE) empty.visibility = v
+        updateListHeader()
+        updateSearchView()
     }
 
     override fun restoreOrigin(focusBack: Boolean) {
@@ -630,6 +723,7 @@ class VodPage(
         if (pageSpring.moving) pageSpring.snap(pageSpring.target)
         viewport.visibility = View.INVISIBLE
         nameText.text = "${spec.label} · $pageName"
+        updateListHeader()
         updateHeaderPause()
         // Only the grid's pictures (and the row it came from, for coming back).
         for (other in rows) if (other !== row) other.releaseImages()
@@ -655,6 +749,7 @@ class VodPage(
         }
         sa.close()
         nameText.text = pageName
+        updateListHeader()
         updateHeaderPause()
         updateImages()
     }
@@ -675,9 +770,14 @@ class VodPage(
         if (rowsBuilt) return
         val r = repo ?: repoOf().also { repoRef = it } ?: return
         rowsBuilt = true
-        for (spec in r.rows(page)) {
+        for (spec in rowSpecs(r)) {
             val row = TitleRow(ctx, t, spec, this)
             rows += row
+            // Search's rows wait for words.
+            if (search) {
+                row.answered = true
+                row.visibility = View.GONE
+            }
             column.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, row.bandHeight))
         }
         if (resumed) r.addLibraryListener(libraryListener)
@@ -697,8 +797,10 @@ class VodPage(
         }
         lastLoad = SystemClock.elapsedRealtime()
         headerCancel?.cancel()
-        headerCancel = r.header(page) { feed -> if (!released) header.setFeed(feed.titles) }
+        // My List's header only follows the focused title; Search has none.
+        headerCancel = page?.let { p -> r.header(p) { feed -> if (!released) header.setFeed(feed.titles) } }
         for (row in rows) {
+            if (search && query.isEmpty()) continue
             row.answered = false
             load(row)
         }
@@ -778,6 +880,7 @@ class VodPage(
         // In the Continue row, a card taken away: the header follows the card now chosen.
         val at = row.focusedIndex()
         if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.let { header.follow(it) } ?: header.unfollow()
+        if (myList && at >= 0) row.cards.getOrNull(at)?.let { followCard(it) }
         checkEmpty()
         updateImages()
         takePendingFocus()
@@ -834,6 +937,12 @@ class VodPage(
     }
 
     private fun checkEmpty() {
+        // Search never says "couldn't load": its history shows instead of results.
+        if (search) {
+            empty.visibility = View.GONE
+            updateSearchView()
+            return
+        }
         // Focus in the page's own content (not in a title page over it).
         val inPage = viewport.hasFocus() || empty.hasFocus() || seeAll?.root?.hasFocus() == true
         // Genre chips alone are no page (offline, each would open an empty grid): they don't count, and hide with the
@@ -859,6 +968,7 @@ class VodPage(
             pendingFrom = null
             emptyButton.requestFocus()
         }
+        updateListHeader()
     }
 
     // ---- Layout changes, header and pictures ---------------------------------------------------------------------
@@ -884,7 +994,8 @@ class VodPage(
 
     /** The header rotates only while it shows and nothing is open over the page. */
     private fun updateHeaderPause() {
-        val active = resumed && !released && pageSpring.target == 0f && !hold.isOpen && seeAll?.isOpen != true && !titles.isOpen
+        val shows = if (myList) headerBand.visibility == View.VISIBLE else !search && pageSpring.target == 0f
+        val active = resumed && !released && shows && !hold.isOpen && seeAll?.isOpen != true && !titles.isOpen
         if (active) header.resume() else header.pause()
     }
 
@@ -904,7 +1015,8 @@ class VodPage(
         val offset = pageSpring.target
         val tops = FloatArray(vis.size) { column.topOf(vis[it]).toFloat() }
         val heights = FloatArray(vis.size) { vis[it].bandHeight.toFloat() }
-        val bound = RowMath.boundRows(k, offset, t.dpf(VodSizes.VIEWPORT_H), tops, heights)
+        val viewH = if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H
+        val bound = RowMath.boundRows(k, offset, t.dpf(viewH), tops, heights)
         vis.forEachIndexed { j, row ->
             when {
                 // Not laid out yet: bound once the column's layout has placed it.
@@ -950,9 +1062,182 @@ class VodPage(
 
     private val hideNotice = Runnable { notice.visibility = View.GONE }
 
+    // ---- My List's header ---------------------------------------------------------------------------------------
+
+    /** My List: the header shows [card]'s title (the words at once, the picture half a second later). */
+    private fun followCard(card: Card) {
+        if (myList && headerId == card.title.id) return
+        headerId = card.title.id
+        header.follow(card)
+    }
+
+    /**
+     * My List: the header shows the focused title, else the chosen one of the row chosen last (or of the first row);
+     * with nothing in the list (or See all or a title page over the page) it's hidden.
+     */
+    private fun updateListHeader() {
+        if (!myList) return
+        val row = (focusedRow ?: lastRow)?.takeIf { it.visibility == View.VISIBLE && it.cards.isNotEmpty() }
+            ?: visibleRows().firstOrNull { it.cards.isNotEmpty() }
+        val card = row?.let { it.cards.getOrNull(it.chosen.coerceIn(0, it.cards.size - 1)) }
+        if (card == null) {
+            headerId = null
+            header.unfollow()
+        } else if (focusedRow == null || focusedRow === row) {
+            followCard(card)
+        }
+        headerBand.visibility = if (card == null || covered || seeAll?.isOpen == true) View.INVISIBLE else View.VISIBLE
+        updateHeaderPause()
+    }
+
+    // ---- Search ---------------------------------------------------------------------------------------------------
+
+    private fun rowSpecs(r: VodRepository): List<RowSpec> = when (tab) {
+        VodTab.MY_LIST -> TabRows.myList()
+        VodTab.SEARCH -> TabRows.search("")
+        else -> r.rows(page ?: Page.HOME)
+    }
+
+    /** Search: results show, or words are in the bar (Back clears them). */
+    private fun showsSearch(): Boolean =
+        query.isNotEmpty() || searchBar?.text?.isNotBlank() == true || visibleRows().isNotEmpty()
+
+    /**
+     * Search: the result rows for [words], asked now (blank: none, the history shows). The rows' older answers are
+     * cancelled; each row shows only when it has titles.
+     */
+    private fun search(words: String) {
+        val q = SearchHistoryRules.clean(words)
+        if (q == query) return
+        query = q
+        noticeFor = null
+        val specs = TabRows.search(q)
+        rows.forEachIndexed { i, row ->
+            row.cancel?.cancel()
+            row.cancel = null
+            row.generation++
+            row.pending = null
+            specs.getOrNull(i)?.let { row.spec = it }
+            // A new search starts at its first card.
+            row.chosen = 0
+            if (row.items.isNotEmpty()) row.motion.snap(0, isGrown = false)
+            if (q.isEmpty()) {
+                row.answered = true
+                hideRow(row)
+            } else {
+                row.answered = false
+                load(row)
+            }
+        }
+        checkEmpty()
+    }
+
+    /** Search: the words searched now go first in the history (submitted, or a result opened). */
+    private fun rememberSearch() {
+        val h = history ?: return
+        if (query.isEmpty()) return
+        h.add(query)
+        historyList?.show(h.entries)
+    }
+
+    /**
+     * Search: back to the history view: an empty bar, no results, the history; focus on the bar ([focus]; before the
+     * rows go, so it never falls to the rail).
+     */
+    private fun resetSearch(focus: Boolean) {
+        val bar = searchBar ?: return
+        if (focus) bar.focusBar()
+        bar.cancel()
+        bar.setText("")
+        search("")
+        if (focus) pageSpring.glideTo(0f) else pageSpring.snap(0f)
+        updateSearchView()
+    }
+
+    /** Search: the history shows while no results do (and nothing covers the page); "nothing found" once per search. */
+    private fun updateSearchView() {
+        val list = historyList ?: return
+        val results = visibleRows().isNotEmpty()
+        // Focus off the list before it hides (a hidden view holding focus would hand it to the rail's first tab).
+        if (results && list.hasFocus()) searchBar?.focusBar()
+        list.visibility = when {
+            results -> View.GONE
+            covered -> View.INVISIBLE
+            else -> View.VISIBLE
+        }
+        if (query.isNotEmpty() && !results && rows.all { it.answered } && noticeFor != query && shown) {
+            noticeFor = query
+            showNotice("Nothing found for \u201C$query\u201D")
+        }
+    }
+
+    private fun onBarFocused() {
+        focusPending = false
+        pendingFrom = null
+        press.cancel()
+        pageSpring.glideTo(0f)
+        updateImages()
+    }
+
+    /** Search: an arrow on the bar or the trash button. Down goes into the results, else the history. */
+    private fun onBarArrow(keyCode: Int, fromTrash: Boolean) {
+        val bar = searchBar ?: return
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (fromTrash) bar.focusBar() else host.focusRail()
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (!fromTrash) bar.focusTrash()
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                val row = visibleRows().firstOrNull { it.items.isNotEmpty() }
+                if (row == null || !row.focusChosen()) historyList?.focusRow(0)
+            }
+        }
+    }
+
+    /** Search: a history row picked: searched at once, the words in the bar and focus there (to change them). */
+    private fun onHistoryPick(words: String) {
+        val bar = searchBar ?: return
+        bar.setText(words)
+        bar.focusBar()
+        search(words)
+        rememberSearch()
+    }
+
+    /** Search: OK held on a history row: its small window, with Remove. */
+    private fun onHistoryHold(words: String, row: View) {
+        val list = historyList ?: return
+        val at = list.indexOf(row)
+        val remove = HoldPopup.Button("Remove") {
+            hold.close(focusBack = false)
+            history?.let {
+                it.remove(words)
+                list.show(it.entries)
+            }
+            if (!list.focusRow(at)) searchBar?.focusBar()
+        }
+        hold.open(words, listOf(remove), row, row, hold.area(VodSizes.VIEWPORT_TOP), otherwise = { searchBar?.focusBar() })
+    }
+
+    /** Search: the trash button asks first (the app's question window), then the history goes. */
+    private fun confirmClearHistory() {
+        val activity = ctx as? Activity ?: return
+        FireDialog.ask(
+            activity,
+            "Clear search history?",
+            listOf<Pair<String, () -> Unit>>(
+                "Clear" to {
+                    history?.clear()
+                    historyList?.show(emptyList())
+                },
+                "Cancel" to {},
+            ),
+            focus = 1,
+        )
+    }
+
     companion object {
         /** Cards in a row (then See all). */
         const val ROW_CARDS = RowRules.ROW_CARDS
+        /** My List with nothing in it. */
+        const val MY_LIST_EMPTY = "Titles you add with + show up here"
         /** Rows are asked again when the page comes back after this long (the repository answers from its cache). */
         private const val RELOAD_MS = 10L * 60 * 1000
     }
