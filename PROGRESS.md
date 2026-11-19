@@ -237,7 +237,11 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       playing channel was started from, whichever group the guide shows.
 - [ ] **Live TV search** (user, 2026-11-19): a Search button on the Live TV page for channels and programmes, separate
       from the rail's Search tab (films and shows only).
-- [ ] Glass Home integration (small changes; shows FirePlayer 2.0's Continue Watching); FirePlayer 2.0 replaces 1.0.
+- [x] Glass Home integration (2026-11-19): FirePlayer 2.0 serves its Films & Shows Continue Watching to Glass Home and
+      resumes straight from it (verified on the Max: cold start to first frame in ~5 s, resumed at the saved point,
+      Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when
+      installed and opens it on a held Menu button; it reaches the TV through Glass Home's own release.
+      FirePlayer 1.0's data was cleared on the Max. Still open: 2.0 as the official signed release that replaces 1.0.
 
 ## Contracts that must keep working (checked at every increment)
 

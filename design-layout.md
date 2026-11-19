@@ -513,3 +513,12 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
 - Overlay guide: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-81a719be-5a58-43e6-8591-5473cf45fa43.png
 
 Concept discrepancies are not specifications: generated miniature shows transport controls not agreed for guide preview; group focus differs from white/blue rule; timeline cells and clip sizes are approximate. Written interaction requirements take precedence. Generated artwork requested as 4K was returned at 1672x941; do not label it native 4K.
+- 2026-11-19 · User: switch from FirePlayer 1.0 to 2.0. Glass Home shows and resumes FirePlayer 2.0's own Continue
+  Watching (the Films & Shows library, through the same provider columns and RESUME / PLAY_EPISODE intents; a card
+  plays straight away on the same file, Back returns to Glass Home), using FirePlayer 2.0 (`app.fireplayer.next`) when
+  it is installed and FirePlayer otherwise. Holding the remote's Menu button opens FirePlayer 2.0 instead of TiviMate
+  (Glass Home's Home service; same on/off setting). FirePlayer 1.0's data (watch history and settings) was cleared on
+  the Max at the user's request; its settings were compared with 2.0's first and the user chose NOT to copy the five
+  that differed (Sound info pod hidden, subtitle shadow Light, Preview while skipping on, English titles in TiviMate
+  on, Glass refresh 8). Still the user's to do: English titles in TiviMate and TiviMate's external player now belong
+  to FirePlayer 2.0.
