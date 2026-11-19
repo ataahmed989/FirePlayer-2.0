@@ -393,11 +393,16 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         shownEpisodes = eps
         cardsSeason = season
         if (newSeason) {
-            // Focus on a card that stays (the first) before any go.
             val inRow = episodes.focusedIndex() >= 0
-            if (inRow) episodes.items.getOrNull(0)?.requestFocus()
-            episodes.chosen = 0
-            episodes.motion.snap(0, isGrown = inRow)
+            if (inRow) {
+                // Focus on a card that stays (the first) before any go.
+                episodes.items.getOrNull(0)?.requestFocus()
+                episodes.chosen = 0
+            } else {
+                // At rest the row starts at the Play target when it's in this season (Down then only grows it), else E1.
+                episodes.chosen = TitleRules.focusIndex(eps, target?.episode)
+            }
+            episodes.motion.snap(episodes.chosen, isGrown = inRow)
         } else {
             val f = RowRules.focusAfter(episodes.focusedIndex(), episodes.cards.size, false, cards.size, false)
             if (f >= 0) episodes.items.getOrNull(f)?.requestFocus()
@@ -529,6 +534,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
             restore = saved
             restoreHolder = root.findFocus()
         }
+        // A row kept grown while the page was covered, and focus isn't back in it: its card shrinks.
+        for (row in rows()) if (row.focusedIndex() < 0) row.motion.shrink()
     }
 
     private fun applyRestore() {
@@ -546,6 +553,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         Part.PILLS -> {
             val i = seasonIndex(s.season)
             if (pills.visibility != View.VISIBLE || i < 0) false else {
+                // The season it was on shows at once (not after the pills' settle).
+                s.season?.let { if (it != shownSeason) applySeason(it) }
                 pills.chosen = i
                 pills.motion.snap(i, isGrown = true)
                 pills.focusChosen()
@@ -697,6 +706,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
+        // Covered by the page opened from it (or gone): the row stays as it was, its card grown, for coming back.
+        if (paused || released) return false
         // Into its small window: the card stays grown (and the header on its episode) until the window closes.
         if (host.hold.isOpen && host.hold.heldRow === row) return false
         press.cancel()

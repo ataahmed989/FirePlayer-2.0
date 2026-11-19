@@ -461,6 +461,11 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
     height; to check on the TV.
   - A show's page glides up so the buttons sit 14 dp from the top for More Like This (no cut line of text above them).
   - More Like This posters from TMDB are decoded no larger than their source (w185: 185 x 247 px).
+  - The backdrop is the poster's own background when the poster has one (the picture the page header already showed,
+    usually on disk), else the details' first; it is chosen once and never swapped during the visit.
+  - At rest a show's episode row starts at the Play target's card when it is in the season shown (else E1), so Down
+    from the buttons only grows that card instead of gliding along the row.
+  - A page covered by one opened from its More Like This keeps that row as it was (the poster grown) for coming back.
 
 ## Concept references (local preview artifacts)
 
