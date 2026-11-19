@@ -79,7 +79,7 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
     /** The look's surface: a glass panel, or the classic dark one; the picture follows its corners, 1 dp inside. */
     fun applyLook() {
         Glass.background(this, Glass.Kind.PANEL)
-        val r = Glass.cornerRadius(Glass.Kind.PANEL, t.dp(cardW), t.dp(VodSizes.HEADER_H), t.density)
+        val r = Glass.cornerRadius(context, Glass.Kind.PANEL, t.dp(cardW), t.dp(VodSizes.HEADER_H))
         art.radius = r - t.dpf(VodSizes.HEADER_ART_INSET)
     }
 

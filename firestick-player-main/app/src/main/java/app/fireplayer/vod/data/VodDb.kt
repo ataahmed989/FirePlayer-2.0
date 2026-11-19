@@ -51,6 +51,13 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
         if (oldVersion < 2) db.execSQL(CREATE_EPISODE_PROGRESS)
     }
 
+    /** Each time it's opened: ids learnt more than [IdMap.HIT_KEPT_MS] ago go (TMDB's 6-month limit). */
+    override fun onOpen(db: SQLiteDatabase) {
+        if (db.isReadOnly) return
+        val before = System.currentTimeMillis() - IdMap.HIT_KEPT_MS
+        if (before > 0) runCatching { db.delete("tmdb_imdb", "at < ?", arrayOf(before.toString())) }
+    }
+
     // ---- LibraryStore ----
 
     override fun load(): LibraryStore.Saved {

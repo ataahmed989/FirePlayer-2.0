@@ -284,6 +284,25 @@ class TitlePageRepositoryTest {
     }
 
     @Test
+    fun moreLikeThisBuiltFromPartsNeverStoredWaitsForTheFreshAnswer() {
+        val genre = Cinemeta.catalogUrl(Kind.MOVIE, "top", "Action", 0)
+        http.answers[genre] = Fixtures.text("cinemeta_catalog_movie_genre_action_cut.json")
+        val r = repo()
+        // Another Action film's page stored the genre's Popular page.
+        r.allSimilar(Title("tt0000001", Kind.MOVIE, "Other", genres = listOf("Action")))
+        assertEquals(1, http.count(genre))
+        // Dune's meta was never stored: a list from the genre alone would be replaced by the director's films first.
+        serveDune()
+        http.answers[Cinemeta.searchUrl(Kind.MOVIE, "Denis Villeneuve")] = Fixtures.text("cinemeta_search_director_villeneuve.json")
+        val calls = r.allSimilar(dune.copy(genres = listOf("Action")))
+        assertEquals(listOf(true), calls.map { it.second })
+        assertEquals("tt1160419", calls.single().first.first().title.id)
+        // Stored now (parts old, not missing): the stored answer shows at once, the fresh one follows.
+        now += CinemetaDetails.FRESH_MS + 1
+        assertEquals(listOf(false, true), repo().allSimilar(dune.copy(genres = listOf("Action"))).map { it.second })
+    }
+
+    @Test
     fun aStandInResolvesFromTheIdMapOrItsOwnDetailsCall() {
         key = "k".repeat(32)
         val r = repo()

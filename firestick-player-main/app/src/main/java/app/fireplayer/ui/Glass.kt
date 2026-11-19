@@ -52,20 +52,23 @@ object Glass {
 
     /**
      * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on: the glass shape's own
-     * ([GlassBakes.radius]) or the classic drawable's (res/drawable/bg_*.xml: panels and popups 15 dp, pills 20 dp,
-     * chips 5 dp, rows 9 dp, circles round; never more than half the shorter side). For something drawn to follow a
-     * surface's corners (a header's picture inside its card).
+     * ([GlassBakes.radius]) or the classic drawable's (res/drawable/bg_*.xml, whose corners are the radius_* dimens read
+     * here: panels and popups 15 dp, pills 20 dp, chips 5 dp, rows 9 dp; circles round; never more than half the
+     * shorter side). For something drawn to follow a surface's corners (a header's picture inside its card).
      */
-    fun cornerRadius(kind: Kind, w: Int, h: Int, density: Float): Float {
-        if (on) return GlassBakes.radius(kind, w, h, density)
+    fun cornerRadius(context: Context, kind: Kind, w: Int, h: Int): Float {
+        val res = context.resources
+        if (on) return GlassBakes.radius(kind, w, h, res.displayMetrics.density)
         val half = minOf(w, h) / 2f
-        return when (kind) {
-            Kind.PANEL, Kind.POPUP, Kind.DIALOG_POPUP -> minOf(15f * density, half)
-            Kind.PILL -> minOf(20f * density, half)
-            Kind.CIRCLE, Kind.MORE_ICON -> half
-            Kind.CHIP -> minOf(5f * density, half)
-            Kind.ROW -> minOf(9f * density, half)
+        val classic = when (kind) {
+            Kind.PANEL -> R.dimen.radius_panel
+            Kind.POPUP, Kind.DIALOG_POPUP -> R.dimen.radius_popup
+            Kind.PILL -> R.dimen.radius_pill
+            Kind.CHIP -> R.dimen.radius_chip
+            Kind.ROW -> R.dimen.radius_row
+            Kind.CIRCLE, Kind.MORE_ICON -> return half
         }
+        return minOf(res.getDimension(classic), half)
     }
 
     /** A new glass background of this shape, whatever the setting. Rows have no film of their own. */

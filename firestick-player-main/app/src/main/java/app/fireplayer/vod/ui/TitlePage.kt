@@ -28,6 +28,7 @@ import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.data.Callouts
+import app.fireplayer.vod.data.CinemetaDetails
 import app.fireplayer.vod.data.VodArt
 import app.fireplayer.vod.hasImdbId
 import app.fireplayer.vod.playTarget
@@ -90,13 +91,16 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     private val glide = Spring(VodSizes.PAGE_OMEGA, VodSizes.PAGE_SETTLE) { column.translationY = -it }
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
 
-    private var details = TitleDetails.of(opened)
+    /** What the poster says, its description read as the details read Cinemeta's (entities, a cut word ended). */
+    private var details = TitleDetails.of(opened.copy(description = CinemetaDetails.story(CinemetaDetails.clean(opened.description))))
     private var seasons: List<Season> = emptyList()
     /** The season whose cards show, and the one a pill is resting on (shown after [VodSizes.SETTLE_MS]). */
     private var shownSeason: Int? = null
     private var cardsSeason: Int? = null
     private var pendingSeason: Int? = null
     private var shownEpisodes: List<Episode> = emptyList()
+    /** The shown season's cards, all of them: the row holds the first ones only ([VodSizes.episodeWindow]). */
+    private var seasonCards: List<Card> = emptyList()
     private var target: PlayTarget? = null
     private var pendingMore: List<Card>? = null
     /** Where focus is (or was last) in the page. */
@@ -108,6 +112,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     private var detailsCancel: Cancel? = null
     private var moreCancel: Cancel? = null
     private var resolveCancel: Cancel? = null
+    /** The More Like This poster a pending [resolve] is for, or -1: it acts only while focus is still on it. */
+    private var resolving = -1
     private var detailsFresh = false
     private var moreFresh = false
     private var paused = false
@@ -118,8 +124,6 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     private var mode = TitleMode.WAITING
     private var logoUrl: String? = null
     private var backdropUrl: String? = null
-    /** The story stays put once shown past the first moments (TMDB's arriving later doesn't swap it). */
-    private var storyLocked = false
 
     init {
         root.addView(backdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -163,16 +167,16 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         main.removeCallbacksAndMessages(null)
         // The moment for the logo has passed.
         if (mode == TitleMode.WAITING) decide(TitleMode.NAME)
-        storyLocked = true
         pendingSeason?.let { applySeason(it) }
         if (glide.moving) glide.snap(glide.target)
+        // Pictures go, and the ones still queued for this page aren't fetched.
         for (row in rows()) {
             row.motion.settle()
-            row.releaseImages()
+            row.releaseImages(cancel = true)
         }
         press.cancel()
-        backdrop.release()
-        ImageLoader.release(header.logo)
+        backdrop.release(cancel = true)
+        ImageLoader.cancel(header.logo)
     }
 
     /** Shown again ([show]: back on top of the stack), or the screen started: pictures back, loads finished. */
@@ -236,8 +240,13 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         detailsCancel = null
         moreCancel?.cancel()
         moreCancel = null
+        cancelResolve()
+    }
+
+    private fun cancelResolve() {
         resolveCancel?.cancel()
         resolveCancel = null
+        resolving = -1
     }
 
     // ---- Data -------------------------------------------------------------------------------------------------------
@@ -323,8 +332,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         buttons.setMyList(r?.inMyList(opened.id) == true)
         // The repository's rule for the one chip (the same one its tests check against the research's fixtures).
         val callout = Callouts.choose(details, filmWatched, { r?.isEpisodeWatched(it) == true }, target, now)
-        val storyNow = header.storyShown
-        val story = if (storyLocked && storyNow.isNotEmpty()) storyNow else TitleRules.story(details)
+        // TMDB's overview once it's there, else Cinemeta's (a story shown is never blanked); new words fade in.
+        val story = TitleRules.story(details).ifEmpty { header.storyShown }
         header.show(TitleRules.facts(details), callout?.let { TitleRules.calloutText(it, year) }, story, TitleRules.castLine(details))
         if (mode == TitleMode.NAME) header.showName(details.title.name)
         if (isShow) refreshSeasons()
@@ -381,6 +390,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
                 episodes.bind(emptyList(), false)
             }
             shownEpisodes = emptyList()
+            seasonCards = emptyList()
             cardsSeason = null
             return
         }
@@ -391,7 +401,10 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         }
         val newSeason = cardsSeason != season
         shownEpisodes = eps
+        seasonCards = cards
         cardsSeason = season
+        // A long season (a daily show's 200) is held a window at a time: the first cards, more as focus nears the end.
+        val n: Int
         if (newSeason) {
             val inRow = episodes.focusedIndex() >= 0
             if (inRow) {
@@ -402,12 +415,16 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
                 // At rest the row starts at the Play target when it's in this season (Down then only grows it), else E1.
                 episodes.chosen = TitleRules.focusIndex(eps, target?.episode)
             }
+            n = VodSizes.episodeWindow(cards.size, episodes.chosen, 0)
+            // The old season's pictures, and their downloads still queued, go.
+            episodes.releaseImages(cancel = true)
             episodes.motion.snap(episodes.chosen, isGrown = inRow)
         } else {
-            val f = RowRules.focusAfter(episodes.focusedIndex(), episodes.cards.size, false, cards.size, false)
+            n = VodSizes.episodeWindow(cards.size, episodes.chosen, episodes.items.size)
+            val f = RowRules.focusAfter(episodes.focusedIndex(), episodes.cards.size, false, n, false)
             if (f >= 0) episodes.items.getOrNull(f)?.requestFocus()
         }
-        episodes.bind(cards, false)
+        episodes.bind(cards.subList(0, n), false)
         if (episodes.visibility != View.VISIBLE) {
             episodes.motion.snap(episodes.chosen, isGrown = false)
             episodes.visibility = View.VISIBLE
@@ -469,7 +486,6 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     }
 
     private val decideTitle = Runnable {
-        storyLocked = true
         if (mode == TitleMode.WAITING) decide(TitleMode.NAME)
     }
 
@@ -565,8 +581,9 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
                 applySeason(s.season)
                 placePills(s.season)
             }
-            val i = episodes.cards.indexOfFirst { it.title.id == s.episodeId }.takeIf { it >= 0 } ?: s.episodeIndex
+            val i = seasonCards.indexOfFirst { it.title.id == s.episodeId }.takeIf { it >= 0 } ?: s.episodeIndex
             if (episodes.visibility != View.VISIBLE || episodes.items.isEmpty()) false else {
+                holdEpisodes(i)
                 episodes.chosen = i.coerceIn(0, episodes.items.size - 1)
                 episodes.motion.snap(episodes.chosen, isGrown = true)
                 episodes.focusChosen()
@@ -634,7 +651,14 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         }
         if (episodes.items.isEmpty()) return
         episodes.chosen = TitleRules.focusIndex(shownEpisodes, tgt)
+        holdEpisodes(episodes.chosen)
         episodes.focusChosen()
+    }
+
+    /** The row holds the shown season's cards up to [i] and some way past it (a long season's window grows). */
+    private fun holdEpisodes(i: Int) {
+        val n = VodSizes.episodeWindow(seasonCards.size, i, episodes.items.size)
+        if (n > episodes.items.size) episodes.bind(seasonCards.subList(0, n), false)
     }
 
     private fun moveDownFrom(from: Part) {
@@ -666,6 +690,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     override fun onButtonFocused(which: TitleButtons.Which) {
         part = Part.BUTTONS
         press.cancel()
+        cancelResolve()
         main.removeCallbacks(follow)
         header.unfollow()
         glide.glideTo(0f)
@@ -680,6 +705,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
 
     override fun onItemFocused(row: TitleRow, index: Int) {
         press.cancel()
+        // A poster being looked up acts only while focus stays on it.
+        if (row !== more || index != resolving) cancelResolve()
         part = partOf(row)
         if (row !== episodes) {
             main.removeCallbacks(follow)
@@ -697,6 +724,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
                 }
             }
             episodes -> {
+                holdEpisodes(index)
                 main.removeCallbacks(follow)
                 main.postDelayed(follow, VodSizes.SETTLE_MS)
             }
@@ -716,7 +744,10 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
                 main.removeCallbacks(follow)
                 header.unfollow()
             }
-            more -> pendingMore?.let { showMore(it) }
+            more -> {
+                cancelResolve()
+                pendingMore?.let { showMore(it) }
+            }
             pills -> pendingSeason?.let { applySeason(it) }
         }
         return true
@@ -758,7 +789,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
             }
             more -> {
                 val card = more.cards.getOrNull(index) ?: return
-                resolve(card.title) { host.openNext(it) }
+                resolve(card.title, index) { host.openNext(it) }
             }
         }
     }
@@ -790,7 +821,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
             }
             more -> {
                 val card = more.cards.getOrNull(index) ?: return
-                resolve(card.title) { found ->
+                resolve(card.title, index) { found ->
                     val anchor = row.cardViewAt(index) ?: return@resolve
                     if (!anchor.isShown) return@resolve
                     hold.openPoster(card.copy(title = found), false, anchor, row.items[index], hold.area(VodSizes.HOLD_INSET), row, this) { takeFocusBack() }
@@ -799,17 +830,24 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         }
     }
 
-    /** [t] with its IMDb id: at once, or once the repository finds it ("Couldn't load this title" if it can't). */
-    private fun resolve(title: Title, then: (Title) -> Unit) {
+    /**
+     * [title] (More Like This poster [index]) with its IMDb id: at once, or once the repository finds it ("Couldn't
+     * load this title" if it can't). Found later, it acts only while focus is still on that poster with no window open;
+     * focus moving off it cancels the lookup ([cancelResolve]).
+     */
+    private fun resolve(title: Title, index: Int, then: (Title) -> Unit) {
         if (title.hasImdbId) {
             then(title)
             return
         }
         val r = host.repo ?: return
-        resolveCancel?.cancel()
+        cancelResolve()
+        resolving = index
         resolveCancel = r.resolve(title) { found ->
             resolveCancel = null
+            resolving = -1
             if (released || paused) return@resolve
+            if (more.focusedIndex() != index || host.hold.isOpen || host.sidePanel.isOpen) return@resolve
             if (found == null || !found.hasImdbId) host.showNotice(COULDNT_OPEN) else then(found)
         }
     }
@@ -842,6 +880,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
 
     private fun openMoreWindow() {
         val r = host.repo ?: return
+        cancelResolve()
         val hold = host.hold
         val title = details.title
         val now = System.currentTimeMillis()

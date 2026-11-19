@@ -157,6 +157,11 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
         if (imageKey != null || bitmap != null) ImageLoader.release(this)
     }
 
+    /** As [releaseImage], and its picture isn't fetched at all if it's still queued for this card alone (a page left). */
+    fun cancelImage() {
+        if (imageKey != null || bitmap != null) ImageLoader.cancel(this)
+    }
+
     private fun pictureOf(c: Card): String? = when (kind) {
         Kind.WIDE -> wideArt(c)
         Kind.EPISODE -> c.picture

@@ -38,6 +38,8 @@ class VodSizesTitleTest {
         assertEquals(36f, VodSizes.CHIP_H)
         assertEquals(16f, VodSizes.CHIP_PAD)
         assertEquals(10f, VodSizes.CHIP_GAP)
+        // The season shown: the accent (#3D8BFF in colors.xml) at 40%, the Episodes sheet's 0x663D8BFF.
+        assertEquals(0x663D8BFF, (VodSizes.CHIP_SELECTED_ALPHA shl 24) or 0x3D8BFF)
         assertEquals(14f, VodSizes.PAGE_OMEGA)
         assertEquals(0.5f, VodSizes.PAGE_SETTLE)
         assertEquals(650L, VodSizes.HERO_FADE_MS)
@@ -101,6 +103,32 @@ class VodSizesTitleTest {
             (8 * perChar + 2 * VodSizes.BUTTON_PAD + VodSizes.BUTTON_ICON + VodSizes.BUTTON_ICON_GAP) +
             (7 * perChar + 2 * VodSizes.BUTTON_PAD) + 2 * VodSizes.BUTTON_H + 5 * VodSizes.BUTTON_GAP
         assertTrue(widest < VodSizes.tabHeaderW())
+    }
+
+    @Test
+    fun aLongSeasonIsHeldAWindowAtATime() {
+        // A usual season: all its cards.
+        assertEquals(12, VodSizes.episodeWindow(12, 0, 0))
+        assertEquals(0, VodSizes.episodeWindow(0, 0, 0))
+        // A daily show's 200: 40 at first, 40 more once focus is within 10 of the last held, never fewer than held.
+        assertEquals(40, VodSizes.episodeWindow(200, 0, 0))
+        assertEquals(40, VodSizes.episodeWindow(200, 29, 40))
+        assertEquals(80, VodSizes.episodeWindow(200, 30, 40))
+        assertEquals(80, VodSizes.episodeWindow(200, 31, 80))
+        assertEquals(200, VodSizes.episodeWindow(200, 150, 0))
+        assertEquals(100, VodSizes.episodeWindow(100, 95, 80))
+        // The Play target far into the season: held from the start.
+        assertTrue(VodSizes.episodeWindow(200, 120, 0) > 120 + VodSizes.EPISODE_BIND_AFTER)
+    }
+
+    @Test
+    fun theHeaderStartsWhereTheRowsDo() {
+        // The text column and the buttons start at the content's x (screen 94 dp), as the rows' strips (PAGE_X) do.
+        assertEquals(VodSizes.PAGE_X, VodSizes.titleTextX())
+        assertEquals(VodSizes.CONTENT_SCREEN_X, VodSizes.RAIL + VodSizes.titleTextX())
+        // The facts row (the tab headers' width) then ends 24 dp from the screen's right edge; the title box inside it.
+        assertEquals(VodSizes.SCREEN_W - VodSizes.RIGHT_MARGIN, VodSizes.RAIL + VodSizes.titleTextX() + VodSizes.tabHeaderW())
+        assertTrue(VodSizes.TITLE_BOX_W <= VodSizes.tabHeaderW() && VodSizes.TITLE_TEXT_W <= VodSizes.tabHeaderW())
     }
 
     @Test

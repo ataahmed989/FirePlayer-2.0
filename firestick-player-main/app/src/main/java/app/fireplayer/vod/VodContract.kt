@@ -405,10 +405,10 @@ fun standInId(kind: Kind, tmdbId: Int): String = "tmdb:${if (kind == Kind.MOVIE)
  *   season ([PlayAction.PLAY], "Play S1 E1").
  * - The record's episode not finished: it again, resumed when [Position.resumable] ("Resume S2 E5 · 12m left"), else
  *   from the start ("Play S3 E2").
- * - Finished ([LastPlayed.finished]): the next regular episode in order, across seasons ("Play S2 E6"), when it has
- *   aired ([PlayTarget.newEpisodes] when it aired after the record was saved). Not aired yet: caught up, so the first
- *   aired episode ([PlayAction.WATCH_AGAIN]) with [PlayTarget.upcoming] set; an episode further on is never jumped to.
- *   No next (the last episode): the first aired episode ([PlayAction.WATCH_AGAIN]).
+ * - Finished ([LastPlayed.finished]): the next aired regular episode after it, in order, across seasons ("Play S2
+ *   E6"; [PlayTarget.newEpisodes] when it aired after the record was saved), passing over any not aired (a future or
+ *   missing date) on the way. None aired after it: caught up, so the first aired episode ([PlayAction.WATCH_AGAIN])
+ *   with [PlayTarget.upcoming] the next one listed, if any.
  * Null when no regular episode has aired yet.
  */
 fun playTarget(episodes: List<Episode>, last: LastPlayed?, now: Long): PlayTarget? {
@@ -426,8 +426,9 @@ fun playTarget(episodes: List<Episode>, last: LastPlayed?, now: Long): PlayTarge
             PlayTarget(at, PlayAction.PLAY)
         }
     }
-    val next = regular.getOrNull(i + 1) ?: return PlayTarget(first, PlayAction.WATCH_AGAIN)
-    if (!next.aired(now)) return PlayTarget(first, PlayAction.WATCH_AGAIN, upcoming = next)
+    val after = regular.subList(i + 1, regular.size)
+    val next = after.firstOrNull { it.aired(now) }
+        ?: return PlayTarget(first, PlayAction.WATCH_AGAIN, upcoming = after.firstOrNull())
     return PlayTarget(next, PlayAction.PLAY, newEpisodes = (next.released ?: 0L) > last.position.at)
 }
 

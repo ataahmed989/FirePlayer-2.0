@@ -179,11 +179,16 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         )
     }
 
-    /** Lets both pictures go (the page is hidden). */
-    fun release() {
+    /** Lets both pictures go (the page is hidden); with [cancel] (a title page leaving) their queued downloads go too. */
+    fun release(cancel: Boolean = false) {
         fader?.cancel()
-        ImageLoader.release(this)
-        ImageLoader.release(previewTarget)
+        if (cancel) {
+            ImageLoader.cancel(this)
+            ImageLoader.cancel(previewTarget)
+        } else {
+            ImageLoader.release(this)
+            ImageLoader.release(previewTarget)
+        }
         shown = null; shownShader = null
         before = null; beforeShader = null
         invalidate()

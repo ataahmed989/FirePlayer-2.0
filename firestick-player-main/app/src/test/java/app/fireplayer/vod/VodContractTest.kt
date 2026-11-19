@@ -91,6 +91,22 @@ class VodContractTest {
     }
 
     @Test
+    fun aFinishedEpisodeGoesOnToTheNextAiredPastOneNotAired() {
+        // S3E5 has no date (counted as not aired) while S3E6 and S3E7 aired: Play goes on to S3E6, not "Up to date".
+        val gap = listOf(ep(3, 4, 30), ep(3, 5, null), ep(3, 6, 20), ep(3, 7, 13))
+        val t = playTarget(gap, record(3, 4, 0L, marked = true), now)!!
+        assertEquals(ep(3, 6, 20), t.episode)
+        assertEquals(PlayAction.PLAY, t.action)
+        assertNull(t.upcoming)
+        // Nothing aired after it: caught up, the next one listed named.
+        val ahead = listOf(ep(3, 4, 30), ep(3, 5, null), ep(3, 6, -4))
+        val caught = playTarget(ahead, record(3, 4, 0L, marked = true), now)!!
+        assertEquals(ep(3, 4, 30), caught.episode)
+        assertEquals(PlayAction.WATCH_AGAIN, caught.action)
+        assertEquals(ep(3, 5, null), caught.upcoming)
+    }
+
+    @Test
     fun resumeRules() {
         val length = 100 * 60_000L
         assertFalse(Position(30_000L, length, 0).resumable)

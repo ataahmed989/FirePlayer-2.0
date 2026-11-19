@@ -72,8 +72,11 @@ internal object VodSizes {
     const val CHIP_GAP = 10f
     /** The rim of a flat surface in the glass look (chips, See all cards), dp (at least a pixel). */
     const val FLAT_RIM = 1f
-    /** The season shown (not focused): the Episodes sheet's fill and ring (EpisodesSheet.stylePill). */
-    const val CHIP_SELECTED_FILL = 0x663D8BFF
+    /**
+     * The season shown (not focused): the Episodes sheet's fill and ring (EpisodesSheet.stylePill), both the accent
+     * ([Tokens.accent]); the fill at this alpha (40%).
+     */
+    const val CHIP_SELECTED_ALPHA = 0x66
     const val CHIP_SELECTED_RIM = 1.5f
 
     // The page: the name line, the viewport under it (which clips), the header.
@@ -288,6 +291,12 @@ internal object VodSizes {
     /** Pictures bound after the chosen card: episodes (4 with focus in More Like This), posters (6 on a show). */
     const val EPISODE_BIND_AFTER = 5
     const val POSTER_BIND_AFTER = 7
+    /**
+     * A long season's episode row (a daily show's 200) holds its cards this many at a time, and this many more once
+     * focus comes within [EPISODE_AHEAD] of the last one held ([episodeWindow]).
+     */
+    const val EPISODE_WINDOW = 40
+    const val EPISODE_AHEAD = 10
 
     // ---- Per row style ----
 
@@ -361,6 +370,9 @@ internal object VodSizes {
 
     // ---- The title page's layout (the page reads real view positions; these say where they come out) ----
 
+    /** The header block's left edge in the page: the content's x, where the rows' strips start ([PAGE_X]). */
+    fun titleTextX(): Float = PAGE_X
+
     /** The facts row's top: under the title box. */
     fun titleFactsTop(): Float = TITLE_TOP + TITLE_BOX_H + FACTS_GAP
 
@@ -371,6 +383,17 @@ internal object VodSizes {
     fun titleCastTop(): Float = titleStoryTop() + titleStoryH() + CAST_GAP
     fun titleSourceTop(): Float = titleCastTop() + CAST.lineSp + SOURCE_GAP
     fun titleButtonsTop(): Float = titleSourceTop() + SOURCE.lineSp + BUTTONS_GAP_ABOVE
+
+    /**
+     * How many of a season's [total] episode cards the row holds with card [at] chosen and [have] held now: never fewer
+     * than [have], at least [EPISODE_WINDOW], and [EPISODE_WINDOW] more while [at] is within [EPISODE_AHEAD] of the end
+     * (so a held D-pad adds cards in steps, not one per press); never more than [total].
+     */
+    fun episodeWindow(total: Int, at: Int, have: Int): Int {
+        var n = maxOf(have, EPISODE_WINDOW)
+        while (at + EPISODE_AHEAD >= n && n < total) n += EPISODE_WINDOW
+        return minOf(n, total).coerceAtLeast(0)
+    }
 
     /** A show's rows under the header: the season pills' band (when there are pills), the episodes', More Like This'. */
     fun pillsBandH(): Float = bandH(RowStyle.SEASONS, header = false, gapBelow = PILLS_GAP)

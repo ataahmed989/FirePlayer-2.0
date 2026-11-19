@@ -204,6 +204,17 @@ object ImageLoader {
     }
 
     /**
+     * As [release], and a picture still queued for nobody else is not fetched at all (a page that has left: its
+     * pictures' downloads go, not just their decodes). One already being fetched finishes, to disk. Main thread.
+     */
+    fun cancel(target: ImageTarget) {
+        val key = target.imageKey
+        release(target)
+        val job = key?.let { jobs[it] } ?: return
+        if (job.waiters.isEmpty() && !job.warm && pool.remove(job)) jobs.remove(key)
+    }
+
+    /**
      * Downloads [url] to the disk cache ahead of need, without decoding it. Main thread or any; a bounded queue, the
      * newest first.
      */
@@ -277,7 +288,7 @@ object ImageLoader {
                     if (!wanted) {
                         skipped = true
                     } else {
-                        result = if (inside) decodeInside(bytes, w, h, config) else decode(bytes, w, h, config, cropY)
+                        result = if (inside) decodeInside(bytes, w, h, config) else decode(bytes, w, h, config, cropY, mutable = transform != null)
                         if (result == null) {
                             block(url, FAILED_FOR_MS)
                         } else if (transform != null) {
@@ -413,9 +424,10 @@ object ImageLoader {
 
     /**
      * Decodes [bytes]: with [h] 0, about [w] wide keeping its shape (an image view crops it); otherwise exactly
-     * [w] x [h], the middle of the picture scaled to fill it ([cropY] moves the crop vertically).
+     * [w] x [h], the middle of the picture scaled to fill it ([cropY] moves the crop vertically). [mutable]: a transform
+     * draws into it next (the backdrop's baked fade), so one decoded at exactly that size comes mutable (no copy).
      */
-    private fun decode(bytes: ByteArray, w: Int, h: Int, config: Bitmap.Config, cropY: Float): Bitmap? {
+    private fun decode(bytes: ByteArray, w: Int, h: Int, config: Bitmap.Config, cropY: Float, mutable: Boolean = false): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         val sw = bounds.outWidth
@@ -433,6 +445,7 @@ object ImageLoader {
         val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = if (config == Bitmap.Config.ARGB_8888) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
+            inMutable = mutable
         }) ?: return null
         if (source.width == w && source.height == h && source.config == config) return source
         val out = Bitmap.createBitmap(w, h, config)

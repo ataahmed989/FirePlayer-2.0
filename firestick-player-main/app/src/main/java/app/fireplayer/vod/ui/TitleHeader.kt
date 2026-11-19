@@ -22,6 +22,8 @@ import app.fireplayer.ui.ImageTarget
  * three lines of story, one cast line, the source line (kept empty until step 3 fills it, its height reserved so the
  * buttons never move), then the buttons ([TitleButtons]). Its text styles are the page headers' ([VodSizes]); while an
  * episode card is chosen it shows that episode's facts and overview instead ([follow]), the title and backdrop staying.
+ * A story that changes once shown (TMDB's overview arriving after Cinemeta's) fades out and in, with the page headers'
+ * text fade ([VodSizes.HEADER_TEXT_FADE_MS]).
  */
 @SuppressLint("ViewConstructor")
 class TitleHeader(context: Context, private val t: Tokens, buttonsListener: TitleButtons.Listener) : LinearLayout(context) {
@@ -74,12 +76,16 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
     private var showStory = ""
     private var showCallout: String? = null
     private var following = false
+    /** The story's words last asked for (shown, or fading in). */
+    private var storyWanted = ""
 
     init {
         orientation = VERTICAL
         // Glass pads and the circles' names draw outside the views.
         clipChildren = false
         clipToPadding = false
+        // Everything starts at the content's x (screen 94 dp), where the rows' cards do.
+        setPadding(t.dp(VodSizes.titleTextX()), 0, 0, 0)
         titleBox.addView(logo, FrameLayout.LayoutParams(t.dp(VodSizes.LOGO_W), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.START))
         titleBox.addView(name, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         logo.visibility = INVISIBLE
@@ -130,17 +136,17 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
         showStory = storyText
         showCallout = calloutText
         if (cast.text.toString() != castLine) cast.text = castLine
-        if (!following) applyTitleText()
+        if (!following) applyTitleText(fadeStory = true)
     }
 
-    /** The story as it shows for the title (to tell whether a later one may replace it). */
+    /** The story as it shows for the title (kept when a later answer has none; an episode without an overview shows it). */
     val storyShown: String get() = showStory
 
     /** An episode card is chosen: its facts and overview; the callout and cast line hide (their room kept). */
     fun follow(factsLine: String, overview: String) {
         following = true
         setFacts(factsLine)
-        if (story.text.toString() != overview) story.text = overview
+        setStory(overview, fade = false)
         callout.visibility = INVISIBLE
         cast.visibility = INVISIBLE
     }
@@ -150,12 +156,12 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
         if (!following) return
         following = false
         cast.visibility = VISIBLE
-        applyTitleText()
+        applyTitleText(fadeStory = false)
     }
 
-    private fun applyTitleText() {
+    private fun applyTitleText(fadeStory: Boolean) {
         setFacts(showFacts)
-        if (story.text.toString() != showStory) story.text = showStory
+        setStory(showStory, fadeStory)
         val c = showCallout
         if (c.isNullOrEmpty()) {
             callout.visibility = INVISIBLE
@@ -164,6 +170,25 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
             callout.visibility = VISIBLE
         }
         placeCallout()
+    }
+
+    /**
+     * The story's words: at once, or with [fade] (words already showing, on screen) faded out and the new ones in. Only
+     * the story's alpha changes; nothing is laid out.
+     */
+    private fun setStory(text: String, fade: Boolean) {
+        if (text == storyWanted) return
+        storyWanted = text
+        story.animate().cancel()
+        if (!fade || story.text.isEmpty() || !isShown) {
+            story.alpha = 1f
+            story.text = text
+            return
+        }
+        story.animate().alpha(0f).setDuration(VodSizes.HEADER_TEXT_FADE_MS).withEndAction {
+            story.text = text
+            story.animate().alpha(1f).setDuration(VodSizes.HEADER_TEXT_FADE_MS).start()
+        }.start()
     }
 
     /** The facts line, cut to its width once here (so the line never lays anything out again). */

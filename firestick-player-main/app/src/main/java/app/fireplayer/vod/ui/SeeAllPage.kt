@@ -116,8 +116,9 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         grid.getChildAt(chosen).requestFocus()
     }
 
-    fun releaseImages() {
-        for (i in 0 until grid.childCount) (grid.getChildAt(i) as? CardView)?.releaseImage()
+    /** Lets every poster's picture go; with [cancel] (covered by a title page), queued ones aren't fetched. */
+    fun releaseImages(cancel: Boolean = false) {
+        for (i in 0 until grid.childCount) (grid.getChildAt(i) as? CardView)?.let { if (cancel) it.cancelImage() else it.releaseImage() }
     }
 
     /** Pictures for the grid rows near the chosen poster; the others let theirs go. */

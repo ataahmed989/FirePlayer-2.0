@@ -139,11 +139,14 @@ internal object TitleRules {
     /**
      * A show's Play: "Play S1 E1", "Resume S2 E5 · 12m left" (with Play from beginning: this episode again), "Play S2
      * E6", "Watch again · S1 E1"; "Coming Nov 20" when no episode has aired; "Play" while the episodes aren't known.
+     * Listed with Specials only ([playTarget] never starts one): "Play" dimmed and passed by, as Sources is left out;
+     * the specials play from their cards.
      */
     fun showPlay(d: TitleDetails, target: PlayTarget?, thisYear: Int): Play {
         if (target == null) {
+            if (d.episodes.isEmpty()) return Play("Play")
             val first = d.episodes.filter { it.season > 0 }.minWithOrNull(compareBy({ it.season }, { it.episode }))
-                ?: return Play("Play")
+                ?: return Play("Play", enabled = false)
             val day = first.day?.let { "Coming ${shortDay(it, thisYear)}" } ?: "Coming soon"
             return Play(day, enabled = false)
         }

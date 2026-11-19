@@ -15,6 +15,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import app.fireplayer.R
 import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.Tokens
@@ -166,11 +167,13 @@ object Buttons {
             clipChildren = false
             clipToPadding = false
             addView(button, LayoutParams(t.dp(sizeDp), t.dp(sizeDp)))
-            // The style's layout values don't apply to a view made in code: its gap and hanging sides, here.
+            // The style's layout values don't apply to a view made in code: its gap and hanging sides, from the same
+            // dimens the style reads (res/values/dimens.xml).
+            val side = resources.getDimensionPixelSize(R.dimen.button_label_side)
             addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = t.dp(LABEL_GAP)
-                leftMargin = -t.dp(LABEL_HANG)
-                rightMargin = -t.dp(LABEL_HANG)
+                topMargin = resources.getDimensionPixelSize(R.dimen.button_label_gap)
+                leftMargin = side
+                rightMargin = side
             })
             Tokens.focusEffect(button, Tokens.GROW_CIRCLE, label)
             applyLook()
@@ -206,19 +209,20 @@ object Buttons {
         gravity = Gravity.CENTER
         val pad = t.dp(padX)
         setPadding(pad, 0, pad, 0)
-        setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text)))
+        setTextColor(buttonColors(context))
     }
 
     /**
-     * A flat chip's surface, [radius] px: focused white; selected (the season shown) [selectedFill] with a blue ring
-     * [selectedRim] dp wide; otherwise the glass look's faint fill and [rim] dp rim, or the classic row fill.
+     * A flat chip's surface, [radius] px: focused white; selected (the season shown) the accent at [selectedAlpha] with
+     * an accent ring [selectedRim] dp wide; otherwise the glass look's faint fill and [rim] dp rim, or the classic row
+     * fill.
      */
-    fun flatChipBackground(t: Tokens, radius: Float, rim: Float, selectedFill: Int, selectedRim: Float): Drawable =
+    fun flatChipBackground(t: Tokens, radius: Float, rim: Float, selectedAlpha: Int, selectedRim: Float): Drawable =
         StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { cornerRadius = radius; setColor(t.focusFill) })
             addState(intArrayOf(android.R.attr.state_selected), GradientDrawable().apply {
                 cornerRadius = radius
-                setColor(selectedFill)
+                setColor(ColorUtils.setAlphaComponent(t.accent, selectedAlpha))
                 setStroke(t.dp(selectedRim).coerceAtLeast(2), t.accent)
             })
             addState(intArrayOf(), GradientDrawable().apply {
@@ -234,8 +238,4 @@ object Buttons {
 
     /** Whether [v] is shown and can take focus now (a button closed up or dimmed is passed by). */
     fun canFocus(v: View): Boolean = v.visibility == View.VISIBLE && v.isFocusable
-
-    /** A round button's name: 4 dp under it, hanging out 48 dp each side (themes.xml ButtonLabel's layout values). */
-    private const val LABEL_GAP = 4f
-    private const val LABEL_HANG = 48f
 }

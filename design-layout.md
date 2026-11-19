@@ -454,9 +454,12 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Season pills are step 1's genre chips (36 dp, 14 sp) with the Episodes sheet's "season shown" fill and blue ring as
     the selected state; they move only when they don't fit.
   - While the header follows an episode card, the callout chip hides too.
-  - The story swaps to TMDB's overview only within the first 0.3 s, or when there was none.
+  - The story follows the details as they come (brief: TMDB's overview when there is one, else Cinemeta's, its cut
+    word ended), its words fading out and in with the page headers' 120 ms text fade when they change; only the title
+    (logo or name) never changes during a visit.
   - OK on an episode not aired yet says "Airs Dec 3"; holding OK on it does nothing.
-  - Sources is left out for a film not out yet and a show with nothing aired (so focus opens on (+), as briefed).
+  - Sources is left out for a film not out yet and a show with nothing aired (so focus opens on (+), as briefed). A
+    show listed with Specials only has Play dimmed and no Sources (Play never starts a special); its cards play them.
   - Starting backdrop fade: clear → solid from 15% to 70% of the width (eased), solid → clear from 36% to 60% of the
     height; to check on the TV.
   - A show's page glides up so the buttons sit 14 dp from the top for More Like This (no cut line of text above them).

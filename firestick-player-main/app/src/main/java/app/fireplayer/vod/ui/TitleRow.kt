@@ -196,9 +196,14 @@ class TitleRow(
     /** Shows genre chips: OK on one opens that genre's See all. */
     fun bindGenres(names: List<String>) = bindChips(names)
 
-    /** Shows chips with [names] (genres, seasons), filled in place. */
+    /**
+     * Shows chips with [names] (genres, seasons), filled in place. Focus on a chip that goes moves first to the last
+     * one that stays (a focused view taken out would hand focus anywhere); with none left, the caller moves it.
+     */
     fun bindChips(names: List<String>) {
         genres = names
+        val f = RowRules.focusAfter(focusedIndex(), items.size, false, names.size, false)
+        if (f >= 0) items.getOrNull(f)?.requestFocus()
         while (items.size > names.size) {
             val v = items.removeAt(items.size - 1)
             strip.removeView(v)
@@ -247,9 +252,10 @@ class TitleRow(
         }
     }
 
-    fun releaseImages() {
+    /** Lets every card's picture go; with [cancel] (a page left), pictures still queued for them aren't fetched. */
+    fun releaseImages(cancel: Boolean = false) {
         boundRange = IntRange.EMPTY
-        for (i in items.indices) cardViewAt(i)?.releaseImage()
+        for (i in items.indices) cardViewAt(i)?.let { if (cancel) it.cancelImage() else it.releaseImage() }
     }
 
     /** The card view drawn for item [i] (a Top 10 item's poster), or null for a chip. */
@@ -289,6 +295,6 @@ class TitleRow(
 
     /** A chip's surface: flat in both looks (glass in a moving strip would show the wrong wallpaper). */
     private fun chipBackground() = Buttons.flatChipBackground(
-        t, t.dpf(VodSizes.CHIP_H / 2f), VodSizes.FLAT_RIM, VodSizes.CHIP_SELECTED_FILL, VodSizes.CHIP_SELECTED_RIM,
+        t, t.dpf(VodSizes.CHIP_H / 2f), VodSizes.FLAT_RIM, VodSizes.CHIP_SELECTED_ALPHA, VodSizes.CHIP_SELECTED_RIM,
     )
 }

@@ -259,7 +259,9 @@ class DefaultVodRepository(
                 post(req) { onCards(first, true) }
                 return@execute
             }
-            if (first.isNotEmpty()) post(req) { onCards(first, false) }
+            // Built from stored parts that are only old: shown at once. With a part never stored (a first visit: no meta,
+            // no TMDB details), the fresh answer would replace it (the director's films first, TMDB's picks): it waits.
+            if (first.isNotEmpty() && !stored.missing) post(req) { onCards(first, false) }
             net.execute {
                 if (req.cancelled) return@execute
                 val cards = similarCards(title, Parts(fetch = true, req))
@@ -324,11 +326,13 @@ class DefaultVodRepository(
     }
 
     /**
-     * What a lookup uses: stored parts, fresh or not ([fetch] false: [allFresh] says whether all were), or fetched when
-     * old or missing ([fetch] true; a failed fetch keeps the stored copy).
+     * What a lookup uses: stored parts, fresh or not ([fetch] false: [allFresh] says whether all were, [missing] whether
+     * one was never stored), or fetched when old or missing ([fetch] true; a failed fetch keeps the stored copy).
      */
     private inner class Parts(val fetch: Boolean, private val req: Req) {
         var allFresh = true
+            private set
+        var missing = false
             private set
         val cancelled: Boolean get() = req.cancelled
 
@@ -336,6 +340,7 @@ class DefaultVodRepository(
             if (stored != null && stored.isFresh(clock())) return stored.value
             if (!fetch || req.cancelled) {
                 allFresh = false
+                if (stored == null) missing = true
                 return stored?.value
             }
             return (fetcher() ?: stored)?.value

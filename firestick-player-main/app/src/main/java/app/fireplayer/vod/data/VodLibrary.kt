@@ -322,11 +322,12 @@ class VodLibrary(
         synchronized(lock) {
             if (ready) return
             loaded?.let { s ->
-                // What changed before the store was read wins over what it holds.
-                s.listed.forEach { l -> listed.putIfAbsent(key(l.title.kind, l.title.id), l) }
-                s.watched.forEach { w -> watched.putIfAbsent(key(w.kind, w.id), w) }
-                s.progress.forEach { p -> progress.putIfAbsent(key(p.title.kind, p.title.id), p) }
-                s.positions.forEach { p -> positions.putIfAbsent(p.id, p) }
+                // What changed before the store was read wins over what it holds. (getOrPut, not putIfAbsent: that
+                // is API 24, and the app runs from API 22.)
+                s.listed.forEach { l -> listed.getOrPut(key(l.title.kind, l.title.id)) { l } }
+                s.watched.forEach { w -> watched.getOrPut(key(w.kind, w.id)) { w } }
+                s.progress.forEach { p -> progress.getOrPut(key(p.title.kind, p.title.id)) { p } }
+                s.positions.forEach { p -> positions.getOrPut(p.id) { p } }
                 // Stamps stay after anything stored (a clock set back since).
                 val stored = (s.listed.map { it.at } + s.watched.map { it.at } + s.progress.map { it.at } + s.positions.map { it.at })
                     .maxOrNull()

@@ -258,8 +258,8 @@ class VodPage(
         updateHeaderPause()
         if (titles.isOpen) {
             titles.resume()
-            // Behind the title page, only the row it was opened from keeps its pictures (for coming back).
-            originRow()?.let { row -> row.bindImages(RowMath.boundCards(row.chosen, row.items.size)) }
+            // Behind the title page, only the poster it was opened from keeps its picture (for coming back).
+            originRow()?.let { row -> row.bindImages(row.chosen..row.chosen) }
             return
         }
         updateImages()
@@ -532,9 +532,11 @@ class VodPage(
         titles.open(card.title)
         cover(true)
         updateHeaderPause()
-        // Only the title page's pictures (and the row it came from, for coming back).
+        // Only the title page's pictures, and the poster it came from (for coming back): the rows' and See all's go,
+        // their queued downloads too, and are bound again when the last title page closes (onStackClosed).
         val keep = originRow()
-        for (row in rows) if (row !== keep) row.releaseImages()
+        for (row in rows) if (row === keep) row.bindImages(row.chosen..row.chosen) else row.releaseImages(cancel = true)
+        seeAll?.releaseImages(cancel = true)
     }
 
     /** Hides the page's own content under a title page, or shows it again. */

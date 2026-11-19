@@ -238,6 +238,11 @@ class TitleRulesTest {
         assertFalse(unaired.enabled)
         // Episodes not known yet (details from the poster alone): plain Play.
         assertEquals(TitleRules.Play("Play"), TitleRules.showPlay(d.copy(seasons = emptyList()), null, 2026))
+        // Listed with Specials only: Play never starts one, so it's dimmed and passed by (Sources is left out too).
+        val special = Episode("tt2:0:1", 0, 1, "Special", released = NOW - 100_000, day = Day(2026, 11, 18))
+        val specials = d.copy(seasons = listOf(Season(0, listOf(special))))
+        assertNull(playTarget(specials.episodes, null, NOW))
+        assertEquals(TitleRules.Play("Play", enabled = false), TitleRules.showPlay(specials, null, 2026))
     }
 
     // ---- Episodes ----
