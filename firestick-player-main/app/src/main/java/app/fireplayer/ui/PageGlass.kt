@@ -112,13 +112,18 @@ class PageGlass(
         }
     }
 
-    /** What's under the windows changed (a [GlassLayer] was told to draw again). One check while no window shows. */
-    fun contentChanged() {
+    /**
+     * What's under the windows changed: [target], something in a [GlassLayer], is to be drawn again (null: something
+     * there). One check while no window shows. A window that lies inside the page (a hold window) redrawing itself, or
+     * something it holds, isn't a change under it: it's left out of the picture anyway.
+     */
+    fun contentChanged(target: View? = null) {
         if (!active) {
             stale = true
             return
         }
         if (capturing || pending || !running) return
+        if (target != null && inWindow(target)) return
         pending = true
         val now = SystemClock.uptimeMillis()
         handler.postAtTime(refresh, GlassStyle.nextCaptureAt(now, capturedAt, refreshPerSec()))
@@ -197,6 +202,20 @@ class PageGlass(
     /** Whether one can be seen just now. */
     private fun anySeen(): Boolean {
         for (d in drawables.keys) if (d.wantsBackdrop() && d.isOnScreen()) return true
+        return false
+    }
+
+    /** Whether [view] is a window showing the backdrop, or inside one. */
+    private fun inWindow(view: View): Boolean {
+        for (d in drawables.keys) {
+            if (!d.wantsBackdrop()) continue
+            val window = d.hostView() ?: continue
+            var v: View? = view
+            while (v != null) {
+                if (v === window) return true
+                v = v.parent as? View
+            }
+        }
         return false
     }
 
@@ -306,18 +325,19 @@ class PageGlass(
  */
 class GlassLayer @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
 
-    var onContentChanged: (() -> Unit)? = null
+    /** Called with what is to be drawn again, when that's known. */
+    var onContentChanged: ((target: View?) -> Unit)? = null
 
     /** Android 8 and later: every redrawing and every move, fade or resize of something inside comes through here. */
     override fun onDescendantInvalidated(child: View, target: View) {
         super.onDescendantInvalidated(child, target)
-        onContentChanged?.invoke()
+        onContentChanged?.invoke(target)
     }
 
     /** Before Android 8. */
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
     override fun invalidateChildInParent(location: IntArray?, dirty: Rect?): ViewParent? {
-        onContentChanged?.invoke()
+        onContentChanged?.invoke(null)
         return super.invalidateChildInParent(location, dirty)
     }
 }

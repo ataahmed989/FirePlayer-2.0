@@ -397,8 +397,8 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         /** Widened, with labels. */
         const val EXPANDED_DP = 212
         const val SIDE_DP = 7
-        /** Widened as a floating window: the tabs keep this much clear of the window's edges. */
-        const val WINDOW_PAD_DP = 6
+        /** Widened as a floating window: the tabs (and the white of the chosen one) keep this much clear of its edges. */
+        const val WINDOW_PAD_DP = 10
         /** The brand mark and name, collapsed and widened (the mark's box; the name shows only widened). */
         private const val MARK_DP = 30
         private const val MARK_EXPANDED_DP = 38

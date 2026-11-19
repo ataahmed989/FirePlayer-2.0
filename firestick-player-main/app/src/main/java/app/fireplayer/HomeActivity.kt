@@ -144,8 +144,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val pageLayer = findViewById<app.fireplayer.ui.GlassLayer>(R.id.page_container)
         val glass = app.fireplayer.ui.PageGlass(root, listOf(wallpaperHost, pageLayer)) { prefs.glassRefreshPerSec }
         behind = glass
-        wallpaperHost.onContentChanged = { glass.contentChanged() }
-        pageLayer.onContentChanged = { glass.contentChanged() }
+        wallpaperHost.onContentChanged = { glass.contentChanged(it) }
+        pageLayer.onContentChanged = { glass.contentChanged(it) }
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
         liveSettings = LiveSettings(this, panel)
@@ -452,7 +452,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         page.animate().cancel()
         if (page.alpha == 1f) return
         val fade = page.animate().alpha(1f).setDuration(160)
-        if (layer) fade.withLayer()
+        // Glass (switched on while the page was stepped back): no layer, as the closing window's glass may still copy
+        // the page, and a page held as a layer would be drawn full size for that copy.
+        if (layer && !Glass.on) fade.withLayer()
         fade.start()
     }
 
