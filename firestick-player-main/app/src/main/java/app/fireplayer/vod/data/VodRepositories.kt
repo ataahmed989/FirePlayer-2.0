@@ -1,5 +1,6 @@
 package app.fireplayer.vod.data
 
+import app.fireplayer.history.ContinueWatching
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
@@ -45,7 +46,12 @@ object VodRepositories {
             net = Executors.newFixedThreadPool(3, threads("FirePlayerVodNet", Process.THREAD_PRIORITY_BACKGROUND)),
             lookups = Executors.newFixedThreadPool(3, threads("FirePlayerVodLookups", Process.THREAD_PRIORITY_BACKGROUND)),
             rowStore = PrefsRowStore(app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)),
-        )
+        ).also { repo ->
+            // Glass Home's Continue Watching row shows the library's too (history/ContinueProvider): it's told of a change.
+            repo.addLibraryListener {
+                runCatching { app.contentResolver.notifyChange(ContinueWatching.ITEMS, null) }
+            }
+        }
     }
 
     /** Settings › Rows' choices in the app's settings file, a key per page. */
