@@ -90,14 +90,48 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
         listener.onButtonFocused(which)
     }
 
+    /** Play as the title's state says it (kept while the pill shows a wait, [setWaiting]). */
+    private var playState = TitleRules.Play("Play")
+    private var waiting = false
+
     /** Play's words, progress line and whether it can play now (dimmed and passed by when not). */
     internal fun setPlay(p: TitleRules.Play) {
+        playState = p
+        if (waiting) {
+            play.isFocusable = p.enabled
+            return
+        }
         play.set(p.label, R.drawable.ic_play)
         play.progress = p.progress
         play.alpha = if (p.enabled) 1f else Rows.DIM
         if (!p.enabled && play.isFocused) focusFirst(skip = play)
         play.isFocusable = p.enabled
     }
+
+    /**
+     * Play waiting for the add-ons (design-brief.md §6.5, stage 1): "Waiting for MediaFusion · 9 s" with a thin bar
+     * toward its answer limit; null [label] puts Play back as the title's state says.
+     */
+    fun setWaiting(label: String?, fraction: Float = 0f) {
+        if (label == null) {
+            if (!waiting) return
+            waiting = false
+            setPlay(playState)
+            return
+        }
+        waiting = true
+        play.set(label, null)
+        play.progress = fraction
+    }
+
+    /** The Sources button's words: "Sources", then "Sources · 40" once an add-on has answered. */
+    fun setSourcesLabel(text: String) {
+        if (sourcesText == text) return
+        sourcesText = text
+        sources.set(text, null)
+    }
+
+    private var sourcesText = "Sources"
 
     /** Play from beginning: only with a saved position. */
     fun setRestart(shown: Boolean) = show(restart, Which.RESTART, shown)
