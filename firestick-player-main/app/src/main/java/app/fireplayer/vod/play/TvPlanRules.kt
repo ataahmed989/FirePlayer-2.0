@@ -36,12 +36,20 @@ object TvPlanRules {
 
     /** A plan's HDR order in words: "HDR10 = HDR10+, then HLG"; "SDR first" when it has none. */
     fun hdrWords(tiers: List<Set<Hdr>>): String =
-        if (tiers.isEmpty()) "SDR first" else tiers.joinToString(", then ") { tier -> Hdr.entries.filter { it in tier }.joinToString(" = ") { it.label } }
+        if (tiers.isEmpty()) "SDR first" else tiers.joinToString(", then ") { tier -> Hdr.entries.filter { it in tier }.joinToString(" = ") { name(it) } }
+
+    /** An HDR kind's full name, as TVs say it ("HDR10", not the badge's "HDR"). */
+    fun name(h: Hdr): String = when (h) {
+        Hdr.DOLBY_VISION -> "Dolby Vision"
+        Hdr.HDR10_PLUS -> "HDR10+"
+        Hdr.HDR10 -> "HDR10"
+        Hdr.HLG -> "HLG"
+    }
 
     /** "HDR10, HDR10+ and HLG" or "None reported (SDR, or HDR off on this input)". */
     fun hdrReport(c: TvCapabilities?): String {
         if (c == null) return "Not checked yet"
-        val kinds = Hdr.entries.filter { it in c.hdr }.map { if (it == Hdr.DOLBY_VISION) "Dolby Vision" else it.label }
+        val kinds = Hdr.entries.filter { it in c.hdr }.map { name(it) }
         return if (kinds.isEmpty()) "None reported (SDR, or HDR off on this input)" else words(kinds)
     }
 

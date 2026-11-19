@@ -1269,7 +1269,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun noteWatched(entry: Entry, positionMs: Long, durationMs: Long, finished: Boolean, live: Boolean) {
         val played = takePlayed()
         watchNotedAt = SystemClock.elapsedRealtime()
-        if (live) return
+        // Never a play from the add-ons: Glass Home's row would keep its link (FirePlayer's library has it instead).
+        if (live || entry.storeKey != null) return
         // The episode found with the provider, or the one in the list that really is the next (see [lineUpNext]); otherwise
         // Continue Watching finds it by the title server's numbers itself.
         val next = entries.getOrNull(entries.indexOf(entry) + 1)?.takeIf { n ->
@@ -1327,6 +1328,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** After a Fix match: Continue Watching's row for this video takes the new match at once. */
     private fun noteRematch(entry: Entry, episode: Boolean) {
+        if (entry.storeKey != null) return
         val m = matchFor(entry) ?: return
         ContinueWatching.rematch(applicationContext, entry.uri, episode, m)
     }
