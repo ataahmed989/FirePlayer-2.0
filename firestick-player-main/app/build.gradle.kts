@@ -29,6 +29,15 @@ android {
             keyAlias = System.getenv("FIREPLAYER_KEY_ALIAS")
             keyPassword = System.getenv("FIREPLAYER_KEY_PASSWORD")
         }
+        // The test build's own identity, kept in the repository (a test key with Android's standard development
+        // passwords, not the release key): every session signs test builds the same, so a test build already on a
+        // TV can be updated in place instead of being reinstalled and set up again.
+        create("test") {
+            storeFile = file("fireplayer-test.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -37,7 +46,8 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
         debug {
-            // Use Android's standard development key for test builds.
+            // Test builds are signed with the repository's test key (see signingConfigs).
+            signingConfig = signingConfigs.getByName("test")
             // A separate app beside the user's FirePlayer: its own package, name, icon and Continue Watching address
             // (app.fireplayer.next.continue), so Glass Home and the installed FirePlayer are never touched.
             applicationIdSuffix = ".next"

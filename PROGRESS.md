@@ -250,6 +250,10 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       re-enters their info. Keep the transition lean: nothing permanent that exists only for the transition (no
       settings carry-over tool). Until then, work continues on the Max-only test build so the user can verify design
       changes there. At the swap, Glass Home's "prefer `app.fireplayer.next`" choice (`FirePlayer.java`) can go.
+      Glass Home's update (branch `claude/blissful-mayer-2nf8z9` in glass-home-firetv: the held Menu button opens
+      FirePlayer) ships at the swap, not before (user). The test build's signing key is kept in this repository
+      (`firestick-player-main/app/fireplayer-test.keystore`, user 2026-11-19) so any session can update the test app
+      on the Max in place.
 
 ## Contracts that must keep working (checked at every increment)
 

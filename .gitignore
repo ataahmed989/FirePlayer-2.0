@@ -16,4 +16,5 @@ local.properties
 **/.idea/
 *.iml
 .DS_Store
-
+# The test build's signing key is kept on purpose (a test identity; the release key never is)
+!firestick-player-main/app/fireplayer-test.keystore
