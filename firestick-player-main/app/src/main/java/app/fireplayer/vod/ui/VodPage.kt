@@ -239,7 +239,7 @@ class VodPage(
         }
 
         // Nothing at all to show: a way to try again.
-        emptyText.text = if (myList) MY_LIST_EMPTY else "Couldn't load titles. Check the connection."
+        emptyText.text = if (myList) MY_LIST_EMPTY else LOAD_FAILED
         // My List with nothing in it: only the line (there's nothing to try again).
         if (myList) emptyButton.visibility = View.GONE
         emptyButton.apply {
@@ -694,9 +694,17 @@ class VodPage(
         }
         // Gone: the row chosen last, else the first, else the message or the rail.
         val target = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: visibleRows().firstOrNull()
-        if (target == null || !target.focusChosen()) {
-            if (empty.visibility == View.VISIBLE) emptyButton.requestFocus() else host.focusRail()
-        }
+        if (target == null || !target.focusChosen()) focusFallback()
+    }
+
+    /**
+     * No row to go to: Try again when the page shows it (My List's empty line has none), Search's bar, else the rail.
+     * Never left on a view that's closing or hiding (it would hand focus to the rail's first tab).
+     */
+    private fun focusFallback() {
+        if (empty.visibility == View.VISIBLE && emptyButton.visibility == View.VISIBLE && emptyButton.requestFocus()) return
+        if (searchBar?.focusBar() == true) return
+        host.focusRail()
     }
 
     override fun play(request: PlayRequest) = host.play(request)
@@ -750,9 +758,7 @@ class VodPage(
             val target = origin
                 ?: lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
                 ?: visibleRows().firstOrNull()
-            if (target == null || !target.focusChosen()) {
-                if (empty.visibility == View.VISIBLE) emptyButton.requestFocus() else host.focusRail()
-            }
+            if (target == null || !target.focusChosen()) focusFallback()
         }
         sa.close()
         nameText.text = pageName
@@ -970,7 +976,7 @@ class VodPage(
             val vis = visibleRows()
             val k = vis.indexOf(row)
             val to = vis.getOrNull(k + 1) ?: vis.getOrNull(k - 1)
-            if (to == null || !to.focusChosen()) host.focusRail()
+            if (to == null || !to.focusChosen()) focusFallback()
         }
         if (lastRow === row) lastRow = null
         if (anchorRow === row) anchorRow = null
@@ -1009,6 +1015,12 @@ class VodPage(
         val nothing = repo == null ||
             (rows.all { it.answered } && rows.none { it.visibility == View.VISIBLE && it.style != RowStyle.GENRES })
         if (nothing) for (r in rows) if (r.style == RowStyle.GENRES) hideRow(r)
+        // Every row switched off in Settings › Rows: say so (there's nothing to try again).
+        if (!myList) {
+            val none = rows.isEmpty()
+            emptyText.text = if (none) NO_ROWS else LOAD_FAILED
+            emptyButton.visibility = if (none) View.GONE else View.VISIBLE
+        }
         val was = empty.visibility != View.GONE
         if (!nothing && was && empty.hasFocus()) {
             // Try again (or a reload): focus moves before the message hides (a hidden view holding focus would hand it
@@ -1231,6 +1243,8 @@ class VodPage(
         focusPending = false
         pendingFrom = null
         press.cancel()
+        // Left to the rail from here and Right again comes back here, not to the results row chosen before.
+        lastRow = null
         pageSpring.glideTo(0f)
         updateImages()
     }
@@ -1262,14 +1276,16 @@ class VodPage(
         val list = historyList ?: return
         val at = list.indexOf(row)
         val remove = HoldPopup.Button("Remove") {
-            hold.close(focusBack = false)
             history?.let {
                 it.remove(words)
                 list.show(it.entries)
             }
-            if (!list.focusRow(at)) searchBar?.focusBar()
+            // Focus back on the row held (now the next search), else the last one left, else the bar.
+            hold.close()
         }
-        hold.open(words, listOf(remove), row, row, hold.area(VodSizes.VIEWPORT_TOP), otherwise = { searchBar?.focusBar() })
+        hold.open(words, listOf(remove), row, row, hold.area(VodSizes.VIEWPORT_TOP), otherwise = {
+            if (!list.focusRow(at)) searchBar?.focusBar()
+        })
     }
 
     /** Search: the trash button asks first (the app's question window), then the history goes. */
@@ -1299,6 +1315,9 @@ class VodPage(
         /** My List with nothing in it. */
         const val MY_LIST_EMPTY = "Titles you add with + show up here"
         const val NO_HISTORY = "No searches to clear"
+        const val LOAD_FAILED = "Couldn't load titles. Check the connection."
+        /** Home, Movies or TV Shows with every row switched off. */
+        const val NO_ROWS = "Every row on this page is off. Switch some on in Settings › Rows."
         /** Rows are asked again when the page comes back after this long (the repository answers from its cache). */
         private const val RELOAD_MS = 10L * 60 * 1000
     }

@@ -54,6 +54,11 @@ class SearchHistoryList(context: Context, private val t: Tokens) : FrameLayout(c
     fun show(searches: List<String>) {
         if (searches == entries) return
         val focusedAt = rows.indexOfFirst { it.isFocused }
+        // Focus off a row that goes, before it goes (a removed view holding focus would hand it to the rail's first tab):
+        // to the new last row, else the bar.
+        if (focusedAt >= searches.size) {
+            if (searches.isNotEmpty()) rows[searches.size - 1].requestFocus() else onUpFromTop?.invoke()
+        }
         entries = searches
         while (rows.size < searches.size) rows += makeRow().also { list.addView(it, rowParams()) }
         while (rows.size > searches.size) {

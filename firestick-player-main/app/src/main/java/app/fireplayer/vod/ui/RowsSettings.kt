@@ -174,14 +174,18 @@ object RowsSettings {
             p.message("Loading genres…")
             val session = p.session
             repo.genres(kind) { list ->
-                val first = genres[kind] == null
+                // The stored list first (none before Cinemeta was first read), the fresh one after: shown when the window
+                // had none to show yet.
+                val shownNone = genres[kind].isNullOrEmpty()
                 genres[kind] = list
-                if (first && p.isOpen && p.session == session) p.refresh()
+                if (shownNone && p.isOpen && p.session == session) p.refresh()
             }
             return
         }
         val choices = repo.rowSettings.genreChoices(page, kind, names)
         if (choices.isEmpty()) {
+            // None read (offline, or not yet): asked again the next time the window opens.
+            if (names.isEmpty()) genres.remove(kind)
             p.message("Every genre is on this page already, or Cinemeta's genres couldn't be read. Check the connection.")
             return
         }
