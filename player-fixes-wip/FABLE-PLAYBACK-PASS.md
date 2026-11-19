@@ -52,7 +52,12 @@ Rules for the whole pass:
    logs you add (the user will read them on the device).
 5. **Second download connection (fix 12):** don't build it; add what's needed to measure whether Real-Debrid limits
    speed per connection (a log of sustained download rate during playback), so it can be decided on the device.
-6. Unit tests for the pure logic (pacer decisions, buffer tiers, lost-frame counting, the OK-again rule, timers).
+6. **Fewer stalls, keeps going (user):** tune buffering for fewer stalls with the RAM-sized buffer (rebuffer and
+   start thresholds); on a stall or a recoverable error, recover automatically — re-open the same source at the same
+   position, refresh an expired link once, then follow the agreed switching rules (§6.5) — so the user is never left
+   on a frozen picture or an error screen when a retry or the next source would work. Log each recovery.
+7. Unit tests for the pure logic (pacer decisions, buffer tiers, lost-frame counting, the OK-again rule, timers,
+   the recovery rules).
 
 ## Part 2 — Live TV player (after Part 1)
 
@@ -69,7 +74,22 @@ Rules for the whole pass:
 5. **Speed:** make channel changes and opening Live TV faster (time from key press to first frame, and to the guide
    showing), e.g. reuse the decoder/surface between zaps, start loading the next stream before tearing down the old
    one where safe, cache what the guide needs. Report before/after timings from logs.
-6. Unit tests for the pure logic (the 30-minute slot rule, the spinner delay rule).
+6. **Keeps retrying, fewer stalls (user):** on a stall or error (network drop, provider hiccup, stream ended)
+   reconnect automatically with backoff (about 1, 2, 4, 8 s, then every 30 s while the user stays on the channel),
+   keeping the last frame with the buffering symbol and showing a small "Reconnecting…" only after a few seconds;
+   tune live buffering for fewer stalls while respecting the user's Live TV buffer setting. Log each recovery.
+7. **Larger channel logos with a better background on full screen (user):** in the full-screen live controls, show the
+   channel logo larger, on a better plate that keeps both white and dark logos readable (e.g. a subtle rounded
+   neutral/glass plate sized to the logo, logo fitted with padding and never stretched), as one shared component with
+   its look values in the shared place, so the guide can use it later.
+8. Unit tests for the pure logic (the 30-minute slot rule, the spinner delay rule, the reconnect backoff).
+
+## Part 3 — Settings (small, after Part 2)
+
+1. **Playlists & EPG:** "Manage playlists" and "Update playlists" (and the other playlist entries, "Add playlist" and
+   "Reorder playlists", if that is how "EPG sources" groups its own) become indented entries under a "Playlists" row
+   with the dropdown arrow, exactly like "Manage EPG sources" sits indented under "EPG sources" — the same component
+   and behaviour (arrow, expand/collapse, indentation), nothing copied.
 
 ## Output
 
