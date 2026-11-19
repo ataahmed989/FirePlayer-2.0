@@ -10,7 +10,7 @@ class SettingsCategoryTest {
         assertEquals(
             listOf(
                 "Playlists & EPG", "Live TV", "Playback", "Remote & skipping", "Subtitles & audio", "Look",
-                "Accounts & services", "TiviMate titles", "App",
+                "Accounts & services", "Add-ons", "This TV", "TiviMate titles", "App",
             ),
             SettingsCategory.entries.map { it.title },
         )
@@ -49,7 +49,11 @@ class SettingsCategoryTest {
             // Told apart from a playlist's own update interval.
             "Update interval" to "EPG update interval",
         )
-        val added = listOf("Manage playlists", "Manage EPG sources", "Live TV buffer")
+        val added = listOf(
+            "Manage playlists", "Manage EPG sources", "Live TV buffer",
+            // Films & Shows step 3: the add-ons and This TV.
+            "Torrentio", "MediaFusion", "Check again", "Best for this TV",
+        )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
         assertEquals(emptyList<String>(), kept.filter { it !in now })
@@ -67,6 +71,8 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.LOOK, where("Info pods"))
         assertEquals(SettingsCategory.LIVE_TV, where("Live TV buffer"))
         assertEquals(SettingsCategory.PLAYLISTS_EPG, where("Manage EPG sources"))
+        assertEquals(SettingsCategory.ADDONS, where("MediaFusion"))
+        assertEquals(SettingsCategory.THIS_TV, where("Best for this TV"))
     }
 
     /** The Settings tab's sizes: rows 44 dp + 8 dp, the title 34 + 16 dp, 27 dp kept clear above and below. */

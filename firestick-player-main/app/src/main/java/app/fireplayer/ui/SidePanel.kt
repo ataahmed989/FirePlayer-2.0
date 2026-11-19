@@ -1063,6 +1063,13 @@ class SidePanel(private val activity: Activity) {
             "Customs" to R.drawable.ic_head_star,
             "Downloaded before" to R.drawable.ic_head_download,
             "Search results" to R.drawable.ic_head_search,
+            // Films & Shows' sources: Settings › Add-ons and This TV, as the Settings tab shows them.
+            "Add-ons" to R.drawable.ic_server,
+            "Torrentio" to R.drawable.ic_server,
+            "MediaFusion" to R.drawable.ic_server,
+            "This TV" to R.drawable.ic_display,
+            "Best for this TV" to R.drawable.ic_head_star,
+            "Sound formats" to R.drawable.ic_audio,
         )
 
         fun headingIcon(name: String): Int? = HEADING_ICONS[name]
