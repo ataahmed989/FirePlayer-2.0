@@ -35,6 +35,8 @@ class TitleRow(
     val header: Boolean = true,
     /** The room under the row, dp. */
     gapBelow: Float = VodSizes.ROW_GAP,
+    /** The browse pages' larger cards ([VodSizes.BROWSE_POSTER_W], [VodSizes.BROWSE_WIDE_W]); a title page's rows keep theirs. */
+    val large: Boolean = false,
 ) : FrameLayout(context) {
 
     interface Listener {
@@ -51,7 +53,7 @@ class TitleRow(
         }
 
     val style: RowStyle get() = spec.style
-    val strip = CardStrip(context, t, spec.style)
+    val strip = CardStrip(context, t, spec.style, large)
     private val title = t.label(context, VodSizes.ROW_TITLE_STYLE).apply { text = spec.label }
 
     /** The items in order: a card each, then See all when there is one; chips in a GENRES or SEASONS row. */
@@ -107,7 +109,7 @@ class TitleRow(
 
     private val stripTop = if (header) t.dp(VodSizes.stripTop()) else 0
     private val pageX = t.dp(VodSizes.PAGE_X)
-    private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow))
+    private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow, large))
 
     private val focusWatch = OnFocusChangeListener { v, has ->
         val i = items.indexOf(v)
@@ -130,14 +132,14 @@ class TitleRow(
     }
 
     init {
-        motion.extra = t.dpf(VodSizes.extra(spec.style))
+        motion.extra = t.dpf(VodSizes.extra(spec.style, large))
         // The chosen card's ring (and a rank number's edge) draw just outside the strip; the page clips at its edges.
         clipChildren = false
         clipToPadding = false
         if (header) {
             addView(title, LayoutParams(t.dp(VodSizes.tabHeaderW()), LayoutParams.WRAP_CONTENT).apply { leftMargin = pageX })
         }
-        addView(strip, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.stripH(spec.style))).apply {
+        addView(strip, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.stripH(spec.style, large))).apply {
             leftMargin = pageX
             topMargin = stripTop
         })
@@ -148,6 +150,9 @@ class TitleRow(
 
     /** The band's height: title, cards and the gap under them. */
     val bandHeight: Int get() = band
+
+    /** What the row needs to show whole when chosen, px: its title, a grown card and its ring ([VodSizes.rowShownH]). */
+    val shownHeight: Int = t.dp(VodSizes.rowShownH(spec.style, header, large))
 
     /** The index of the item holding focus, or -1. */
     fun focusedIndex(): Int {
@@ -238,7 +243,7 @@ class TitleRow(
      * [viewW] px (from the content's left edge). Called once the chips are laid out.
      */
     fun clampToView(viewW: Int) {
-        val reach = strip.contentWidth + t.dp(VodSizes.extra(spec.style))
+        val reach = strip.contentWidth + t.dp(VodSizes.extra(spec.style, large))
         maxOffset = (reach - viewW).coerceAtLeast(0).toFloat()
         motion.apply()
     }
@@ -286,10 +291,10 @@ class TitleRow(
         val v: View = when {
             VodSizes.isChips(spec.style) -> Buttons.flatChip(context, t, VodSizes.CHIP, VodSizes.CHIP_PAD).apply { background = chipBackground() }
             seeAll -> CardView(context, t, CardView.Kind.SEE_ALL)
-            spec.style == RowStyle.RANKED -> RankedItem(context, t)
-            spec.style == RowStyle.WIDE -> CardView(context, t, CardView.Kind.WIDE)
+            spec.style == RowStyle.RANKED -> RankedItem(context, t, large)
+            spec.style == RowStyle.WIDE -> CardView(context, t, CardView.Kind.WIDE, VodSizes.cardW(RowStyle.WIDE, large), VodSizes.cardH(RowStyle.WIDE, large))
             spec.style == RowStyle.EPISODE -> CardView(context, t, CardView.Kind.EPISODE)
-            else -> CardView(context, t, CardView.Kind.POSTER)
+            else -> CardView(context, t, CardView.Kind.POSTER, VodSizes.posterW(large), VodSizes.posterH(large))
         }
         v.isFocusable = true
         // OK is read by the row's key listener (a short press, or held for the small window): never View's own click.

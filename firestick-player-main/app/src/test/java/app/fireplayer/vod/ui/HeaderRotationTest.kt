@@ -67,6 +67,41 @@ class HeaderRotationTest {
     }
 
     @Test
+    fun heldWhileABannerButtonHasFocusThenAFullWait() {
+        val r = running(5)
+        r.advanceIfDue(8_000L)
+        r.hold()
+        assertTrue(r.held)
+        assertFalse(r.running)
+        assertEquals(-1L, r.delayFrom(9_000L))
+        assertFalse(r.advanceIfDue(100_000L))
+        assertEquals(1, r.index)
+        r.unhold(100_000L)
+        assertFalse(r.held)
+        assertEquals(8_000L, r.delayFrom(100_000L))
+        assertTrue(r.advanceIfDue(108_000L))
+        assertEquals(2, r.index)
+        // Not held: nothing starts again.
+        r.unhold(109_000L)
+        assertEquals(7_000L, r.delayFrom(109_000L))
+    }
+
+    @Test
+    fun heldOnAFollowedCardStaysStillUntilBothEnd() {
+        val r = running(5)
+        r.follow()
+        r.hold()
+        // Focus went up from the Continue row to the buttons, then away: the card is let go, then the hold.
+        r.unfollow(20_000L)
+        assertFalse(r.running)
+        assertEquals(-1L, r.delayFrom(20_000L))
+        r.unhold(30_000L)
+        assertTrue(r.running)
+        assertEquals(8_000L, r.delayFrom(30_000L))
+        assertEquals(0, r.index)
+    }
+
+    @Test
     fun oneTitleOrNoneDoesntMove() {
         val one = running(1)
         assertFalse(one.running)

@@ -111,7 +111,9 @@ class SidePanel(private val activity: Activity) {
         session = ++sessions
         title.text = titleText
         setWide(wide)
-        Glass.background(root, Glass.Kind.PANEL)
+        // A window over the screen: in the player its glass shows the film; over the app's own pages, the page behind
+        // it, blurred (copied now, before the window is first drawn).
+        Glass.overlay(root, Glass.Kind.PANEL)
         // The film behind the glass is copied now, so it's there as the window slides in.
         (activity as? GlassBackdrop.Host)?.glassBackdrop?.wake()
         root.visibility = View.VISIBLE

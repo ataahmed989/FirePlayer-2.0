@@ -262,7 +262,7 @@ class SettingsPanels(
             prefs.glassLook = !prefs.glassLook
             Glass.on = prefs.glassLook
             onLookChanged()
-            Glass.background(root, Glass.Kind.PANEL)
+            Glass.overlay(root, Glass.Kind.PANEL)
             refresh()
         }
         if (prefs.glassLook) {

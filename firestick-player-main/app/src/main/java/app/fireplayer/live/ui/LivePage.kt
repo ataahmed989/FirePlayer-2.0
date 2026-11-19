@@ -406,7 +406,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         sidebarPanel.background = null
         details.background = null
         columnRule.setBackgroundColor(if (Glass.on) 0x1FFFFFFF else 0x14FFFFFF)
-        Glass.background(notice, Glass.Kind.POPUP)
+        Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         popup.applyLook()
         guide.glass = Glass.on
@@ -863,6 +863,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
             val pl = db.playlist(ch.playlistId) ?: return@bg
             // Timed from the tab's opening: that's the wait the viewer sees.
             main.post { if (started && player.currentKey == null) tune(ch, pl, pressedAt = openedAtForTune()) }
+        }
+    }
+
+    /**
+     * A channel picked outside this tab (Home's Recent channels): it is the channel watched last from now on, so the
+     * tab's start plays it in the miniature; while the tab shows, it plays now unless it's playing already.
+     */
+    fun openChannel(key: ChannelKey) {
+        prefs.lastChannel = key
+        if (!started) return
+        bg {
+            val ch = db.channel(key) ?: return@bg
+            val pl = db.playlist(ch.playlistId) ?: return@bg
+            main.post { if (started && !released && player.currentKey != key.toString()) tune(ch, pl, pressedAt = openedAtForTune()) }
         }
     }
 

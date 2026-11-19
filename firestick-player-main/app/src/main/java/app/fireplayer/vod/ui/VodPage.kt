@@ -13,6 +13,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
@@ -48,7 +49,9 @@ import kotlin.math.abs
  *
  * Moving: Left/Right go card by card along a row, which glides like the Episodes sheet ([TitleRow]); Up/Down go row by
  * row, the page gliding with a Spring: below the first row the header slides away and the chosen row sits just under
- * the name line; back on the first row the header returns. Left from a row's first card goes to the rail. OK on a
+ * the name line; back on the first row the header returns. Up from the first row goes to the banner's Watch now and
+ * Details buttons ([VodHeader.Listener]); on Home, Right from Details goes into Recent channels ([RecentWindow]).
+ * Left from a row's first card goes to the rail. OK on a
  * poster opens its title page ([TitleStack], over the page; Back returns to the poster), on a Continue card says
  * playback comes next (a later step), on See all or a genre opens [SeeAllPage]; OK held on a title opens the small
  * window ([HoldWindow]): + Add to list (or − Remove from list), Mark watched, and on Continue cards Remove.
@@ -68,7 +71,7 @@ class VodPage(
     private val host: Host,
     private val repoOf: () -> VodRepository?,
     val tab: VodTab,
-) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host {
+) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host, VodHeader.Listener {
 
     /** What the shell gives a page: the same as Live TV's (HomeActivity implements both). */
     interface Host {
@@ -81,6 +84,8 @@ class VodPage(
         fun overlayOpen(): Boolean
         /** A film or an episode starts in FirePlayer's player: the shell makes room first (film mode, §6.6). */
         fun play(request: PlayRequest)
+        /** OK on one of Home's recent channels: Live TV opens on it. */
+        fun openChannel(key: ChannelKey) {}
     }
 
     private val t = host.tokens
@@ -101,7 +106,11 @@ class VodPage(
     private val column = if (search) PageColumn(ctx, t, VodSizes.SEARCH_BAR_H, VodSizes.SEARCH_GAP) else PageColumn(ctx, t)
     private val headerBand = FrameLayout(ctx)
     private val headerW = if (page == Page.HOME) VodSizes.homeHeaderW() else VodSizes.tabHeaderW()
-    private val header = VodHeader(ctx, t, headerW)
+    /** My List's banner holds still above its rows: shorter, and without buttons ([VodSizes.MY_LIST_HEADER_H]). */
+    private val headerH = if (myList) VodSizes.MY_LIST_HEADER_H else VodSizes.HEADER_H
+    private val header = VodHeader(ctx, t, headerW, headerH, actions = !myList)
+    /** OK went down on this one of the banner's buttons: its release acts. */
+    private var headerOkDown: VodHeader.Button? = null
     private val window: RecentWindow? = if (page == Page.HOME) RecentWindow(ctx, t) else null
     /** Search: the bar and the trash button in the header's place, the history under them, kept on this TV. */
     private val searchBar: SearchBar? = if (search) SearchBar(ctx, t) else null
@@ -137,6 +146,8 @@ class VodPage(
         abstract val id: String
         data class InRow(val row: TitleRow, val index: Int, override val id: String) : Origin()
         data class InGrid(override val id: String) : Origin()
+        /** One of the banner's buttons. */
+        data class InHeader(val button: VodHeader.Button, override val id: String) : Origin()
     }
     private var origin: Origin? = null
     /** A title page covers the page: its own content is hidden (and draws nothing) meanwhile. */
@@ -185,19 +196,24 @@ class VodPage(
 
         // The header band: the header card, and on Home the window beside it.
         headerBand.clipChildren = false
-        headerBand.addView(header, FrameLayout.LayoutParams(t.dp(headerW), t.dp(VodSizes.HEADER_H)).apply { leftMargin = pageX })
+        headerBand.addView(header, FrameLayout.LayoutParams(t.dp(headerW), t.dp(headerH)).apply { leftMargin = pageX })
         window?.let {
             headerBand.addView(it, FrameLayout.LayoutParams(t.dp(VodSizes.WINDOW_W), t.dp(VodSizes.HEADER_H)).apply {
                 leftMargin = t.dp(VodSizes.windowX())
             })
+            // Left: back to the banner's Details; Down past its last channel: the first row; OK: Live TV on it.
+            it.onLeft = { if (!header.focusButton(VodHeader.Button.DETAILS)) firstRowWithItems()?.focusChosen() }
+            it.onDown = { firstRowWithItems()?.focusChosen() }
+            it.onPick = { channel -> host.openChannel(channel.key) }
         }
         header.blocked = { host.overlayOpen() || hold.isOpen }
+        header.listener = this
         when {
             // My List: the header holds still above the rows, which glide under it.
             myList -> {
                 // Shown with the first title (updateListHeader).
                 headerBand.visibility = View.INVISIBLE
-                root.addView(headerBand, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(VodSizes.HEADER_H)).apply {
+                root.addView(headerBand, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(headerH)).apply {
                     topMargin = t.dp(VodSizes.VIEWPORT_TOP)
                 })
             }
@@ -376,7 +392,7 @@ class VodPage(
         window?.applyLook()
         searchBar?.applyLook()
         historyList?.applyLook()
-        Glass.background(notice, Glass.Kind.POPUP)
+        Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         hold.applyLook()
         for (row in rows) row.applyLook()
@@ -486,14 +502,25 @@ class VodPage(
 
     private fun visibleRows(): List<TitleRow> = rows.filter { it.visibility == View.VISIBLE }
 
-    /** Where the column goes with [row] chosen: 0 on the first row (the header shows), else that row's top. */
+    /**
+     * Where the column goes with [row] chosen: 0 on the first row (the header shows), else that row's top. A first row
+     * of posters is too tall to show whole under the banner: the column then moves up just as far as it needs.
+     */
     private fun targetFor(row: TitleRow?): Float {
         if (row == null) return 0f
         val vis = visibleRows()
         val k = vis.indexOf(row)
         if (k < 0) return pageSpring.target
-        return RowMath.pageTarget(k, 0) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
+        val viewH = if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H
+        return RowMath.pageTarget(k, 0, row.shownHeight.toFloat(), t.dpf(viewH)) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
     }
+
+    /** The first row shown that has something to focus (where Down from the banner or Recent channels goes). */
+    private fun firstRowWithItems(): TitleRow? = visibleRows().firstOrNull()?.takeIf { it.items.isNotEmpty() }
+
+    /** Whether the banner shows (not slid away with the rows, nor hidden). */
+    private fun headerShows(): Boolean =
+        if (myList) headerBand.visibility == View.VISIBLE else !search && pageSpring.target < t.dpf(VodSizes.HEADER_H)
 
     override fun onItemFocused(row: TitleRow, index: Int) {
         focusPending = false
@@ -524,7 +551,8 @@ class VodPage(
         press.cancel()
         // New cards held back while the viewer was in the row.
         row.pending?.let { (cards, seeAll) -> showCards(row, cards, seeAll) }
-        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true) header.unfollow()
+        // Up to the banner's buttons: it stays on the card's title, which they act on.
+        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true && !header.hasButtonFocus) header.unfollow()
         return true
     }
 
@@ -557,8 +585,79 @@ class VodPage(
         val vis = visibleRows()
         val k = vis.indexOf(row)
         val to = vis.getOrNull(k + dir)
-        // Search: Up from the first row of results, back to the bar (the results stay).
-        if (to == null && dir < 0) searchBar?.focusBar() else to?.focusChosen()
+        when {
+            to != null -> to.focusChosen()
+            dir > 0 -> Unit
+            // Search: Up from the first row of results, back to the bar (the results stay).
+            searchBar != null -> searchBar.focusBar()
+            // Up from the first row: the banner's Watch now.
+            k == 0 && headerShows() -> header.focusButton(VodHeader.Button.WATCH)
+        }
+    }
+
+    // ---- The banner's buttons (VodHeader.Listener) -------------------------------------------------------------------
+
+    override fun onHeaderFocus(has: Boolean) {
+        if (has) {
+            focusPending = false
+            pendingFrom = null
+            press.cancel()
+            // The banner whole (a first row of posters had moved it up a little); rows that come now leave it there.
+            anchorRow = null
+            anchorTop = -1
+            if (!myList) pageSpring.glideTo(0f)
+            return
+        }
+        headerOkDown = null
+        // Focus left the buttons: the banner goes back to its feed unless it went back into the Continue row (or into
+        // the title page Details opened, which comes back to the button).
+        if (!titles.isOpen && focusedRow?.spec?.continueRow != true) header.unfollow()
+        updateHeaderPause()
+    }
+
+    override fun onHeaderEmptied() {
+        if (firstRowWithItems()?.focusChosen() != true) focusFallback()
+    }
+
+    /**
+     * A key on Watch now or Details: Left and Right between them (Left from Watch now to the rail; on Home, Right from
+     * Details to Recent channels), Down back to the first row, OK (on its release) plays or opens the title shown.
+     */
+    override fun onHeaderKey(button: VodHeader.Button, keyCode: Int, event: KeyEvent): Boolean {
+        if (isOk(keyCode)) {
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) headerOkDown = button
+                KeyEvent.ACTION_UP -> {
+                    val down = headerOkDown
+                    headerOkDown = null
+                    if (down == button && !event.isCanceled) onHeaderPick(button)
+                }
+            }
+            return true
+        }
+        val dpad = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+        if (event.action != KeyEvent.ACTION_DOWN) return dpad
+        headerOkDown = null
+        val watch = button == VodHeader.Button.WATCH
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (watch) host.focusRail() else header.focusButton(VodHeader.Button.WATCH)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) header.focusButton(VodHeader.Button.DETAILS) else window?.takeFocus()
+            KeyEvent.KEYCODE_DPAD_DOWN -> firstRowWithItems()?.focusChosen()
+            KeyEvent.KEYCODE_DPAD_UP -> Unit
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * Watch now: the title shown plays as from a Continue card (a film, or the episode of a series played last, from
+     * where it stopped; a series never played opens its title page, which knows its episodes). Details: its title page.
+     */
+    private fun onHeaderPick(button: VodHeader.Button) {
+        val card = header.shownCard ?: return
+        val from = Origin.InHeader(button, card.title.id)
+        if (button == VodHeader.Button.WATCH) playContinue(card, from) else openTitle(card, from)
     }
 
     private fun isOk(keyCode: Int) =
@@ -683,6 +782,7 @@ class VodPage(
                 it.takeFocus()
                 return
             }
+            is Origin.InHeader -> if (headerShows() && header.focusButton(from.button)) return
             is Origin.InRow -> {
                 val row = from.row
                 if (row.visibility == View.VISIBLE && row.items.isNotEmpty()) {
@@ -786,7 +886,7 @@ class VodPage(
         val r = repo ?: repoOf().also { repoRef = it } ?: return
         rowsBuilt = true
         for (spec in rowSpecs(r)) {
-            val row = TitleRow(ctx, t, spec, this)
+            val row = TitleRow(ctx, t, spec, this, large = true)
             rows += row
             // Search's rows wait for words.
             if (search) {
@@ -812,7 +912,7 @@ class VodPage(
         if (specs == rows.map { it.spec }) return
         val old = rows.associateBy { it.spec }
         val made = ArrayList<TitleRow>()
-        val next = specs.map { spec -> old[spec] ?: TitleRow(ctx, t, spec, this).also { made += it } }
+        val next = specs.map { spec -> old[spec] ?: TitleRow(ctx, t, spec, this, large = true).also { made += it } }
         val gone = rows.filter { row -> next.none { it === row } }
         // Focus off a row that goes, before it goes: to the next row shown that stays, else the one before, else the rail.
         var focused = rows.firstOrNull { it.hasFocus() }
@@ -1067,7 +1167,7 @@ class VodPage(
 
     /** The header rotates only while it shows and nothing is open over the page. */
     private fun updateHeaderPause() {
-        val shows = if (myList) headerBand.visibility == View.VISIBLE else !search && pageSpring.target == 0f
+        val shows = headerShows()
         val active = resumed && !released && shows && !hold.isOpen && seeAll?.isOpen != true && !titles.isOpen
         if (active) header.resume() else header.pause()
     }
@@ -1095,7 +1195,7 @@ class VodPage(
                 // Not laid out yet: bound once the column's layout has placed it.
                 tops[j] < 0f -> Unit
                 j in bound -> {
-                    val range = RowMath.boundCards(row.chosen, row.items.size)
+                    val range = RowMath.boundCards(row.chosen, row.items.size, after = VodSizes.boundAfter(row.style, row.large))
                     if (range != row.boundRange) row.bindImages(range)
                 }
                 abs(j - k) > 2 -> if (row.boundRange != IntRange.EMPTY) row.releaseImages()
@@ -1103,7 +1203,7 @@ class VodPage(
         }
         // Ahead, to disk only: the two cards after the chosen row's window and the first of the row after next.
         vis.getOrNull(k)?.let { row ->
-            val end = RowMath.boundCards(row.chosen, row.items.size).last
+            val end = RowMath.boundCards(row.chosen, row.items.size, after = VodSizes.boundAfter(row.style, row.large)).last
             for (i in end + 1..end + 2) row.cards.getOrNull(i)?.let { ImageLoader.prefetch(pictureOf(row, it)) }
         }
         vis.getOrNull(k + 2)?.let { row -> row.cards.take(8).forEach { ImageLoader.prefetch(pictureOf(row, it)) } }

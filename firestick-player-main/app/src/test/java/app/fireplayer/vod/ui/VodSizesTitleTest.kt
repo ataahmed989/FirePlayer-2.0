@@ -55,9 +55,9 @@ class VodSizesTitleTest {
         assertEquals(TextStyle(16f, TextStyle.Weight.BOLD, TextStyle.Ink.OWN, 0xFFE3E9F0.toInt()), VodSizes.ROW_TITLE_STYLE)
         assertEquals(TextStyle(12.5f, TextStyle.Weight.REGULAR, TextStyle.Ink.OWN, 0xFFC3CFDC.toInt()), VodSizes.FACTS)
         assertEquals(TextStyle(13f, TextStyle.Weight.REGULAR, TextStyle.Ink.MUTED, lineGap = 2f), VodSizes.STORY)
-        assertEquals(TextStyle(34f, TextStyle.Weight.BOLD), VodSizes.HEADER_TITLE)
-        assertEquals(TextStyle(12.5f, TextStyle.Weight.BOLD, TextStyle.Ink.OWN, 0xFFFFFFFF.toInt()), VodSizes.CARD_NAME)
-        assertEquals(TextStyle(10.5f, TextStyle.Weight.SEMIBOLD, TextStyle.Ink.OWN, 0xFFD6DEE8.toInt()), VodSizes.CARD_CAPTION)
+        assertEquals(TextStyle(40f, TextStyle.Weight.BOLD), VodSizes.HEADER_TITLE)
+        assertEquals(TextStyle(15.5f, TextStyle.Weight.BOLD, TextStyle.Ink.OWN, 0xFFFFFFFF.toInt()), VodSizes.CARD_NAME)
+        assertEquals(TextStyle(12f, TextStyle.Weight.SEMIBOLD, TextStyle.Ink.OWN, 0xFFD6DEE8.toInt()), VodSizes.CARD_CAPTION)
         // The header's baked fade: step 1's eased stops.
         assertArrayEquals(intArrayOf(0x00, 0x24, 0x80, 0xDB, 0xFF), VodSizes.FADE_ALPHAS)
         assertArrayEquals(floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f), VodSizes.FADE_STOPS, 0f)

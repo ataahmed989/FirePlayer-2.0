@@ -216,8 +216,8 @@ object FireDialog {
         val rows = Rows(activity)
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            // Glass shows the film dimmed, as the window dims what's behind it.
-            Glass.background(this, Glass.Kind.DIALOG_POPUP)
+            // Glass shows the film (or, over the app's own pages, the page) dimmed, as the window dims what's behind it.
+            Glass.overlay(this, Glass.Kind.DIALOG_POPUP)
             setPadding(rows.dp(14), rows.dp(14), rows.dp(14), rows.dp(12))
             addView(TextView(activity).apply {
                 text = title

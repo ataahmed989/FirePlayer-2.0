@@ -7,7 +7,7 @@ import android.view.ViewGroup
 import app.fireplayer.shell.Tokens
 
 /**
- * A page's header and rows, one under the other: the header band ([headerH], 195 dp on the tab pages, the title page's
+ * A page's header and rows, one under the other: the header band ([headerH], 216 dp on the tab pages, the title page's
  * 302 dp header block), [headerGap] (16 dp; none on the title page), then each row shown (rows that are GONE take no
  * room). Laid out once, and again only when a row appears, goes or changes; the page's Spring then moves it with
  * translationY alone, so the header slides up out of view with the rows. [onRowsMoved] runs after a layout that moved

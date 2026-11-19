@@ -17,13 +17,19 @@ import kotlin.math.roundToInt
  * card shows. Each item grows from its left edge about the middle of its picture ([VodSizes.pivotY]).
  */
 @SuppressLint("ViewConstructor")
-class CardStrip(context: Context, private val t: Tokens, private val style: RowStyle) : ViewGroup(context) {
+class CardStrip(
+    context: Context,
+    private val t: Tokens,
+    private val style: RowStyle,
+    /** The browse pages' larger cards ([VodSizes]). */
+    private val large: Boolean = false,
+) : ViewGroup(context) {
 
-    private val pitch = t.dpf(VodSizes.pitch(style))
-    private val itemW = t.dp(VodSizes.itemW(style))
-    private val cardH = t.dp(VodSizes.cardH(style))
-    private val cardTop = t.dp(VodSizes.cardTop(style))
-    private val pivotY = t.dpf(VodSizes.pivotY(style))
+    private val pitch = t.dpf(VodSizes.pitch(style, large))
+    private val itemW = t.dp(VodSizes.itemW(style, large))
+    private val cardH = t.dp(VodSizes.cardH(style, large))
+    private val cardTop = t.dp(VodSizes.cardTop(style, large))
+    private val pivotY = t.dpf(VodSizes.pivotY(style, large))
     private val chipGap = t.dp(VodSizes.CHIP_GAP)
     private val chips = VodSizes.isChips(style)
 
@@ -39,7 +45,7 @@ class CardStrip(context: Context, private val t: Tokens, private val style: RowS
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val h = t.dp(VodSizes.stripH(style))
+        val h = t.dp(VodSizes.stripH(style, large))
         var w = 0
         for (i in 0 until childCount) {
             val c = getChildAt(i)
@@ -52,7 +58,7 @@ class CardStrip(context: Context, private val t: Tokens, private val style: RowS
             }
         }
         // Wider than the screen: the parent's limit doesn't apply.
-        setMeasuredDimension(w + t.dp(VodSizes.extra(style)), h)
+        setMeasuredDimension(w + t.dp(VodSizes.extra(style, large)), h)
     }
 
     override fun onLayout(changed: Boolean, l: Int, top: Int, r: Int, b: Int) {
