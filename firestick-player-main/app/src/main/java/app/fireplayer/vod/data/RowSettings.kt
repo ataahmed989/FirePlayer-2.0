@@ -84,7 +84,10 @@ object RowLayouts {
         for ((key, on) in stored) {
             val default = byKey[key]
             val spec = default ?: addedSpec(page, key, newYear) ?: continue
-            if (!keys.add(key) || !sources.add(spec.source)) continue
+            // A repeat, or a row showing what an earlier one does (that one stays; a default row comes back below).
+            if (key in keys || spec.source in sources) continue
+            keys += key
+            sources += spec.source
             out += RowEntry(spec, on, added = default == null)
         }
         for ((i, spec) in defaults.withIndex()) {
@@ -255,8 +258,9 @@ class RowSettings(private val store: RowLayoutStore, private val newYear: (Kind)
     fun genreChoices(page: Page, kind: Kind, genres: List<String>): List<RowChoice> =
         RowLayouts.genreChoices(page, kind, genres, entries(page), newYear)
 
+    /** Once per listener, however often it's added. */
     fun addListener(listener: () -> Unit) {
-        listeners += listener
+        listeners.addIfAbsent(listener)
     }
 
     fun removeListener(listener: () -> Unit) {

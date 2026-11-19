@@ -111,6 +111,10 @@ class RowSettingsTest {
         // A stored list with repeats (by key or by source) keeps the first.
         store.saved[Page.MOVIES] = "+movies.popular\n+movies.popular\n-movies.add.popular.movie\n+movies.genres"
         assertEquals(1, settings().entries(Page.MOVIES).count { it.spec.source == Source.Catalog(Kind.MOVIE, Cinemeta.TOP) })
+        // An added row stored before the default row showing the same: the default row is the one kept.
+        store.saved[Page.MOVIES] = "+movies.add.popular.movie\n-movies.popular"
+        val kept = settings().entries(Page.MOVIES).filter { it.spec.source == Source.Catalog(Kind.MOVIE, Cinemeta.TOP) }
+        assertEquals(listOf(RowEntry(PageRows.rows(Page.MOVIES, 2026).single { it.key == "movies.popular" }, on = true, added = false)), kept)
     }
 
     @Test
@@ -175,6 +179,7 @@ class RowSettingsTest {
         val s = settings()
         var told = 0
         val listener = { told++; Unit }
+        s.addListener(listener)
         s.addListener(listener)
         s.setOn(Page.HOME, "home.my_list", true)
         assertEquals(1, told)
