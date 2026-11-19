@@ -127,8 +127,11 @@ class TitleRulesTest {
                 }
                 val result = pt.getJSONArray("result")
                 val target = playTarget(d.episodes, last, NOW)
-                val label = TitleRules.showPlay(d, target, THIS_YEAR).label
-                assertEquals("$case #$i", result.getString(0), label)
+                // The research's words are Play's whole sentence (read out); the pill says them, or (a Resume) their
+                // start without the time left, which its progress line shows.
+                val play = TitleRules.showPlay(d, target, THIS_YEAR)
+                assertEquals("$case #$i", result.getString(0), play.says)
+                assertEquals("$case #$i", result.getString(0).substringBefore(" · ").takeIf { play.restart } ?: result.getString(0), play.label)
                 assertEquals("$case #$i", result.getString(1), target?.episode?.let { "${it.season}:${it.episode}" })
                 val upToDate = target?.upcoming?.let { TitleRules.calloutText(Callout.UpToDate(it), THIS_YEAR) }
                 assertEquals("$case #$i", if (result.isNull(2)) null else result.getString(2), upToDate)

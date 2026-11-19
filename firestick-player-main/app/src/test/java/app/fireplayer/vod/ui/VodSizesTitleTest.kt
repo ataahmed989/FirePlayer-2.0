@@ -173,7 +173,7 @@ class VodSizesTitleTest {
      */
     private object Figtree600 {
         private const val CHARS = " ,0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz·"
-        private val UNITS = intArrayOf(
+        val UNITS = intArrayOf(
             241, 245,
             645, 419, 571, 551, 628, 578, 574, 548, 613, 574,
             699, 612, 723, 695, 590, 550, 750, 750, 282, 537, 644, 530, 853, 774, 783, 594, 785, 637, 610, 572, 705, 711, 975, 653, 630, 635,
@@ -186,6 +186,49 @@ class VodSizesTitleTest {
             require(i >= 0) { "no width for '$c'" }
             UNITS[i]
         } * sp / 1000f
+
+        /**
+         * The same widths read from a TrueType [file]: each letter's glyph (the cmap's format 4 table) and that glyph's
+         * advance (hmtx), in thousandths of the font's em (head). Null for a file without those tables.
+         */
+        fun fromFile(file: java.io.File): IntArray? {
+            val b = java.nio.ByteBuffer.wrap(file.readBytes())
+            fun u16(at: Int) = b.getShort(at).toInt() and 0xFFFF
+            val tables = HashMap<String, Int>()
+            for (i in 0 until u16(4)) {
+                val at = 12 + 16 * i
+                tables[String(ByteArray(4) { b.get(at + it) }, Charsets.ISO_8859_1)] = b.getInt(at + 8)
+            }
+            val head = tables["head"] ?: return null
+            val hhea = tables["hhea"] ?: return null
+            val hmtx = tables["hmtx"] ?: return null
+            val cmap = tables["cmap"] ?: return null
+            val em = u16(head + 18)
+            val metrics = u16(hhea + 34)
+            val sub = (0 until u16(cmap + 2)).map { cmap + b.getInt(cmap + 4 + 8 * it + 4) }.firstOrNull { u16(it) == 4 } ?: return null
+            val seg2 = u16(sub + 6)
+            val ends = sub + 14
+            val starts = ends + seg2 + 2
+            val deltas = starts + seg2
+            val offsets = deltas + seg2
+            fun glyph(c: Int): Int {
+                for (s in 0 until seg2 / 2) {
+                    if (c > u16(ends + 2 * s)) continue
+                    val start = u16(starts + 2 * s)
+                    if (c < start) return 0
+                    val offset = u16(offsets + 2 * s)
+                    val delta = u16(deltas + 2 * s)
+                    if (offset == 0) return (c + delta) and 0xFFFF
+                    val g = u16(offsets + 2 * s + offset + 2 * (c - start))
+                    return if (g == 0) 0 else (g + delta) and 0xFFFF
+                }
+                return 0
+            }
+            return IntArray(CHARS.length) { i ->
+                val advance = u16(hmtx + 4 * minOf(glyph(CHARS[i].code), metrics - 1))
+                Math.round(advance * 1000f / em)
+            }
+        }
     }
 
     /** A button's words at the buttons' size, dp (on the TV an sp is a dp). */
@@ -242,19 +285,14 @@ class VodSizesTitleTest {
 
     @Test
     fun theLetterWidthsAreTheFontsOwn() {
-        // Where this JVM can load the app's font, the widths above are the file's (to a hundredth and a half of a line).
+        // The widths above are the font file's (the table can't go stale unseen if the file is ever replaced).
         val file = listOf("src/main/res/font/figtree_600.ttf", "app/src/main/res/font/figtree_600.ttf")
-            .map { java.io.File(it) }.firstOrNull { it.isFile } ?: return
-        val frc = java.awt.font.FontRenderContext(null, true, true)
-        for (s in listOf("Play from beginning", "Resume · 2h 40m left", "Watch again · S1 E1", "Sources · 400", "Coming May 20, 2030")) {
-            val measured = try {
-                java.awt.Font.createFont(java.awt.Font.TRUETYPE_FONT, file).deriveFont(VodSizes.BUTTON.sp).getStringBounds(s, frc).width.toFloat()
-            } catch (e: Throwable) {
-                // No font support in this JVM: nothing to compare with.
-                return
-            }
-            near(measured, wordsW(s), 0.015f * measured)
-        }
+            .map { java.io.File(it) }.firstOrNull { it.isFile }
+        // Gradle runs the tests in the module's folder; anywhere the file can't be found, there's nothing to compare.
+        org.junit.Assume.assumeTrue("the app's font is where the tests run", file != null)
+        val widths = Figtree600.fromFile(file!!)
+        assertTrue("the font has the tables the widths are read from", widths != null)
+        assertArrayEquals(Figtree600.UNITS, widths)
     }
 
     @Test
