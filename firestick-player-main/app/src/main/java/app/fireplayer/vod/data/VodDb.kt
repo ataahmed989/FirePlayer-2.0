@@ -16,6 +16,9 @@ import org.json.JSONObject
  * Version 2 (the title page) adds `episode_progress`, where playback of each episode stopped. A single episode's watched
  * mark is a `watched` row with the episode's id ("tt…:S:E", kind series), so no other table changes: the upgrade from
  * version 1 only creates the new table, and My List, watched marks and Continue Watching stay as they were.
+ *
+ * Version 3 (sources and playback) adds `last_release`: the release each film or episode last played from, as info hash
+ * + file index + add-on name (never a link). The upgrade only creates that table.
  */
 class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSION), LibraryStore, IdStore {
 
@@ -44,11 +47,14 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
                 "PRIMARY KEY(kind, tmdb)) WITHOUT ROWID",
         )
         db.execSQL(CREATE_EPISODE_PROGRESS)
+        db.execSQL(CREATE_LAST_RELEASE)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // 1 → 2: where each episode stopped. Nothing else changes.
         if (oldVersion < 2) db.execSQL(CREATE_EPISODE_PROGRESS)
+        // 2 → 3: the release each film or episode last played from.
+        if (oldVersion < 3) db.execSQL(CREATE_LAST_RELEASE)
     }
 
     /** Each time it's opened: ids learnt more than [IdMap.HIT_KEPT_MS] ago go (TMDB's 6-month limit). */
@@ -94,7 +100,15 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
                 while (c.moveToNext()) add(EpisodePosition(c.getString(0), c.getLong(1), c.getLong(2), c.getLong(3)))
             }
         }
-        return LibraryStore.Saved(listed, watched, progress, positions)
+        val releases = db.rawQuery("SELECT kind, id, addon, hash, file_idx, at FROM last_release", null).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val kind = kindOf(c.getString(0)) ?: continue
+                    add(ReleaseRow(kind, c.getString(1), c.getString(2), c.getString(3), c.getInt(4), c.getLong(5)))
+                }
+            }
+        }
+        return LibraryStore.Saved(listed, watched, progress, positions, releases)
     }
 
     override fun saveListed(l: Listed) {
@@ -165,6 +179,17 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    override fun saveRelease(r: ReleaseRow) {
+        writableDatabase.insertWithOnConflict("last_release", null, ContentValues().apply {
+            put("kind", r.kind.type)
+            put("id", r.id)
+            put("addon", r.addon)
+            put("hash", r.hash)
+            put("file_idx", r.fileIdx)
+            put("at", r.at)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     // ---- IdStore ----
 
     override fun idFor(kind: Kind, tmdbId: Int): Pair<String, Long>? =
@@ -196,11 +221,16 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
         json?.let { runCatching { TitleJson.read(JSONObject(it)) }.getOrNull() }
 
     private companion object {
-        const val VERSION = 2
+        const val VERSION = 3
 
         /** Where playback of each episode ("tt…:S:E") stopped (version 2). */
         const val CREATE_EPISODE_PROGRESS =
             "CREATE TABLE IF NOT EXISTS episode_progress(id TEXT NOT NULL PRIMARY KEY, position INTEGER NOT NULL, " +
                 "duration INTEGER NOT NULL, at INTEGER NOT NULL) WITHOUT ROWID"
+
+        /** The release a film or episode ("tt…" or "tt…:S:E") last played from (version 3): hash + file index, no link. */
+        const val CREATE_LAST_RELEASE =
+            "CREATE TABLE IF NOT EXISTS last_release(kind TEXT NOT NULL, id TEXT NOT NULL, addon TEXT NOT NULL, " +
+                "hash TEXT NOT NULL, file_idx INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(kind, id)) WITHOUT ROWID"
     }
 }

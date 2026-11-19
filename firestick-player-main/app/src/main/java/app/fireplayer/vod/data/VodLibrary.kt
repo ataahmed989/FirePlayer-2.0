@@ -20,6 +20,7 @@ interface LibraryStore {
         val watched: List<Watched>,
         val progress: List<Progress>,
         val positions: List<EpisodePosition> = emptyList(),
+        val releases: List<ReleaseRow> = emptyList(),
     )
 
     fun load(): Saved
@@ -33,6 +34,9 @@ interface LibraryStore {
 
     fun saveProgress(p: Progress)
     fun saveEpisodePosition(p: EpisodePosition)
+
+    /** The release a film or episode last played from (step 3). */
+    fun saveRelease(r: ReleaseRow)
 }
 
 /** A title in My List ([inList] true) or taken out of it, at [at] (ms). */
@@ -60,16 +64,24 @@ data class Progress(
 /** Where playback of one episode ([id], "tt…:S:E") stopped: its card's progress bar and "12m left". */
 data class EpisodePosition(val id: String, val positionMs: Long, val durationMs: Long, val at: Long)
 
+/**
+ * The release a film or an episode last played from (design-brief §6.2): [id] is the film's IMDb id or the episode's
+ * "tt…:S:E"; [addon] the add-on's name ("TORRENTIO"); info hash + file index (-1: none). Never a link.
+ */
+data class ReleaseRow(val kind: Kind, val id: String, val addon: String, val hash: String, val fileIdx: Int, val at: Long)
+
 /** A [LibraryStore] in memory only, for tests and for a TV whose database can't be opened. */
 class MemoryLibraryStore : LibraryStore {
     val listed = LinkedHashMap<String, Listed>()
     val watched = LinkedHashMap<String, Watched>()
     val progress = LinkedHashMap<String, Progress>()
     val positions = LinkedHashMap<String, EpisodePosition>()
+    val releases = LinkedHashMap<String, ReleaseRow>()
     /** How many writes of several marks ([saveWatchedAll]) were made. */
     var batches = 0
     override fun load() = LibraryStore.Saved(
         listed.values.toList(), watched.values.toList(), progress.values.toList(), positions.values.toList(),
+        releases.values.toList(),
     )
     override fun saveListed(l: Listed) { listed["${l.title.kind.type}|${l.title.id}"] = l }
     override fun saveWatched(w: Watched) { watched["${w.kind.type}|${w.id}"] = w }
@@ -79,6 +91,7 @@ class MemoryLibraryStore : LibraryStore {
     }
     override fun saveProgress(p: Progress) { progress["${p.title.kind.type}|${p.title.id}"] = p }
     override fun saveEpisodePosition(p: EpisodePosition) { positions[p.id] = p }
+    override fun saveRelease(r: ReleaseRow) { releases["${r.kind.type}|${r.id}"] = r }
 }
 
 /**
@@ -102,6 +115,7 @@ class VodLibrary(
     private val watched = HashMap<String, Watched>()
     private val progress = HashMap<String, Progress>()
     private val positions = HashMap<String, EpisodePosition>()
+    private val releases = HashMap<String, ReleaseRow>()
     private val saved = FutureTask { runCatching { store.load() }.getOrNull() }
     @Volatile private var ready = false
     private var lastStamp = Long.MIN_VALUE
@@ -217,7 +231,7 @@ class VodLibrary(
      * was taken out; a series' [episode] keeps its own position too. A finished position ([Position.finished]) also
      * marks the film or the episode watched. One call of [changed]. Any thread.
      */
-    fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) {
+    fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, watched: Boolean = false) {
         val pos = positionMs.coerceAtLeast(0)
         val dur = durationMs.coerceAtLeast(0)
         val (entry, own, mark) = state {
@@ -229,9 +243,9 @@ class VodLibrary(
             } else {
                 null
             }
-            val mark = if (Position(pos, dur, at).finished) {
+            val mark = if (watched || Position(pos, dur, at).finished) {
                 val id = own?.id ?: title.id
-                Watched(title.kind, id, stamp(), true).also { watched[key(title.kind, id)] = it }
+                Watched(title.kind, id, stamp(), true).also { this.watched[key(title.kind, id)] = it }
             } else {
                 null
             }
@@ -243,6 +257,32 @@ class VodLibrary(
             mark?.let { runCatching { store.saveWatched(it) } }
         }
         changed()
+    }
+
+    /** The release [kind]/[id] (a film, or an episode's "tt…:S:E") last played from; null when never. */
+    fun lastRelease(kind: Kind, id: String): ReleaseRow? = state { releases[key(kind, id)] }
+
+    /** Keeps the release a film or episode played from (the player's first frame). Listeners aren't called. */
+    fun recordRelease(row: ReleaseRow) {
+        val entry = state {
+            val at = stamp()
+            row.copy(at = at).also { releases[key(row.kind, row.id)] = it }
+        }
+        writer.execute { runCatching { store.saveRelease(entry) } }
+    }
+
+    /**
+     * Shows followed whose latest episode is over (finished, or marked watched since): Next Episodes' candidates, the
+     * latest played first. Not those taken out of Continue Watching.
+     */
+    fun followedShows(): List<Pair<Title, LastPlayed>> = state {
+        progress.values
+            .filter { it.title.kind == Kind.SERIES && !it.hidden && it.episode != null }
+            .sortedByDescending { it.at }
+            .mapNotNull { p ->
+                val last = LastPlayed(p.episode, Position(p.positionMs, p.durationMs, p.at), p.hidden, markedSince(p))
+                if (last.finished) p.title to last else null
+            }
     }
 
     /** The resume point of [title], also when it was taken out of Continue Watching. */
@@ -328,6 +368,7 @@ class VodLibrary(
                 s.watched.forEach { w -> watched.getOrPut(key(w.kind, w.id)) { w } }
                 s.progress.forEach { p -> progress.getOrPut(key(p.title.kind, p.title.id)) { p } }
                 s.positions.forEach { p -> positions.getOrPut(p.id) { p } }
+                s.releases.forEach { r -> releases.getOrPut(key(r.kind, r.id)) { r } }
                 // Stamps stay after anything stored (a clock set back since).
                 val stored = (s.listed.map { it.at } + s.watched.map { it.at } + s.progress.map { it.at } + s.positions.map { it.at })
                     .maxOrNull()

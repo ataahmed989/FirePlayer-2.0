@@ -109,10 +109,16 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         row: TitleRow? = null,
         listener: TitleRow.Listener? = null,
         otherwise: (() -> Unit)? = null,
+        /** A Continue card's window: "Title page" opens it (OK on the card plays straight away). */
+        onTitlePage: (() -> Unit)? = null,
     ) {
         val r = host.repo ?: return
         val title = card.title
-        val buttons = ArrayList<HoldPopup.Button>(3)
+        val buttons = ArrayList<HoldPopup.Button>(4)
+        if (onTitlePage != null) buttons += HoldPopup.Button("Title page") {
+            close(fade = false, focusBack = false)
+            onTitlePage()
+        }
         buttons += listButton(title, r.inMyList(title.id))
         buttons += HoldPopup.Button(if (r.isWatched(title.id)) "Mark unwatched" else "Mark watched") { toggleWatched(title) }
         if (continueRow) buttons += HoldPopup.Button("Remove") { removeFromContinue(title) }

@@ -257,6 +257,12 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         invalidate()
     }
 
+    /** Forgets every listing to free memory (film mode), without loading any again now: they load as rows show. */
+    fun forgetProgrammes() {
+        rows.clear()
+        requested = null
+    }
+
     /** Forgets every listing (new EPG): rows load again as they show. */
     fun clearProgrammes() {
         rows.clear()

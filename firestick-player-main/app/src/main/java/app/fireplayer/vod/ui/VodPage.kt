@@ -23,6 +23,9 @@ import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.Page
+import app.fireplayer.vod.PlayRequest
+import app.fireplayer.vod.Sources
+import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
@@ -63,6 +66,8 @@ class VodPage(
         fun railHasFocus(): Boolean
         /** The settings window or a dialog is open over the page: its header holds still. */
         fun overlayOpen(): Boolean
+        /** A film or an episode starts in FirePlayer's player: the shell makes room first (film mode, §6.6). */
+        fun play(request: PlayRequest)
     }
 
     private val t = host.tokens
@@ -470,8 +475,8 @@ class VodPage(
         when {
             row.style == RowStyle.GENRES -> row.genres.getOrNull(index)?.let { openSeeAll(row, index, genreSpec(row.spec, it)) }
             row.isSeeAll(index) -> openSeeAll(row, index, row.spec)
-            row.spec.continueRow -> showNotice(PLAYBACK_LATER)
-            else -> row.cards.getOrNull(index)?.let { openTitle(it, Origin.InRow(row, index, it.title.id)) }
+            row.spec.continueRow -> row.cards.getOrNull(index)?.let { playContinue(it, Origin.InRow(row, index, it.title.id)) }
+            else -> row.cards.getOrNull(index)?.let { openTitle(it, Origin.InRow(row, index, it.title.id), soon = row.spec.source is Source.NextEpisodes) }
         }
     }
 
@@ -479,7 +484,11 @@ class VodPage(
         if (row.style == RowStyle.GENRES || row.isSeeAll(index)) return
         val card = row.cards.getOrNull(index) ?: return
         val anchor = row.cardViewAt(index) ?: return
-        hold.openPoster(card, row.spec.continueRow, anchor, row.items[index], hold.area(VodSizes.VIEWPORT_TOP), row, this)
+        // A Continue card's window also opens its title page (its sources looked up after 0.5 s).
+        val page: (() -> Unit)? = if (row.spec.continueRow) {
+            { openTitle(card, Origin.InRow(row, index, card.title.id), soon = true) }
+        } else null
+        hold.openPoster(card, row.spec.continueRow, anchor, row.items[index], hold.area(VodSizes.VIEWPORT_TOP), row, this, onTitlePage = page)
     }
 
     private fun genreSpec(of: RowSpec, genre: String): RowSpec {
@@ -521,7 +530,22 @@ class VodPage(
      * Opens [card]'s title page over the page. Focus goes into it first; only then is the page's own content hidden
      * (a hidden view holding focus would hand it to the rail's first tab). The row it came from keeps its card grown.
      */
-    private fun openTitle(card: Card, from: Origin) {
+    /**
+     * OK on a Continue card (§6.4): straight to playback, on the same file (its add-on asked first), from where it
+     * stopped; no title page, no question. A series card that names no episode opens its title page instead.
+     */
+    private fun playContinue(card: Card, from: Origin) {
+        val r = repo ?: return
+        val library = try {
+            Sources.get(ctx).library
+        } catch (e: RuntimeException) {
+            null
+        }
+        val request = VodLaunch.fromContinueCard(card, r, library)
+        if (request == null) openTitle(card, from, soon = true) else host.play(request)
+    }
+
+    private fun openTitle(card: Card, from: Origin, soon: Boolean = false) {
         if (repo == null) return
         press.cancel()
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
@@ -529,7 +553,7 @@ class VodPage(
         for (row in rows) row.motion.settle()
         seeAll?.settle()
         origin = from
-        titles.open(card.title)
+        titles.open(card.title, soon)
         cover(true)
         updateHeaderPause()
         // Only the title page's pictures, and the poster it came from (for coming back): the rows' and See all's go,
@@ -575,6 +599,8 @@ class VodPage(
             if (empty.visibility == View.VISIBLE) emptyButton.requestFocus() else host.focusRail()
         }
     }
+
+    override fun play(request: PlayRequest) = host.play(request)
 
     override fun onStackClosed() {
         val row = originRow()
@@ -636,7 +662,8 @@ class VodPage(
     override fun focusRail() = host.focusRail()
 
     override fun onGridPick(card: Card, spec: RowSpec) {
-        if (spec.continueRow) showNotice(PLAYBACK_LATER) else openTitle(card, Origin.InGrid(card.title.id))
+        if (spec.continueRow) playContinue(card, Origin.InGrid(card.title.id))
+        else openTitle(card, Origin.InGrid(card.title.id), soon = spec.source is Source.NextEpisodes)
     }
 
     override fun onGridHold(card: Card, spec: RowSpec, view: CardView) =
@@ -928,6 +955,5 @@ class VodPage(
         const val ROW_CARDS = RowRules.ROW_CARDS
         /** Rows are asked again when the page comes back after this long (the repository answers from its cache). */
         private const val RELOAD_MS = 10L * 60 * 1000
-        private const val PLAYBACK_LATER = "Playback comes next"
     }
 }

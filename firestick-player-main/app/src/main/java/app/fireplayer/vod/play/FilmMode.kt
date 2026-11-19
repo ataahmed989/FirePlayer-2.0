@@ -1,0 +1,182 @@
+package app.fireplayer.vod.play
+
+import android.app.Activity
+import android.content.ComponentCallbacks2
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.PixelCopy
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+
+/**
+ * Film mode memory and background release (design-brief.md §6.6), for the shell (HomeActivity).
+ *
+ * Before a film or episode starts from Home, Movies or TV Shows ([beforeFilm]): Live TV stops and its decoder is
+ * released at once (the film needs it), and a small snapshot of the screen is kept. As soon as the player covers the
+ * shell ([onStop]) the rest goes: the pages' pictures, the live picture's glass frames, the guide's listings and logos,
+ * and the graphics caches. Returning shows the snapshot at once over the page while the posters come back from the disk
+ * cache ([onStart]).
+ *
+ * In the background for other reasons (the Home button, a link opened from Settings) the same release waits
+ * [BACKGROUND_RELEASE_MS] first: coming back sooner finds everything as it was.
+ */
+class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+
+    interface Hooks {
+        /** Live TV stops and its player is released (decoders freed). */
+        fun stopLive()
+
+        /** Pictures, glass frames, guide listings and logos leave memory (the shell is covered or in the background). */
+        fun release()
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private var snapshot: Bitmap? = null
+    private var overlay: ImageView? = null
+    /** A film is starting: the release runs as soon as the shell is covered. */
+    private var filmStarting = false
+    /** The release ran while away: the snapshot shows on return. */
+    private var released = false
+    private val backgroundRelease = Runnable { releaseNow() }
+
+    /** A film starts from a page: the snapshot first, then Live TV's decoder freed, then [go] (the player starts). */
+    fun beforeFilm(go: () -> Unit) {
+        filmStarting = true
+        hooks.stopLive()
+        capture { go() }
+    }
+
+    /** The shell paused: a snapshot for coming back, unless a film's start already took one. */
+    fun onPause() {
+        if (!filmStarting) capture(null)
+    }
+
+    /** The shell is covered or in the background: released now for a film, later otherwise. */
+    fun onStop() {
+        main.removeCallbacks(backgroundRelease)
+        if (filmStarting) {
+            filmStarting = false
+            releaseNow()
+        } else {
+            main.postDelayed(backgroundRelease, BACKGROUND_RELEASE_MS)
+        }
+    }
+
+    /** Back: the release that hadn't run yet doesn't; after one, the snapshot covers the page while it fills again. */
+    fun onStart(over: FrameLayout) {
+        main.removeCallbacks(backgroundRelease)
+        filmStarting = false
+        val shot = snapshot
+        if (released && shot != null) show(over, shot) else dropSnapshot()
+        released = false
+    }
+
+    fun release() {
+        main.removeCallbacks(backgroundRelease)
+        overlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        overlay = null
+        dropSnapshot()
+    }
+
+    private fun releaseNow() {
+        released = true
+        hooks.release()
+        trimGraphics()
+    }
+
+    /**
+     * Half-size copy of the window (PixelCopy, Android 8+: glass and hardware pictures included). [then] runs once it's
+     * taken, or at once without one (older Android, or the copy failed).
+     */
+    private fun capture(then: (() -> Unit)?) {
+        val decor = activity.window?.decorView
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || decor == null || decor.width <= 0 || decor.height <= 0) {
+            then?.invoke()
+            return
+        }
+        val bitmap = try {
+            Bitmap.createBitmap(decor.width / 2, decor.height / 2, Bitmap.Config.ARGB_8888)
+        } catch (e: OutOfMemoryError) {
+            then?.invoke()
+            return
+        }
+        var done = false
+        val finish = Runnable {
+            if (done) return@Runnable
+            done = true
+            then?.invoke()
+        }
+        try {
+            PixelCopy.request(activity.window, bitmap, { result ->
+                if (result == PixelCopy.SUCCESS) {
+                    dropSnapshot()
+                    snapshot = bitmap
+                } else {
+                    bitmap.recycle()
+                }
+                main.removeCallbacks(finish)
+                finish.run()
+            }, main)
+            // A copy that never answers doesn't hold the film back.
+            main.postDelayed(finish, CAPTURE_WAIT_MS)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "No snapshot: ${e.javaClass.simpleName}")
+            bitmap.recycle()
+            finish.run()
+        }
+    }
+
+    private fun show(over: FrameLayout, shot: Bitmap) {
+        overlay?.let { over.removeView(it) }
+        val v = ImageView(activity).apply {
+            setImageBitmap(shot)
+            scaleType = ImageView.ScaleType.FIT_XY
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            isFocusable = false
+        }
+        overlay = v
+        over.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        v.animate().alpha(0f).setStartDelay(SNAPSHOT_HOLD_MS).setDuration(SNAPSHOT_FADE_MS).withEndAction {
+            over.removeView(v)
+            if (overlay === v) overlay = null
+            v.setImageDrawable(null)
+            if (snapshot === shot) dropSnapshot()
+        }.start()
+    }
+
+    private fun dropSnapshot() {
+        val s = snapshot ?: return
+        snapshot = null
+        if (overlay == null) s.recycle()
+    }
+
+    /**
+     * The graphics caches the shell's windows hold (textures, glyphs, layers), flushed as Android does when an app's
+     * screens are hidden. Best effort: the call isn't public, so it's skipped wherever it isn't there.
+     */
+    private fun trimGraphics() {
+        try {
+            val global = Class.forName("android.view.WindowManagerGlobal")
+            val instance = global.getMethod("getInstance").invoke(null)
+            global.getMethod("trimMemory", Int::class.javaPrimitiveType).invoke(instance, ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN)
+        } catch (e: Throwable) {
+            Log.i(TAG, "Graphics trim not available: ${e.javaClass.simpleName}")
+        }
+    }
+
+    companion object {
+        /** In the background this long before the shell's memory is released (not at once: a quick return stays as it was). */
+        const val BACKGROUND_RELEASE_MS = 90_000L
+        /** The longest a film's start waits for the snapshot. */
+        const val CAPTURE_WAIT_MS = 150L
+        /** The snapshot stays this long on return, then fades as the posters are back. */
+        const val SNAPSHOT_HOLD_MS = 700L
+        const val SNAPSHOT_FADE_MS = 220L
+        private const val TAG = "FirePlayerFilmMode"
+    }
+}

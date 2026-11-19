@@ -45,6 +45,11 @@ class ListEntry(
     /** A small button beside the row, as [SidePanel.rowWithButton]'s, read out as [buttonLabel]. */
     val button: Int? = null,
     val buttonLabel: String = "",
+    /**
+     * A second, fainter line under the label (a source's facts in the Sources panel): the row is then two lines, its
+     * [value] on the right up to two lines too.
+     */
+    val note: String? = null,
 ) {
     enum class Kind { ROW, HEADING, NOTE }
 }
@@ -502,7 +507,7 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
         val row = h.row ?: return
         // The row stays (its card, its focus); only what it says is made again.
         row.removeAllViews()
-        val label = rows.fill(row, e.label, e.value, e.icon)
+        val label = if (e.note != null) fillTwoLines(row, e) else rows.fill(row, e.label, e.value, e.icon)
         if (e.faded) label.alpha = FADED
         if (e.dimmed) Rows.dim(row)
         row.isSelected = e.chosen
@@ -516,6 +521,40 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
             val p = h.bindingAdapterPosition
             p > 0 && focused == p - 1
         }
+    }
+
+    /**
+     * A two-line row ([ListEntry.note]): the label, the note under it (smaller, faint, up to two lines), and the value
+     * on the right (up to two lines). The texts take the row's colours (white on the selected row). Returns the label.
+     */
+    private fun fillTwoLines(row: LinearLayout, e: ListEntry): TextView {
+        val label = rows.text(e.label)
+        val column = RowLayout(activity, rows.textColors).apply {
+            orientation = LinearLayout.VERTICAL
+            isDuplicateParentStateEnabled = true
+            addView(label)
+            addView(rows.text(e.note.orEmpty()).apply {
+                isSingleLine = false
+                maxLines = 2
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, Rows.NOTE_SP)
+                alpha = Rows.NOTE_ALPHA
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = rows.dp(Rows.NOTE_GAP_DP) }
+            })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        e.value?.let { v ->
+            row.addView(rows.text(v).apply {
+                isSingleLine = false
+                maxLines = 2
+                gravity = Gravity.END
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, Rows.NOTE_SP)
+                alpha = Rows.VALUE_ALPHA
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { marginStart = rows.dp(Rows.VALUE_GAP_DP) }
+            })
+        }
+        return label
     }
 
     private fun params(top: Int = 0, bottom: Int = 0) = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

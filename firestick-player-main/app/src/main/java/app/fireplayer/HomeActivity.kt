@@ -48,6 +48,10 @@ import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.update.Updater
+import app.fireplayer.vod.PlayHandoff
+import app.fireplayer.vod.PlayRequest
+import app.fireplayer.vod.play.FilmMode
+import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.vod.ui.VodPage
 import app.fireplayer.vod.ui.VodPages
 
@@ -55,8 +59,13 @@ import app.fireplayer.vod.ui.VodPages
  * What opens from the Fire TV home screen: the app shell. A tab rail (one FirePlayer mark; only tabs that work are
  * shown) and its pages: Home, Movies and TV Shows (films and shows, [VodPages]), Live TV (guide, miniature and
  * full-screen player) and Settings: every setting in its category (Playlists & EPG, Live TV, Playback, Remote &
- * skipping, Subtitles & audio, …), each category its own window, and Open a link, as the old home menu had. It still
- * opens on Live TV.
+ * skipping, Subtitles & audio, Add-ons, This TV, …), each category its own window, and Open a link, as the old home
+ * menu had. It opens on Home (design-brief.md §6.3); Live TV is one press away on the rail.
+ *
+ * A film or episode started from Home, Movies or TV Shows runs in film mode first ([FilmMode], §6.6): Live TV stops and
+ * releases its decoder, and once the player covers this screen its pictures, glass frames and guide data go; coming
+ * back shows a snapshot at once while the posters return from the disk cache. In the background for other reasons the
+ * same release waits a while.
  *
  * Both looks share this layout, each over its own background (the user's): glass shows the blurred beach wallpaper,
  * blurred again behind glass shapes ([GlassSource.Host]); classic the original dark surfaces over the dark fog.
@@ -67,6 +76,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     /** The live picture, blurred, for the full-screen controls' glass (Android 7+); made when first needed. */
     private var film: GlassBackdrop? = null
     private var filmOn = false
+    /** When [play] last handed a film to the player (elapsedRealtime ms); cleared once this screen shows again. */
+    private var launchedAt = Long.MIN_VALUE / 2
     override val glassSource: GlassSource? get() = if (filmOn) film ?: still else still
     private lateinit var shellTokens: Tokens
     override val tokens: Tokens get() = shellTokens
@@ -94,6 +105,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private lateinit var liveDimmer: View
 
     private val player by lazy { PlayerHost.get(this) }
+    /** Film mode memory and background release (§6.6). */
+    private lateinit var filmMode: FilmMode
     /** Display size (shared with the VOD player) and the screen dimmer's customs, read as the live picture is laid out. */
     private val videoPrefs by lazy { Prefs(this) }
     private val dimmer by lazy { Dimmer(this) }
@@ -146,8 +159,28 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.onLookChanged = { applyLook() }
         // Info pods are one setting for films and live channels: the live controls follow a change at once.
         settingsPanels.onChipsChanged = { live.refreshPods() }
-        showTab(NavRail.Tab.LIVE)
-        root.post { live.takeFocus() }
+        filmMode = FilmMode(this, object : FilmMode.Hooks {
+            override fun stopLive() {
+                // The channel stops and its player is released: its decoders are the film's now.
+                live.stop()
+                player.stop()
+                placeVideo(null, 0f, false)
+            }
+
+            override fun release() {
+                // The pages' pictures went with onStop; what's left of them in memory, the live picture's glass
+                // frames and the guide's listings and logos go too.
+                vodPages.trimImages()
+                ImageLoader.trim()
+                film?.stop()
+                live.dropMemory()
+                // The glass look's full-screen wallpaper (about 8 MB) too; it loads again on return.
+                wallpaper.release()
+            }
+        })
+        // Home is the start page; Live TV is one press away on the rail.
+        showTab(NavRail.Tab.HOME)
+        root.post { focusPage() }
 
         // A test build is signed differently from the releases, so a release can't install over it: don't offer one.
         val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -161,6 +194,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onStart() {
         super.onStart()
+        // Back from a film (or a while away): the snapshot shows at once while the page fills again.
+        filmMode.onStart(root)
+        wallpaper.restore()
+        launchedAt = Long.MIN_VALUE / 2
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
@@ -179,7 +216,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         ImageLoader.trim(ImageLoader.TRIM_HALF)
         film?.stop()
         root.keepScreenOn = false
+        // A film starting: the rest of the memory goes now; otherwise after a while in the background.
+        filmMode.onStop()
         super.onStop()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        filmMode.onPause()
     }
 
     override fun onTrimMemory(level: Int) {
@@ -224,7 +268,22 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         vodPages.release()
         liveSettings.release()
         film?.release()
+        filmMode.release()
         super.onDestroy()
+    }
+
+    /**
+     * A film or an episode from Home, Movies or TV Shows: room is made first (film mode), then FirePlayer's player
+     * starts with the request (a token in the Intent, never a link).
+     */
+    override fun play(request: PlayRequest) {
+        // One launch at a time: a second OK while the player is on its way (snapshot, activity switch) is ignored.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - launchedAt < LAUNCH_GUARD_MS) return
+        launchedAt = now
+        filmMode.beforeFilm {
+            if (!isFinishing && !isDestroyed) startActivity(PlayHandoff.intent(this, VodLaunch.withFilmMode(request)))
+        }
     }
 
     override fun onRestart() {
@@ -846,6 +905,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+        /** A second play this soon after one is a repeated OK while the player opens, not a new play. */
+        private const val LAUNCH_GUARD_MS = 3_000L
         /** The remote's (and Alexa's) media buttons. */
         private val MEDIA_KEYS = setOf(
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,

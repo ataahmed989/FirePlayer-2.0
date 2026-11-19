@@ -250,7 +250,7 @@ class Rows(private val context: Context) {
                 maxWidth = dp(valueMaxDp)
             })
         } else if (value != null) {
-            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(valueMaxDp) })
+            row.addView(text(value).apply { alpha = VALUE_ALPHA; maxWidth = dp(valueMaxDp) })
         }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return labelView
@@ -324,6 +324,17 @@ class Rows(private val context: Context) {
 
         /** How faint a row is drawn while it can't be used (not available, or busy). */
         const val DIM = 0.4f
+
+        /** A row's value on the right: drawn this much fainter than its label. */
+        const val VALUE_ALPHA = 0.85f
+
+        /** A two-line row's second line (a copy's or a source's facts): its size, how faint, and its gap under the label. */
+        const val NOTE_SP = 10.5f
+        const val NOTE_ALPHA = 0.72f
+        const val NOTE_GAP_DP = 2
+
+        /** The gap between a two-line row's words and its value on the right. */
+        const val VALUE_GAP_DP = 10
 
         /** Draws [row]'s words, icons and switch faint: its slice of the card stays as it is, so the card stays whole. */
         fun dim(row: ViewGroup) {
