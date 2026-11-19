@@ -340,32 +340,55 @@ internal object VodSizes {
     val TITLE_NAME_LONG = TextStyle(28f, Weight.BOLD)
     const val FACTS_GAP = 8f
     const val FACTS_ROW_H = 22f
-    /** The facts and the story: the page headers' styles ([FACTS], [STORY]), a size up. */
+    /**
+     * The block reads logo, facts, story, source line, each a step quieter: the facts in the page headers' style
+     * ([FACTS]) a size up, the story a size under them (13 sp, the page headers' [STORY]), the source line a small
+     * caption.
+     */
     val TITLE_FACTS = FACTS.copy(sp = 14f)
-    val TITLE_STORY = STORY.copy(sp = 14f)
+    val TITLE_STORY = STORY.copy(sp = 13f)
     val CALLOUT = TextStyle(11.5f, Weight.SEMIBOLD)
     const val CALLOUT_PAD = 9f
     const val CALLOUT_GAP = 10f
     const val STORY_GAP = 6f
     const val STORY_LINES = 2
-    const val TITLE_TEXT_W = 520f
-    const val SOURCE_GAP = 6f
-    val SOURCE = TextStyle(12f, Weight.REGULAR, Ink.MUTED)
-    /** The text block's height (its lines, and 8 dp under the source line), and the gap under it. */
+    /** The story's measure: about 80 letters a line, clear of the picture's subject. */
+    const val TITLE_TEXT_W = 480f
+    /**
+     * The source line: one compact line set apart from the story (a wider gap than between the story's lines and the
+     * facts), smaller and quieter than it: the pods' second-line grey ([POD_META]'s).
+     */
+    const val SOURCE_GAP = 10f
+    val SOURCE = TextStyle(11f, Weight.REGULAR, Ink.OWN, 0xFFA9B1BA.toInt())
+    /** The text block's height (its lines, and about 8 dp under the source line), and the gap under it. */
     const val TITLE_HEADER_H = 216f
     const val TITLE_HEADER_GAP = 0f
 
     // The stage under the text block: the action column on the left; right of it a show's season dropdown, the
     // "Episodes" heading and the episode pods, or a film's More Like This.
-    /** The action column: Play / Resume, Play from beginning and Sources (pills as wide as it), then (+) and (⋯). */
-    const val ACTIONS_W = 216f
-    const val BUTTON_H = 42f
+    /**
+     * The action column: Play / Resume, Play from beginning and Sources (pills as wide as it), then (+) and (⋯). As wide
+     * as its widest words need at the buttons' size ("Play from beginning", "Resume · 1h 52m left") beside the icon,
+     * with 16 dp or more left at each end ([pillTextW]); words wider than that have a shorter form
+     * ([TitleRules.Play.compact]), so nothing is cut.
+     */
+    const val ACTIONS_W = 176f
+    /**
+     * A button's height and the gap between two (the cards' gap): four rows of the column (with a resume point) are
+     * exactly as tall as an episode pod beside them, 4 x 39.5 + 3 x 14 = 200 ([podH]); whole pixels on the TV (79, 28).
+     */
+    const val BUTTON_H = 39.5f
+    const val BUTTON_GAP = GAP
+    /** A button's words: one style for every pill (the banner's too). */
     val BUTTON = TextStyle(13f, Weight.SEMIBOLD)
-    /** A pill's words when they'd be cut short at that size ("Resume S12 E15 · 1h 12m left", the wait for the add-ons). */
+    /** Only for words no state should have: still wider than the column in their shorter form (a size down, not cut). */
     val BUTTON_LONG = TextStyle(11.5f, Weight.SEMIBOLD)
-    const val BUTTON_PAD = 14f
-    const val BUTTON_GAP = 12f
-    const val BUTTON_ICON = 15f
+    /** The side padding of a pill as wide as its words (the banner's Watch now and Details): about half its height. */
+    const val BUTTON_PAD = 18f
+    /** A column pill's words are centred in it and never come nearer to its ends than this. */
+    const val ACTIONS_PAD = 12f
+    /** A pill's icon (one size: Play, Play from beginning, Sources; the banner's Watch now) and the gap to its words. */
+    const val BUTTON_ICON = 14f
     const val BUTTON_ICON_GAP = 7f
     const val CIRCLE_ICON = 18f
     const val PILL_PROGRESS_H = 2f
@@ -375,9 +398,12 @@ internal object VodSizes {
     /** From the column to what's right of it. */
     const val STAGE_GAP = 24f
     /** The first button's top in the stage; the pods (and a film's posters) start level with it. */
-    const val STAGE_ROW_TOP = 56f
-    /** The season dropdown and the heading beside it: their top in the stage, their height, the gap between them. */
-    const val SEASON_TOP = 6f
+    const val STAGE_ROW_TOP = 58f
+    /**
+     * The season dropdown and the heading beside it: their top in the stage (the source line is then as far above them
+     * as the pods are below), their height, the gap between them.
+     */
+    const val SEASON_TOP = 8f
     const val SEASON_H = 34f
     val SEASON = TextStyle(13.5f, Weight.SEMIBOLD)
     const val SEASON_PAD = 16f
@@ -415,7 +441,7 @@ internal object VodSizes {
      * Under that room, before a show's More Like This: its title then shows above the screen's bottom (a hint) while
      * its posters start just below it (so they hold no pictures until the page glides up).
      */
-    const val STAGE_BOTTOM = 22f
+    const val STAGE_BOTTOM = 20f
     /** Pictures bound after the chosen pod (one fewer with focus in More Like This); posters (6 on a show). */
     const val POD_BIND_AFTER = 3
     const val POSTER_BIND_AFTER = 7
@@ -584,7 +610,7 @@ internal object VodSizes {
     /** The facts row's top: under the title box. */
     fun titleFactsTop(): Float = TITLE_TOP + TITLE_BOX_H + FACTS_GAP
 
-    /** The story's top and height: two 14 sp lines with their 2 dp gaps (Figtree's line is 1.2 x its size). */
+    /** The story's top and height: two 13 sp lines with their 2 dp gaps (Figtree's line is 1.2 x its size). */
     fun titleStoryTop(): Float = titleFactsTop() + FACTS_ROW_H + STORY_GAP
     fun titleStoryH(): Float = STORY_LINES * (TITLE_STORY.lineSp + TITLE_STORY.lineGap)
 
@@ -593,8 +619,8 @@ internal object VodSizes {
     /** Where the stage's right part starts in the page (pods, the season dropdown, a film's posters). */
     fun stageX(): Float = PAGE_X + ACTIONS_W + STAGE_GAP
 
-    /** The room for a pill's words in the column: between its padding, after its icon when it has one. */
-    fun pillTextW(icon: Boolean): Float = ACTIONS_W - 2 * BUTTON_PAD - if (icon) BUTTON_ICON + BUTTON_ICON_GAP else 0f
+    /** The room for a pill's words in the column: inside [ACTIONS_PAD] at each end, after its icon when it has one. */
+    fun pillTextW(icon: Boolean): Float = ACTIONS_W - 2 * ACTIONS_PAD - if (icon) BUTTON_ICON + BUTTON_ICON_GAP else 0f
 
     /** The action column with all it can hold: three pills and the circles, [BUTTON_GAP] apart. */
     fun actionsH(): Float = 4 * BUTTON_H + 3 * BUTTON_GAP

@@ -202,6 +202,9 @@ class TitleRulesTest {
         assertEquals("Resume · 42m left", resume.label)
         assertTrue(resume.restart)
         assertEquals(1f - 42f / 60f, resume.progress!!, 0.001f)
+        // A pill too narrow for all of that says "Resume" (the line shows how far); read out, the whole of it.
+        assertEquals("Resume", resume.compact)
+        assertEquals("Resume · 42m left", resume.says)
         // 30 s or less: Play from the start.
         assertEquals(TitleRules.Play("Play"), TitleRules.filmPlay(d, lastAt(30_000, hour), NOW, 2026))
         assertEquals("Resume · 59m left", TitleRules.filmPlay(d, lastAt(31_000, hour), NOW, 2026).label)
@@ -229,11 +232,22 @@ class TitleRulesTest {
     fun aShowsPlayWords() {
         val d = TitleDetails(Title("tt2", Kind.SERIES, "Show"), seasons = listOf(Season(1, listOf(ep1, ep2))))
         assertEquals(TitleRules.Play("Play S1 E1"), TitleRules.showPlay(d, PlayTarget(ep1, PlayAction.PLAY), 2026))
-        assertEquals(TitleRules.Play("Watch again · S1 E1"), TitleRules.showPlay(d, PlayTarget(ep1, PlayAction.WATCH_AGAIN), 2026))
+        // Watch again names the episode where the pill has room for it.
+        assertEquals(
+            TitleRules.Play("Watch again · S1 E1", compact = "Watch again"),
+            TitleRules.showPlay(d, PlayTarget(ep1, PlayAction.WATCH_AGAIN), 2026),
+        )
+        // Resume names the episode (tuning round 1: the pill is as short as its words): what's left is its progress
+        // line and the episode's pod, and is still read out.
         val pos = Position(11 * 60_000L, 23 * 60_000L, NOW)
         val resume = TitleRules.showPlay(d, PlayTarget(ep1, PlayAction.RESUME, position = pos), 2026)
-        assertEquals("Resume S1 E1 · 12m left", resume.label)
+        assertEquals("Resume S1 E1", resume.label)
+        assertEquals("Resume S1 E1", resume.compact)
+        assertEquals("Resume S1 E1 · 12m left", resume.says)
+        assertEquals(11f / 23f, resume.progress!!, 0.001f)
         assertTrue(resume.restart)
+        // Play and the states that can't play say one thing, shown and read out.
+        TitleRules.showPlay(d, PlayTarget(ep1, PlayAction.PLAY), 2026).let { assertTrue(it.label == it.compact && it.label == it.says) }
         // Nothing aired: when the first one airs, dimmed.
         val unaired = TitleRules.showPlay(d.copy(seasons = listOf(Season(1, listOf(ep2)))), null, 2026)
         assertEquals("Coming Dec 3", unaired.label)
@@ -413,6 +427,35 @@ class TitleRulesTest {
         assertNull(step(Which.MY_LIST, Dir.UP, circles))
         assertEquals(Which.MORE, step(Which.MY_LIST, Dir.RIGHT, circles))
         assertEquals(Which.MY_LIST, step(Which.PLAY, Dir.DOWN, circles))
+    }
+
+    @Test
+    fun aPillsWordsAreNeverCutShort() {
+        // Ten units a letter: the room decides which form shows, always at the buttons' size while one of them fits.
+        val width: (String) -> Float = { it.length * 10f }
+        val full = "Watch again · S12 E24"
+        assertEquals(TitleRules.Fit(full, small = false), TitleRules.fitWords(full, "Watch again", 210f, width))
+        assertEquals(TitleRules.Fit("Watch again", small = false), TitleRules.fitWords(full, "Watch again", 209f, width))
+        assertEquals(TitleRules.Fit("Watch again", small = false), TitleRules.fitWords(full, "Watch again", 110f, width))
+        // Too wide in both forms (no state's words are): the shorter one, a size down.
+        assertEquals(TitleRules.Fit("Watch again", small = true), TitleRules.fitWords(full, "Watch again", 109f, width))
+        // Words with no shorter form: as they are, a size down only when they don't fit.
+        assertEquals(TitleRules.Fit("Play S1 E1", small = false), TitleRules.fitWords("Play S1 E1", "Play S1 E1", 100f, width))
+        assertEquals(TitleRules.Fit("Play S1 E1", small = true), TitleRules.fitWords("Play S1 E1", "Play S1 E1", 99f, width))
+    }
+
+    @Test
+    fun theWaitAndTheCountOnThePills() {
+        // The Play pill says how long it has waited; for whom is on the source line.
+        assertEquals("Waiting · 9 s", TitleRules.waitWords("Waiting for MediaFusion · 9 s"))
+        assertEquals("Waiting · 12 s", TitleRules.waitWords("Waiting for the add-ons · 12 s"))
+        assertEquals("Waiting · 0 s", TitleRules.waitWords("Waiting for sources · 0 s"))
+        assertEquals("Waiting", TitleRules.waitWords("Waiting for sources"))
+        assertEquals("Waiting", TitleRules.waitWords(""))
+        // "Sources · 18": the dot and the count are the quieter part; "Sources" alone has none.
+        assertEquals(7, TitleRules.quietFrom("Sources · 18"))
+        assertEquals(" · 18", "Sources · 18".substring(TitleRules.quietFrom("Sources · 18")))
+        assertEquals(-1, TitleRules.quietFrom("Sources"))
     }
 
     @Test
