@@ -32,6 +32,15 @@ object VodArt {
     fun tmdbBackdrop(path: String) = "$TMDB_IMAGES/${Size.MEDIUM.tmdb}$path"
 
     /**
+     * TMDB's poster size for a More Like This card whose IMDb id isn't known here (the brief's `w185`, 185 x 278); once
+     * the IMDb id is known the card uses [poster], metahub's, like every row (one poster per IMDb id).
+     */
+    const val TMDB_POSTER = "w185"
+
+    /** A TMDB poster ("/abc.jpg") at [TMDB_POSTER]. */
+    fun tmdbPoster(path: String) = "$TMDB_IMAGES/$TMDB_POSTER$path"
+
+    /**
      * A title's [background] at [size]: metahub's size name or TMDB's width swapped in. Any other address is given back
      * as it is, and null stays null.
      */

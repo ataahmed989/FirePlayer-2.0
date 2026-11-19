@@ -60,13 +60,34 @@ class DefaultVodRepositoryTest {
         fun count(url: String) = synchronized(this) { asked.count { it == url } }
     }
 
-    /** TMDB from fixtures: the trending lists and the external ids table. */
+    /** TMDB from fixtures: the trending lists and the external ids table; title details and finds as set by a test. */
     class FakeTmdb : TmdbSource {
         var trendingCalls = 0
         val idCalls = ArrayList<Int>()
         var trendingError: Throwable? = null
         var idsError: Throwable? = null
         private val map = Fixtures.externalIds()
+        /** Details answers by "movie|693134" / "series|33880"; a missing one answers 404 (null). */
+        val details = HashMap<String, String>()
+        val detailsCalls = ArrayList<String>()
+        var detailsError: Throwable? = null
+        /** Find answers by IMDb id; a missing one finds nothing. */
+        val finds = HashMap<String, String>()
+        val findCalls = ArrayList<String>()
+
+        @Synchronized
+        override fun details(kind: Kind, tmdbId: Int): String? {
+            detailsCalls += "${kind.type}|$tmdbId"
+            detailsError?.let { throw it }
+            return details["${kind.type}|$tmdbId"]
+        }
+
+        @Synchronized
+        override fun find(imdbId: String): String {
+            findCalls += imdbId
+            detailsError?.let { throw it }
+            return finds[imdbId] ?: """{"movie_results":[],"tv_results":[]}"""
+        }
 
         override fun trending(kind: Kind): String {
             trendingCalls++
