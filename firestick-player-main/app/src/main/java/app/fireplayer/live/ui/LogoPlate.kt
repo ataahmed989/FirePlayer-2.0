@@ -45,10 +45,10 @@ object LogoPlate {
      */
     const val GLASS_LIGHT = 0xA6E6E8EB.toInt()
     /**
-     * Glass look: the darkest a logo's ink may be on average and still sit on the dark tile. Lower than [DARK_INK]
-     * because the dark tile is darker than [SOFT]: again about where ink reads equally on both tiles.
+     * Glass look: the darkest a logo's ink may be on average and still sit on the dark tile. The same as [DARK_INK]:
+     * a lower value (0.10) left black wordmarks with a little colour in them unreadable on the dark tile on the TV.
      */
-    const val DARK_INK_GLASS = 0.10f
+    const val DARK_INK_GLASS = 0.17f
     /** Glass look: a tile's corner radius as a share of its height (6 dp on a guide row's 28 dp tile, 9 dp on the details'). */
     const val TILE_RADIUS = 0.22f
     /** Classic: the plate's corner radius, dp, on a plate up to [CLASSIC_RADIUS_FOR_DP] tall; a larger plate's grows with it. */

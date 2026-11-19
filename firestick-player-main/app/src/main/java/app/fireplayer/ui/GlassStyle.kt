@@ -30,7 +30,7 @@ object GlassStyle {
     // ---- Tint ---------------------------------------------------------------------------------------------------
 
     /** Windows: the settings window, hold windows, small dialogs, the rail, Recent channels, the banner's card. */
-    const val WINDOW_TINT = 0xB80C0E12.toInt()
+    const val WINDOW_TINT = 0x940C0E12.toInt()
     /** Buttons, pills, circles and chips: a little lighter, so one reads as a surface on the dark wallpaper too. */
     const val CONTROL_TINT = 0x9E1B1F26.toInt()
     /** A faint light from above, fading out by [SHEEN_SHARE] of the way down. */

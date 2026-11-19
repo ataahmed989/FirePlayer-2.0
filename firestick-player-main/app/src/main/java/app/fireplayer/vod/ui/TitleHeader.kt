@@ -43,20 +43,31 @@ class TitleHeader(context: Context, private val t: Tokens) : LinearLayout(contex
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         }
 
+        /** The part of the picture that isn't see-through: logos come with wide empty margins. */
+        private val src = android.graphics.Rect()
+
         override fun setImage(bitmap: Bitmap?, fromMemory: Boolean) {
             this.bitmap = bitmap
+            if (bitmap != null) {
+                val w = bitmap.width
+                val h = bitmap.height
+                val px = IntArray(w * h)
+                bitmap.getPixels(px, 0, w, 0, 0, w, h)
+                val b = LogoBounds.of(px, w, h)
+                src.set(b[0], b[1], b[2], b[3])
+            }
             invalidate()
             if (bitmap != null) onArrived?.invoke(bitmap)
         }
 
         override fun onDraw(canvas: Canvas) {
             val b = bitmap ?: return
-            if (width <= 0 || height <= 0) return
-            val s = minOf(width / b.width.toFloat(), height / b.height.toFloat())
-            val w = b.width * s
-            val h = b.height * s
+            if (width <= 0 || height <= 0 || src.isEmpty) return
+            val s = minOf(width / src.width().toFloat(), height / src.height().toFloat())
+            val w = src.width() * s
+            val h = src.height() * s
             dst.set(0f, height - h, w, height.toFloat())
-            canvas.drawBitmap(b, null, dst, paint)
+            canvas.drawBitmap(b, src, dst, paint)
         }
     }
 
@@ -210,5 +221,31 @@ class TitleHeader(context: Context, private val t: Tokens) : LinearLayout(contex
 
     fun applyLook() {
         app.fireplayer.ui.Glass.background(callout, app.fireplayer.ui.Glass.Kind.CHIP)
+    }
+}
+
+
+/** Where a logo's visible part is in its picture: left, top, right, bottom (the whole picture when all is clear). */
+object LogoBounds {
+    /** Pixels fainter than this (alpha of 255) count as empty. */
+    const val VISIBLE_ALPHA = 24
+
+    fun of(argb: IntArray, w: Int, h: Int): IntArray {
+        var left = w
+        var top = h
+        var right = -1
+        var bottom = -1
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                if ((argb[row + x] ushr 24) >= VISIBLE_ALPHA) {
+                    if (x < left) left = x
+                    if (x > right) right = x
+                    if (y < top) top = y
+                    if (y > bottom) bottom = y
+                }
+            }
+        }
+        return if (right < left || bottom < top) intArrayOf(0, 0, w, h) else intArrayOf(left, top, right + 1, bottom + 1)
     }
 }

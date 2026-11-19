@@ -79,13 +79,13 @@ class LogoPlateTest {
         assertFalse(lightOnGlass(logo(0xFFFF0000.toInt(), 0.3f)))
     }
 
-    @Test fun theDarkGlassTileKeepsInkTheClassicSoftPlateCouldNot() {
-        // A deep red (luminance about 0.13): too dark for the classic soft plate, but it reads better on the dark
-        // glass tile than on the light one, so fewer tiles are light in the glass look.
+    @Test fun theGlassTileTreatsDarkInkAsTheClassicPlateDoes() {
+        // Seen on the TV: black wordmarks with a little colour in them (average ink between about 0.10 and 0.17)
+        // vanished on the dark glass tile, so the glass look uses the classic threshold.
         val deepRed = logo(0xFFD00000.toInt(), 0.3f)
         assertTrue(LogoPlate.light(deepRed))
-        assertFalse(lightOnGlass(deepRed))
-        assertTrue(LogoPlate.DARK_INK_GLASS < LogoPlate.DARK_INK)
+        assertTrue(lightOnGlass(deepRed))
+        assertEquals(LogoPlate.DARK_INK, LogoPlate.DARK_INK_GLASS)
         // A logo with its own background is just framed there too.
         assertFalse(lightOnGlass(IntArray(400) { if (it % 10 == 0) 0xFFFFFFFF.toInt() else 0xFF000000.toInt() }))
     }
