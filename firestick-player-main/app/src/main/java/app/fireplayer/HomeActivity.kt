@@ -320,6 +320,19 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         }
     }
 
+    /**
+     * OK on one of Home's recent channels: Live TV opens on it, in the miniature, as the channel watched last does.
+     */
+    override fun openChannel(key: ChannelKey) {
+        if (rail.selected == NavRail.Tab.LIVE) return
+        // Remembered first: Live TV's start plays it when nothing is playing.
+        live.openChannel(key)
+        showTab(NavRail.Tab.LIVE)
+        // And in place of a channel still playing from before.
+        live.openChannel(key)
+        focusPage()
+    }
+
     override fun onRestart() {
         super.onRestart()
         if (lookOn == Glass.on) return

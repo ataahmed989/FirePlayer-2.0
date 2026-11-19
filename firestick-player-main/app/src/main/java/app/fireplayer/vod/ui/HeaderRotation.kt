@@ -3,8 +3,9 @@ package app.fireplayer.vod.ui
 /**
  * When the page header moves on to its next title (pure, unit-tested; the clock is passed in). While idle it goes
  * through the page's feed (Top 10, or Popular's first 10) every [everyMs], round and round. It holds still while
- * paused (the page hidden, the header scrolled away, a window open) and while it follows the chosen title of the
- * page's Continue row; when either ends, the full wait starts again.
+ * paused (the page hidden, the header scrolled away, a window open), while it follows the chosen title of the
+ * page's Continue row and while it's held (focus on one of the banner's buttons); when any of them ends, the full
+ * wait starts again.
  */
 class HeaderRotation(private val everyMs: Long = EVERY_MS) {
 
@@ -22,10 +23,14 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
     var following = false
         private set
 
+    /** Focus is on one of the banner's buttons: the title shown stays. */
+    var held = false
+        private set
+
     private var nextAt = NEVER
 
-    /** Moving on by itself: a feed of two or more, not paused, not following. */
-    val running: Boolean get() = !paused && !following && count > 1
+    /** Moving on by itself: a feed of two or more, not paused, not following, not held. */
+    val running: Boolean get() = !paused && !following && !held && count > 1
 
     /** A new feed of [count] titles. The title shown stays when it still exists; the wait starts again. */
     fun setFeed(count: Int, now: Long, keepIndex: Boolean = true) {
@@ -53,6 +58,19 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
     /** Focus left the Continue row: back to the feed's title, the wait starting again. */
     fun unfollow(now: Long) {
         following = false
+        reschedule(now)
+    }
+
+    /** Focus is on one of the banner's buttons: it stays on the title shown. */
+    fun hold() {
+        held = true
+        nextAt = NEVER
+    }
+
+    /** Focus left the banner's buttons: the full wait starts again. */
+    fun unhold(now: Long) {
+        if (!held) return
+        held = false
         reschedule(now)
     }
 

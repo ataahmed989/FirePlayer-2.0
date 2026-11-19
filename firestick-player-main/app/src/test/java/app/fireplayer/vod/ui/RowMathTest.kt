@@ -64,6 +64,12 @@ class RowMathTest {
     fun pageTargetShowsTheHeaderOnlyOnTheFirstRow() {
         val tops = floatArrayOf(422f, 746f, 1210f)
         assertEquals(0f, RowMath.pageTarget(0, 0) { tops[it] }, 0f)
+        // A first row that fits under the header stays; one too tall moves up just far enough to show whole.
+        assertEquals(0f, RowMath.pageTarget(0, 0, need = 500f, viewportH = 992f) { tops[it] }, 0f)
+        assertEquals(58f, RowMath.pageTarget(0, 0, need = 628f, viewportH = 992f) { tops[it] }, 0f)
+        // Never past its own top, and lower rows go to their tops as before.
+        assertEquals(422f, RowMath.pageTarget(0, 0, need = 2_000f, viewportH = 992f) { tops[it] }, 0f)
+        assertEquals(746f, RowMath.pageTarget(1, 0, need = 628f, viewportH = 992f) { tops[it] }, 0f)
         assertEquals(746f, RowMath.pageTarget(1, 0) { tops[it] }, 0f)
         assertEquals(1210f, RowMath.pageTarget(2, 0) { tops[it] }, 0f)
     }

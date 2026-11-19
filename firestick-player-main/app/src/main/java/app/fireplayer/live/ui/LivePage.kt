@@ -866,6 +866,20 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
+    /**
+     * A channel picked outside this tab (Home's Recent channels): it is the channel watched last from now on, so the
+     * tab's start plays it in the miniature; while the tab shows, it plays now unless it's playing already.
+     */
+    fun openChannel(key: ChannelKey) {
+        prefs.lastChannel = key
+        if (!started) return
+        bg {
+            val ch = db.channel(key) ?: return@bg
+            val pl = db.playlist(ch.playlistId) ?: return@bg
+            main.post { if (started && !released && player.currentKey != key.toString()) tune(ch, pl, pressedAt = openedAtForTune()) }
+        }
+    }
+
     private var startedAt = 0L
     private fun openedAtForTune(): Long = startedAt.takeIf { android.os.SystemClock.uptimeMillis() - it < 10_000 } ?: 0L
 

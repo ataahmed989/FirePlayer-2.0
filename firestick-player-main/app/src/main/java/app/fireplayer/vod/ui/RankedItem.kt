@@ -16,12 +16,12 @@ import app.fireplayer.shell.Tokens
  * item moves along as a follower; only the poster grows.
  */
 @SuppressLint("ViewConstructor")
-class RankedItem(context: Context, private val t: Tokens) : FrameLayout(context) {
+class RankedItem(context: Context, private val t: Tokens, large: Boolean = false) : FrameLayout(context) {
 
-    val poster = CardView(context, t, CardView.Kind.POSTER)
+    val poster = CardView(context, t, CardView.Kind.POSTER, VodSizes.posterW(large), VodSizes.posterH(large))
 
-    private val slot = t.dpf(VodSizes.slot(app.fireplayer.vod.RowStyle.RANKED))
-    private val posterH = t.dpf(VodSizes.POSTER_H)
+    private val slot = t.dpf(VodSizes.slot(app.fireplayer.vod.RowStyle.RANKED, large))
+    private val posterH = t.dpf(VodSizes.posterH(large))
     private val tuck = t.dpf(VodSizes.RANK_TUCK)
     private val baseSize = posterH * VodSizes.RANK_TEXT
     private val room = posterH * VodSizes.RANK_ROOM + tuck
@@ -38,9 +38,9 @@ class RankedItem(context: Context, private val t: Tokens) : FrameLayout(context)
         setWillNotDraw(false)
         clipChildren = false
         clipToPadding = false
-        addView(poster, LayoutParams(t.dp(VodSizes.POSTER_W), t.dp(VodSizes.POSTER_H)).apply { leftMargin = slot.toInt() })
+        addView(poster, LayoutParams(t.dp(VodSizes.posterW(large)), t.dp(VodSizes.posterH(large))).apply { leftMargin = slot.toInt() })
         poster.pivotX = 0f
-        poster.pivotY = t.dp(VodSizes.POSTER_H) / 2f
+        poster.pivotY = t.dp(VodSizes.posterH(large)) / 2f
         poster.isDuplicateParentStateEnabled = false
     }
 

@@ -9,16 +9,16 @@ import app.fireplayer.shell.Tokens
 import kotlin.math.roundToInt
 
 /**
- * See all's posters: 6 across (121 x 162 dp, 14 dp apart), rows 30 dp apart, each at a fixed cell. Pages of posters are
+ * See all's posters: 5 across the content's width (154 x 205 dp, 18 dp apart), rows 30 dp apart, each at a fixed cell. Pages of posters are
  * appended as they come (one layout each); everything else is a translation: the page's Spring moves the grid up and
  * down. All its posters exist (up to See all's cap); only those near the chosen one hold pictures.
  */
 @SuppressLint("ViewConstructor")
 class PosterGrid(context: Context, private val t: Tokens) : ViewGroup(context) {
 
-    private val cellW = t.dp(VodSizes.POSTER_W)
-    private val cellH = t.dp(VodSizes.POSTER_H)
-    private val pitchX = t.dpf(VodSizes.POSTER_W + VodSizes.GAP)
+    private val cellW = t.dp(VodSizes.GRID_POSTER_W)
+    private val cellH = t.dp(VodSizes.GRID_POSTER_H)
+    private val pitchX = t.dpf(VodSizes.gridPitchX())
     private val pitchY = t.dpf(VodSizes.gridPitchY())
     private val top = t.dp(VodSizes.GRID_TOP)
 

@@ -175,7 +175,7 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         bindImages()
     }
 
-    private fun poster(): CardView = CardView(ctx, t, CardView.Kind.POSTER).apply {
+    private fun poster(): CardView = CardView(ctx, t, CardView.Kind.POSTER, VodSizes.GRID_POSTER_W, VodSizes.GRID_POSTER_H).apply {
         isFocusable = true
         isClickable = false
         isLongClickable = false

@@ -23,7 +23,8 @@ import app.fireplayer.ui.ImageTarget
  * is under it shows through and nothing is blurred or masked per frame. A new title's picture crossfades in over the
  * old one ([ArtSpec.fadeMs]): one view redrawn, nothing laid out.
  *
- * Two uses, one part: the page header's box at the card's right ([ArtSpec.HEADER]: 650 ms, Glass Home's hero fade) and
+ * Two uses, one part: the page banner's picture ([ArtSpec.BANNER], [ArtSpec.BANNER_WHOLE]: sharp, decoded at the size
+ * it's shown, 650 ms, Glass Home's hero fade; the banner's dark shading is drawn over it separately, by [VodHeader]) and
  * the title page's full-screen backdrop ([ArtSpec.TITLE]: decoded at 960 x 540 px, drawn over the whole screen
  * ([frame]) and shown first from a small copy ([hold], [preview]) that the real one crossfades over in 140 ms).
  */
@@ -31,8 +32,10 @@ import app.fireplayer.ui.ImageTarget
 class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : View(context), ImageTarget {
 
     /**
-     * How a backdrop is decoded and shown: [decodeW] x [decodeH] px (0: half the view's size), the fade baked into it,
-     * the memory key's suffix for that bake, where the crop sits ([cropY]) and the crossfade's length.
+     * How a backdrop is decoded and shown: [decodeW] x [decodeH] px (0: the view's size, or half of it with [half]),
+     * the fade baked into it, the memory key's suffix for that bake, where the crop sits ([cropY]) and the crossfade's
+     * length. With [keep] false a picture leaves the decoded pictures' memory once another has faded in over it (a
+     * banner's, 2 MB each: the rotation decodes the next one ahead anyway).
      */
     class ArtSpec(
         val decodeW: Int,
@@ -41,8 +44,24 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         val keySuffix: String,
         val cropY: Float,
         val fadeMs: Long,
+        val half: Boolean = true,
+        val keep: Boolean = true,
     ) {
         companion object {
+            /**
+             * A banner's picture where its box is narrower than the card (Movies, TV Shows, My List): sharp, its left
+             * edge alone fading to clear ([VodSizes.BANNER_FADE_LEFT_TO]) so it has no edge on the card.
+             */
+            val BANNER = ArtSpec(
+                0, 0, fadeLeft(VodSizes.BANNER_FADE_LEFT_TO), "|banner", VodSizes.ART_CROP_Y, VodSizes.HERO_FADE_MS,
+                half = false, keep = false,
+            )
+
+            /** A banner's picture that fills its card (Home): sharp and whole. */
+            val BANNER_WHOLE = ArtSpec(
+                0, 0, { it }, "|whole", VodSizes.ART_CROP_Y, VodSizes.HERO_FADE_MS, half = false, keep = false,
+            )
+
             /** Step 1's page headers: clear at the left edge to solid over 45% (eased), solid to clear over the bottom 35%. */
             val HEADER = ArtSpec(
                 0, 0,
@@ -84,6 +103,21 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
                 c.drawRect(0f, 0f, w, h, p)
                 out
             }
+
+            /** As [fade], the left edge alone: clear at the picture's left edge to solid at [to] of its width (eased). */
+            fun fadeLeft(to: Float): (Bitmap) -> Bitmap = { src ->
+                val out = if (src.isMutable && src.config == Bitmap.Config.ARGB_8888) src else src.copy(Bitmap.Config.ARGB_8888, true).also { src.recycle() }
+                val w = out.width.toFloat()
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
+                p.shader = LinearGradient(
+                    0f, 0f, w * to, 0f,
+                    IntArray(VodSizes.FADE_ALPHAS.size) { VodSizes.FADE_ALPHAS[it] shl 24 },
+                    VodSizes.FADE_STOPS,
+                    Shader.TileMode.CLAMP,
+                )
+                Canvas(out).drawRect(0f, 0f, w, out.height.toFloat(), p)
+                out
+            }
         }
     }
 
@@ -114,12 +148,15 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
     private var before: Bitmap? = null
     private var beforeShader: BitmapShader? = null
     private var beforeCover = false
+    /** The memory keys of the picture shown and the one it's fading in over. */
+    private var shownKey: String? = null
+    private var beforeKey: String? = null
     private var fade = 1f
     private var fader: ValueAnimator? = null
     private val box = RectF()
     private val m = Matrix()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private var wanted: String? = null
+    private var wantedUrl: String? = null
 
     /** The small copy's own target: what it brings shows only until the real picture is there. */
     private val previewTarget = object : ImageTarget {
@@ -133,16 +170,19 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    /** The decode size: the spec's, or half the shown size. */
-    private val decodeW: Int get() = if (spec.decodeW > 0) spec.decodeW else (width / 2).coerceAtLeast(1)
-    private val decodeH: Int get() = if (spec.decodeH > 0) spec.decodeH else (height / 2).coerceAtLeast(1)
+    /** The decode size: the spec's, or the shown size (half of it for a spec that says so). */
+    private val decodeW: Int get() = if (spec.decodeW > 0) spec.decodeW else (if (spec.half) width / 2 else width).coerceAtLeast(1)
+    private val decodeH: Int get() = if (spec.decodeH > 0) spec.decodeH else (if (spec.half) height / 2 else height).coerceAtLeast(1)
+
+    /** The picture asked for last ([show]), shown or on its way. */
+    val wanted: String? get() = wantedUrl
 
     /** The memory key [url]'s picture has here (to find it decoded already, or drop it). */
     fun keyFor(url: String): String = ImageLoader.keyOf(url, decodeW, decodeH, spec.keySuffix)
 
     /** Shows [url]'s picture (crossfading from what shows now), or nothing for null. */
     fun show(url: String?) {
-        wanted = url
+        wantedUrl = url
         if (width <= 0 || height <= 0) return
         if (url == null) {
             ImageLoader.release(this)
@@ -191,12 +231,13 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         }
         shown = null; shownShader = null
         before = null; beforeShader = null
+        shownKey = null; beforeKey = null
         invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         box.set(0f, 0f, w.toFloat(), h.toFloat())
-        if (w > 0 && h > 0 && wanted != null && imageKey == null) show(wanted)
+        if (w > 0 && h > 0 && wantedUrl != null && (imageKey == null || (spec.decodeW <= 0 && oldw > 0 && (w != oldw || h != oldh)))) show(wantedUrl)
     }
 
     override fun setImage(bitmap: Bitmap?, fromMemory: Boolean) {
@@ -206,6 +247,7 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
                 fader?.cancel()
                 shown = null; shownShader = null
                 before = null; beforeShader = null
+                shownKey = null; beforeKey = null
                 invalidate()
             }
             return
@@ -214,13 +256,18 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         // The small copy has done its part.
         ImageLoader.release(previewTarget)
         fader?.cancel()
+        // A fade cut short: the picture it was fading from is replaced already.
+        forget(beforeKey)
         before = shown
         beforeShader = shownShader
         beforeCover = shownCover
+        beforeKey = shownKey
         shown = bitmap
+        shownKey = imageKey
         shownShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
         shownCover = false
         if (before == null) {
+            beforeKey = null
             fade = 1f
             invalidate()
             return
@@ -233,11 +280,19 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
                 if (fade >= 1f) {
                     before = null
                     beforeShader = null
+                    forget(beforeKey)
+                    beforeKey = null
                 }
                 invalidate()
             }
             start()
         }
+    }
+
+    /** A picture replaced leaves the decoded pictures' memory ([ArtSpec.keep] false), unless it's the one shown again. */
+    private fun forget(key: String?) {
+        if (spec.keep || key == null || key == shownKey || key == imageKey) return
+        ImageLoader.drop(key)
     }
 
     override fun onDraw(canvas: Canvas) {

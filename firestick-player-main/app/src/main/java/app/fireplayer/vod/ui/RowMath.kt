@@ -43,10 +43,14 @@ internal object RowMath {
     /**
      * Where the page's column goes (its upward offset) with row [focused] chosen: 0 (the header shows) on the first
      * row shown, else that row's top, so it sits just under the name line. [rowTops] are the rows' tops in the column,
-     * [firstShown] the first row shown.
+     * [firstShown] the first row shown. A first row too tall to show whole under the header (its title and grown card
+     * need [need] of the viewport's [viewportH]) moves up just far enough that it does, never past its own top.
      */
-    fun pageTarget(focused: Int, firstShown: Int, rowTops: (Int) -> Float): Float =
-        if (focused <= firstShown) 0f else rowTops(focused)
+    fun pageTarget(focused: Int, firstShown: Int, need: Float = 0f, viewportH: Float = Float.MAX_VALUE, rowTops: (Int) -> Float): Float {
+        if (focused > firstShown) return rowTops(focused)
+        val top = rowTops(focused)
+        return (top + need - viewportH).coerceIn(0f, top.coerceAtLeast(0f))
+    }
 
     /**
      * Rows whose pictures are kept with the column at [offset] (where it is heading): those that show in the viewport
