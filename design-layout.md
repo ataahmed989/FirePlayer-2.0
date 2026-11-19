@@ -466,6 +466,10 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - At rest a show's episode row starts at the Play target's card when it is in the season shown (else E1), so Down
     from the buttons only grows that card instead of gliding along the row.
   - A page covered by one opened from its More Like This keeps that row as it was (the poster grown) for coming back.
+  - On a show, the (⋯) window says "Mark unwatched" only while every aired regular episode shows ✓ (the show's own
+    mark covers only the episodes aired when it was set), so after new episodes air it offers Mark watched again;
+    before the episodes are known it follows the show's own mark. The callout chip comes from the data's one rule
+    (Callouts.choose), the same the data tests check against the research's expected page.
 
 ## Concept references (local preview artifacts)
 

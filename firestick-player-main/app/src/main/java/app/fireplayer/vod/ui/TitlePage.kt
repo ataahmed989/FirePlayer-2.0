@@ -27,6 +27,7 @@ import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.data.Callouts
 import app.fireplayer.vod.data.VodArt
 import app.fireplayer.vod.hasImdbId
 import app.fireplayer.vod.playTarget
@@ -304,12 +305,10 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         val last = r?.lastPlayed(opened)
         val play: TitleRules.Play
         var filmWatched = false
-        var allWatched = false
         val out: Boolean
         if (isShow) {
             target = playTarget(details.episodes, last, now)
             play = TitleRules.showPlay(details, target, year)
-            allWatched = r != null && TitleRules.allWatched(details.episodes, now) { r.isEpisodeWatched(it) }
             out = details.episodes.isEmpty() || target != null
         } else {
             target = null
@@ -322,7 +321,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         buttons.setRestart(play.restart)
         buttons.setSources(out)
         buttons.setMyList(r?.inMyList(opened.id) == true)
-        val callout = TitleRules.callout(details, filmWatched, allWatched, target)
+        // The repository's rule for the one chip (the same one its tests check against the research's fixtures).
+        val callout = Callouts.choose(details, filmWatched, { r?.isEpisodeWatched(it) == true }, target, now)
         val storyNow = header.storyShown
         val story = if (storyLocked && storyNow.isNotEmpty()) storyNow else TitleRules.story(details)
         header.show(TitleRules.facts(details), callout?.let { TitleRules.calloutText(it, year) }, story, TitleRules.castLine(details))
@@ -845,8 +845,10 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         val hold = host.hold
         val title = details.title
         val now = System.currentTimeMillis()
-        val watched = if (isShow) {
-            r.isWatched(opened.id) || TitleRules.allWatched(details.episodes, now) { r.isEpisodeWatched(it) }
+        // A show reads as its episodes' ✓ marks do (the show's own mark covers only the episodes aired when it was
+        // set): with episodes aired since, it offers Mark watched again. Before its episodes are known, its own mark.
+        val watched = if (isShow && details.episodes.isNotEmpty()) {
+            TitleRules.allWatched(details.episodes, now) { r.isEpisodeWatched(it) }
         } else {
             r.isWatched(opened.id)
         }

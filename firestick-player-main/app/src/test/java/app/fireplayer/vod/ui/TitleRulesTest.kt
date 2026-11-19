@@ -14,6 +14,7 @@ import app.fireplayer.vod.Season
 import app.fireplayer.vod.Sourced
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.data.Callouts
 import app.fireplayer.vod.playTarget
 import app.fireplayer.vod.ui.TitleFixtures.NOW
 import app.fireplayer.vod.ui.TitleFixtures.THIS_YEAR
@@ -64,7 +65,7 @@ class TitleRulesTest {
             assertEquals(case, e.getString("facts"), TitleRules.facts(d))
             assertEquals(case, e.getString("cast_line"), TitleRules.castLine(d))
             val oscar = if (e.isNull("oscar_callout")) null else e.getString("oscar_callout")
-            assertEquals(case, oscar, (TitleRules.callout(d, filmWatched = false, allWatched = false, target = null) as? Callout.Oscars)?.text)
+            assertEquals(case, oscar, (Callouts.choose(d, false, { false }, null, NOW) as? Callout.Oscars)?.text)
             val coming = if (e.isNull("coming")) null else e.getString("coming")
             val play = TitleRules.filmPlay(d, null, NOW, THIS_YEAR)
             assertEquals(case, coming, if (play.enabled) null else play.label)
@@ -140,22 +141,28 @@ class TitleRulesTest {
     private val ep1 = Episode("tt2:1:1", 1, 1, "One", released = NOW - 100_000, day = Day(2026, 11, 18))
     private val ep2 = Episode("tt2:1:2", 1, 2, "Two", released = NOW + 86_400_000, day = Day(2026, 12, 3))
 
+    /** The page's chip comes from the repository's rule ([Callouts.choose]); its order as the page relies on it. */
     @Test
     fun theOneCalloutComesInTheBriefsOrder() {
-        assertEquals(Callout.Top10(4), TitleRules.callout(film.copy(top10Rank = 4), filmWatched = true, allWatched = false, target = null))
-        assertEquals(Callout.Watched, TitleRules.callout(film, filmWatched = true, allWatched = false, target = null))
-        assertEquals(Callout.Oscars("Won 2 Oscars"), TitleRules.callout(film, filmWatched = false, allWatched = false, target = null))
-        assertNull(TitleRules.callout(film.copy(oscars = null), filmWatched = false, allWatched = false, target = null))
+        val none: (Episode) -> Boolean = { false }
+        val all: (Episode) -> Boolean = { true }
+        assertEquals(Callout.Top10(4), Callouts.choose(film.copy(top10Rank = 4), true, none, null, NOW))
+        assertEquals(Callout.Watched, Callouts.choose(film, true, none, null, NOW))
+        assertEquals(Callout.Oscars("Won 2 Oscars"), Callouts.choose(film, false, none, null, NOW))
+        assertNull(Callouts.choose(film.copy(oscars = null), false, none, null, NOW))
 
+        val aired = show.copy(seasons = listOf(Season(1, listOf(ep1, ep2))))
         val newer = PlayTarget(ep1, PlayAction.PLAY, newEpisodes = true)
         val upToDate = PlayTarget(ep1, PlayAction.WATCH_AGAIN, upcoming = ep2)
-        assertEquals(Callout.WatchedAll, TitleRules.callout(show, filmWatched = false, allWatched = true, target = newer))
-        assertEquals(Callout.NewEpisodes, TitleRules.callout(show, filmWatched = false, allWatched = false, target = newer))
-        assertEquals(Callout.UpToDate(ep2), TitleRules.callout(show, filmWatched = false, allWatched = false, target = upToDate))
-        assertEquals(Callout.Oscars("Nominated for 1 Oscar"), TitleRules.callout(show, filmWatched = false, allWatched = false, target = null))
+        assertEquals(Callout.WatchedAll, Callouts.choose(aired, false, all, newer, NOW))
+        assertEquals(Callout.NewEpisodes, Callouts.choose(aired, false, none, newer, NOW))
+        assertEquals(Callout.UpToDate(ep2), Callouts.choose(aired, false, none, upToDate, NOW))
+        assertEquals(Callout.Oscars("Nominated for 1 Oscar"), Callouts.choose(aired, false, none, null, NOW))
         // A film's watched mark means nothing on a show, a show's "all" nothing on a film.
-        assertEquals(Callout.Oscars("Nominated for 1 Oscar"), TitleRules.callout(show, filmWatched = true, allWatched = false, target = null))
-        assertEquals(Callout.Oscars("Won 2 Oscars"), TitleRules.callout(film, filmWatched = false, allWatched = true, target = null))
+        assertEquals(Callout.Oscars("Nominated for 1 Oscar"), Callouts.choose(aired, true, none, null, NOW))
+        assertEquals(Callout.Oscars("Won 2 Oscars"), Callouts.choose(film, false, all, null, NOW))
+        // Nothing aired yet: never "watched all".
+        assertEquals(Callout.Oscars("Nominated for 1 Oscar"), Callouts.choose(show.copy(seasons = listOf(Season(1, listOf(ep2)))), false, all, null, NOW))
     }
 
     @Test

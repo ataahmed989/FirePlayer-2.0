@@ -92,23 +92,7 @@ internal object TitleRules {
     /** The whole story (the header shows 3 lines of it). */
     fun story(d: TitleDetails): String = d.story?.value?.trim().orEmpty()
 
-    /**
-     * The one callout, in the brief's order: this week's Top 10; then a film watched ("✓ Watched") or a show's
-     * episodes (all watched, new ones, or caught up); then an Oscar line.
-     */
-    fun callout(d: TitleDetails, filmWatched: Boolean, allWatched: Boolean, target: PlayTarget?): Callout? {
-        d.top10Rank?.takeIf { it in 1..10 }?.let { return Callout.Top10(it) }
-        if (d.title.kind == Kind.MOVIE) {
-            if (filmWatched) return Callout.Watched
-        } else {
-            if (allWatched) return Callout.WatchedAll
-            if (target?.newEpisodes == true) return Callout.NewEpisodes
-            target?.upcoming?.let { return Callout.UpToDate(it) }
-        }
-        d.oscars?.takeIf { it.isNotBlank() }?.let { return Callout.Oscars(it) }
-        return null
-    }
-
+    /** The words of the one callout, which the repository's [app.fireplayer.vod.data.Callouts.choose] picks. */
     fun calloutText(c: Callout, thisYear: Int): String = when (c) {
         is Callout.Top10 -> "#${c.rank} in Top 10 this week"
         Callout.Watched -> "✓ Watched"
