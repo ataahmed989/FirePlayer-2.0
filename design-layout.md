@@ -527,3 +527,21 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   and the extra test app is removed; the user re-enters their info; nothing permanent is built only for the
   transition. FirePlayer 2.0 keeps acting as an external player (TiviMate). Until the swap, design work continues on
   the Max-only test build. Details in PROGRESS.md §6.
+- 2026-11-19 · User: Search, both kinds, agreed (to be built in the redesigned look):
+  - One Search page with two modes and a two-way switch at the top ("Movies & TV Shows" / "Live TV", the active one
+    highlighted; styled with the redesign). The rail's Search tab opens Movies & TV Shows.
+  - The Menu (3-line) button's window on Home, Movies, TV Shows, My List and Settings becomes "Search and App
+    Settings": a Search bubble at the top (search icon left, "Search" centred) opens the Search page in Movies & TV
+    Shows mode. The VOD player's own settings window keeps its layout; only its "App Settings" button is renamed
+    "Search and App Settings" (the Search bubble is in that window, not in the player's settings window); Search from
+    there leaves the film (position saved).
+  - On Live TV the Search bubble is at the top of the Live TV settings window and of "Search and App Settings" opened
+    from there; both open the Search page in Live TV mode (channels and programmes, all playlists, its own history).
+    Channel results: a row of small logo tiles with the name beneath; a name that doesn't fit starts scrolling after
+    about 0.3 s of focus; hold OK shows the full name and the guide's channel options. Programme results: a vertical
+    list underneath, a blue LIVE mark on ones on now. A section shows only when it has results.
+  - OK: a channel, or a programme on now, plays full screen on Live TV; a later programme opens the guide at that
+    channel and time. Back from Live search returns to Live TV.
+  - For now the channel stops while searching. Wanted after the redesign: automatic picture-in-picture, the live
+    channel keeps playing in the top-right mini player when going from a playing channel to Home or Search (its size
+    and position are decided with the redesigned pages first).

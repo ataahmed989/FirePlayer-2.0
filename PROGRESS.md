@@ -235,8 +235,12 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       the guide's current list (`guide.channelList()`), so after browsing another group in the guide it jumps into that
       group, and to its first channel when the playing one isn't in it. Change: step (and wrap) within the group the
       playing channel was started from, whichever group the guide shows.
-- [ ] **Live TV search** (user, 2026-11-19): a Search button on the Live TV page for channels and programmes, separate
-      from the rail's Search tab (films and shows only).
+- [ ] **Search, both kinds** (user, 2026-11-19; design agreed, in design-layout.md's decisions log): one Search page with
+      a Movies & TV Shows / Live TV switch, reached from the rail and from the "Search and App Settings" / Live TV
+      settings windows; Live mode searches channels (logo tiles) and programmes (list with LIVE marks). Built after
+      the look redesign so it is made in the new look.
+- [ ] **Automatic live picture-in-picture** (user, 2026-11-19): the playing channel continues in the top-right mini
+      player on Home / Search; after the pages and the mini player's size are redesigned.
 - [x] Glass Home integration (2026-11-19): FirePlayer 2.0 serves its Films & Shows Continue Watching to Glass Home and
       resumes straight from it (verified on the Max: cold start to first frame in ~5 s, resumed at the saved point,
       Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when
