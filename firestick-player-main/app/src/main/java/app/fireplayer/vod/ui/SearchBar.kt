@@ -106,7 +106,8 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
             setOnKeyListener { _, keyCode, event -> onKey(keyCode, event, fromTrash = false) }
         }
         addView(bar, LayoutParams(t.dp(VodSizes.searchBarW()), t.dp(VodSizes.SEARCH_BAR_H)))
-        addView(trash, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+        // Taller than the bar: its name hangs under it (drawn over the gap, never moving the bar).
+        addView(trash, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.SEARCH_TRASH + VodSizes.SEARCH_TRASH_LABEL)).apply {
             leftMargin = t.dp(VodSizes.SEARCH_TRASH_GAP)
             gravity = Gravity.TOP
         })

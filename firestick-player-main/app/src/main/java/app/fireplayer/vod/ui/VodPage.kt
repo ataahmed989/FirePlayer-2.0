@@ -193,9 +193,13 @@ class VodPage(
         header.blocked = { host.overlayOpen() || hold.isOpen }
         when {
             // My List: the header holds still above the rows, which glide under it.
-            myList -> root.addView(headerBand, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(VodSizes.HEADER_H)).apply {
-                topMargin = t.dp(VodSizes.VIEWPORT_TOP)
-            })
+            myList -> {
+                // Shown with the first title (updateListHeader).
+                headerBand.visibility = View.INVISIBLE
+                root.addView(headerBand, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(VodSizes.HEADER_H)).apply {
+                    topMargin = t.dp(VodSizes.VIEWPORT_TOP)
+                })
+            }
             search -> searchBar?.let {
                 it.setPadding(pageX, 0, 0, 0)
                 column.header = it
@@ -722,7 +726,8 @@ class VodPage(
         sa.takeFocus()
         if (pageSpring.moving) pageSpring.snap(pageSpring.target)
         viewport.visibility = View.INVISIBLE
-        nameText.text = "${spec.label} · $pageName"
+        // "Popular · Movies"; My List's rows name it already ("My List · Movies").
+        nameText.text = if (spec.label.startsWith(pageName)) spec.label else "${spec.label} · $pageName"
         updateListHeader()
         updateHeaderPause()
         // Only the grid's pictures (and the row it came from, for coming back).
@@ -1083,7 +1088,8 @@ class VodPage(
         if (card == null) {
             headerId = null
             header.unfollow()
-        } else if (focusedRow == null || focusedRow === row) {
+        } else if (focusedRow == null) {
+            // Focus in a row: the header is on its card already (onItemFocused).
             followCard(card)
         }
         headerBand.visibility = if (card == null || covered || seeAll?.isOpen == true) View.INVISIBLE else View.VISIBLE
@@ -1121,14 +1127,10 @@ class VodPage(
             // A new search starts at its first card.
             row.chosen = 0
             if (row.items.isNotEmpty()) row.motion.snap(0, isGrown = false)
-            if (q.isEmpty()) {
-                row.answered = true
-                hideRow(row)
-            } else {
-                row.answered = false
-                load(row)
-            }
+            row.answered = q.isEmpty()
         }
+        // Every row waits for its new answer before any answers (else "nothing found" could come too soon).
+        for (row in rows) if (q.isEmpty()) hideRow(row) else load(row)
         checkEmpty()
     }
 

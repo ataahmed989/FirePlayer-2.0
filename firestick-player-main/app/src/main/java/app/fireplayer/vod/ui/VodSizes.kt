@@ -103,6 +103,8 @@ internal object VodSizes {
     const val SEARCH_TRASH = PageRow.ROW_DP
     const val SEARCH_TRASH_ICON = 18f
     const val SEARCH_TRASH_GAP = 12f
+    /** Room under the trash button for its name, which shows while it is focused. */
+    const val SEARCH_TRASH_LABEL = 22f
     /** Between the bar and what's under it (the history list, the first row of results). */
     const val SEARCH_GAP = HEADER_GAP
     /** The history list's room at the screen's bottom. */

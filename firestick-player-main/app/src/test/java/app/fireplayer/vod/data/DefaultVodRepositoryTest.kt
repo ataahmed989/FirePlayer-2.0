@@ -439,4 +439,72 @@ class DefaultVodRepositoryTest {
             pool.shutdownNow()
         }
     }
+
+    // ---- My List and Search tabs ----
+
+    @Test
+    fun myListRowsHoldOneKindEachTheLatestAddedFirst() {
+        val r = repo()
+        val first = Title("tt0000011", Kind.MOVIE, "One")
+        val series = Title("tt0000012", Kind.SERIES, "Two")
+        val latest = Title("tt0000013", Kind.MOVIE, "Three")
+        r.setInMyList(first, true)
+        now += 1_000
+        r.setInMyList(series, true)
+        now += 1_000
+        r.setInMyList(latest, true)
+        assertEquals(listOf(listOf(latest.id, first.id) to true), r.answers(row(Source.MyListOf(Kind.MOVIE))))
+        assertEquals(listOf(listOf(series.id) to true), r.answers(row(Source.MyListOf(Kind.SERIES))))
+        r.setInMyList(series, false)
+        assertEquals(listOf(emptyList<String>() to true), r.answers(row(Source.MyListOf(Kind.SERIES))))
+    }
+
+    @Test
+    fun aSearchIsAskedOnceKeptAFewMinutesAndNeverForBlankWords() {
+        val url = Cinemeta.searchUrl(Kind.MOVIE, "dune")
+        assertEquals("${Cinemeta.BASE}/catalog/movie/top/search=dune.json", url)
+        http.answers[url] = """{"metas":[{"id":"tt1160419","type":"movie","name":"Dune"},""" +
+            """{"id":"tt15239678","type":"movie","name":"Dune: Part Two"}]}"""
+        val r = repo()
+        val spec = row(Source.Search(Kind.MOVIE, " dune "))
+        val found = listOf("tt1160419", "tt15239678")
+        assertEquals(listOf(found to true), r.answers(spec))
+        assertEquals(listOf(found to true), r.answers(spec))
+        assertEquals(1, http.count(url))
+        // A few minutes on, asked again; offline then, the older answer stays.
+        now += Cinemeta.SEARCH_FRESH_MS + 1
+        http.answers.remove(url)
+        assertEquals(listOf(found to true), r.answers(spec))
+        assertEquals(2, http.count(url))
+        // Never kept on disk: a new start asks again (and offline finds nothing).
+        assertEquals(listOf(emptyList<String>() to true), repo().answers(spec))
+        val asked = http.asked.size
+        assertEquals(listOf(emptyList<String>() to true), r.answers(row(Source.Search(Kind.SERIES, "   "))))
+        assertEquals(asked, http.asked.size)
+    }
+
+    @Test
+    fun aSearchCancelledBeforeItsTurnIsNeverSent() {
+        val url = Cinemeta.searchUrl(Kind.SERIES, "bear")
+        http.answers[url] = """{"metas":[{"id":"tt14452776","type":"series","name":"The Bear"}]}"""
+        val queued = ArrayList<Runnable>()
+        val r = DefaultVodRepository(
+            http = http,
+            tmdb = tmdb,
+            tmdbKey = { key },
+            cache = JsonCache(File(dir, "vod")) { now },
+            idStore = ids,
+            libraryStore = library,
+            main = direct,
+            io = direct,
+            net = Executor { queued += it },
+            lookups = direct,
+            clock = { now },
+        )
+        var heard = 0
+        r.load(row(Source.Search(Kind.SERIES, "bear")), 0, 16) { _, _ -> heard++ }.cancel()
+        queued.forEach { it.run() }
+        assertEquals(0, heard)
+        assertEquals(0, http.count(url))
+    }
 }
