@@ -134,6 +134,7 @@ class VodPage(
     private var backClosedPopup = false
     private var seeAllBackDown = false
     private val libraryListener: () -> Unit = { onLibraryChanged() }
+    private val rowsListener: () -> Unit = { applyRows() }
 
     private val pageName = when (page) {
         Page.HOME -> "Home"
@@ -243,6 +244,7 @@ class VodPage(
     fun release() {
         pause()
         released = true
+        repo?.removeRowsListener(rowsListener)
         for (row in rows) row.cancel?.cancel()
         headerCancel?.cancel()
         window?.release()
@@ -680,7 +682,57 @@ class VodPage(
             rows += row
             column.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, row.bandHeight))
         }
+        r.addRowsListener(rowsListener)
         if (resumed) r.addLibraryListener(libraryListener)
+    }
+
+    /**
+     * Settings › Rows changed the page's rows: rows that stay keep their cards and place in the viewer's memory, new
+     * ones are made and loaded, rows taken off go (focus in one moves to the row now in its place, else the rail).
+     */
+    private fun applyRows() {
+        if (released || !rowsBuilt) return
+        val r = repo ?: return
+        val specs = r.rows(page)
+        if (specs == rows.map { it.spec }) return
+        val old = rows.associateBy { it.spec }
+        val made = ArrayList<TitleRow>()
+        val next = specs.map { spec -> old[spec] ?: TitleRow(ctx, t, spec, this).also { made += it } }
+        val gone = rows.filter { row -> next.none { it === row } }
+        // Focus off a row that goes, before it goes: to the next row shown that stays, else the one before, else the rail.
+        var focused = rows.firstOrNull { it.hasFocus() }
+        if (focused != null && gone.any { it === focused }) {
+            val vis = visibleRows()
+            val k = vis.indexOf(focused)
+            val stays = { row: TitleRow -> next.any { it === row } && row.items.isNotEmpty() }
+            val to = vis.drop(k + 1).firstOrNull(stays) ?: vis.take(k.coerceAtLeast(0)).lastOrNull(stays)
+            if (to == null || !to.focusChosen()) host.focusRail()
+            focused = to
+        }
+        for (row in gone) {
+            row.cancel?.cancel()
+            row.releaseImages(cancel = true)
+            // Not VISIBLE: whatever remembers it (a title page or See all opened from it) finds it gone.
+            row.visibility = View.GONE
+            column.removeView(row)
+            if (lastRow === row) lastRow = null
+            if (focusedRow === row) focusedRow = null
+            if (anchorRow === row) anchorRow = null
+            if (seeAllFrom?.first === row) seeAllFrom = null
+        }
+        rows.clear()
+        rows += next
+        // In the new order, after the header band.
+        next.forEachIndexed { i, row ->
+            if (column.indexOfChild(row) == i + 1) return@forEachIndexed
+            if (row.parent != null) column.removeView(row)
+            column.addView(row, i + 1, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, row.bandHeight))
+        }
+        if (lastLoad != 0L) for (row in made) load(row)
+        // Moved in the column (taken off and put back): focus back on its card.
+        if (focused != null && !focused.hasFocus()) focused.focusChosen()
+        checkEmpty()
+        updateImages()
     }
 
     private fun retry() {

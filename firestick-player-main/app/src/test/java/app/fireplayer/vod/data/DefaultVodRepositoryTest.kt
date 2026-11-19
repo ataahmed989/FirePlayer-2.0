@@ -340,6 +340,42 @@ class DefaultVodRepositoryTest {
     }
 
     @Test
+    fun aTop10ForBothRanksFilmsAndSeriesInTurn() {
+        val both = row(Source.Trending(null), RowStyle.RANKED)
+        // Without a key: none, as for one kind.
+        assertEquals(listOf(emptyList<String>() to true), repo().answers(both))
+        key = "0123456789abcdef0123456789abcdef"
+        http.answers[movieTop] = Fixtures.text("cinemeta_catalog_movie_top.json")
+        http.answers[seriesTop] = Fixtures.text("cinemeta_catalog_series_top.json")
+        val r = repo()
+        val answers = r.answers(both, 0, 15)
+        assertEquals(TmdbTrending.interleave(Fixtures.expectedTop10("movie"), Fixtures.expectedTop10("tv")), answers.last().first)
+        assertTrue(answers.last().second)
+        assertEquals((1..10).toList(), r.cards(both).map { it.rank })
+    }
+
+    @Test
+    fun rowsFollowSettingsRows() {
+        val store = RowLayoutStore.Memory()
+        val r = DefaultVodRepository(http, tmdb, { key }, JsonCache(File(dir, "vod")) { now }, ids, library,
+            main = direct, io = direct, net = direct, lookups = direct, clock = { now }, rowStore = store)
+        var told = 0
+        r.addRowsListener { told++ }
+        r.rowSettings.setOn(Page.MOVIES, "movies.featured", false)
+        assertTrue(r.rowSettings.add(Page.MOVIES, RowLayouts.addedKey(Page.MOVIES, "genre.movie.Action")))
+        assertEquals(2, told)
+        val keys = r.rows(Page.MOVIES).map { it.key }
+        assertFalse("movies.featured" in keys)
+        assertEquals("movies.add.genre.movie.Action", keys.last())
+        // Kept: a new repository reads the same rows.
+        val again = DefaultVodRepository(http, tmdb, { key }, JsonCache(File(dir, "vod")) { now }, ids, library,
+            main = direct, io = direct, net = direct, lookups = direct, clock = { now }, rowStore = store)
+        assertEquals(keys, again.rows(Page.MOVIES).map { it.key })
+        // Other pages untouched.
+        assertEquals(PageRows.rows(Page.HOME, 2026).map { it.key }, again.rows(Page.HOME).map { it.key })
+    }
+
+    @Test
     fun homesHeaderMixesBothTop10s() {
         key = "0123456789abcdef0123456789abcdef"
         http.answers[movieTop] = Fixtures.text("cinemeta_catalog_movie_top.json")

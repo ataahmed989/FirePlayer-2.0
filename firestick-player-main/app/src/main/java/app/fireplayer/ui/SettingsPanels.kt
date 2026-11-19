@@ -193,6 +193,7 @@ class SettingsPanels(
             }
             SettingsCategory.LOOK -> lookSection(this)
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
+            SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity)
             SettingsCategory.ADDONS -> app.fireplayer.vod.ui.AddonsSettings.render(this, activity, app.fireplayer.vod.Sources.get(activity).addons)
             SettingsCategory.THIS_TV -> app.fireplayer.vod.ui.ThisTvSettings.render(this, app.fireplayer.vod.Sources.get(activity).thisTv)
             SettingsCategory.TITLES -> renderTitles(this)

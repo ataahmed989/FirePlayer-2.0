@@ -1,11 +1,13 @@
 package app.fireplayer.vod.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import app.fireplayer.data.KeyStore
 import app.fireplayer.subs.Tmdb
+import app.fireplayer.vod.Page
 import app.fireplayer.vod.VodRepository
 import java.io.File
 import java.util.concurrent.Executor
@@ -42,7 +44,18 @@ object VodRepositories {
             io = Executors.newSingleThreadExecutor(threads("FirePlayerVodDisk", Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE)),
             net = Executors.newFixedThreadPool(3, threads("FirePlayerVodNet", Process.THREAD_PRIORITY_BACKGROUND)),
             lookups = Executors.newFixedThreadPool(3, threads("FirePlayerVodLookups", Process.THREAD_PRIORITY_BACKGROUND)),
+            rowStore = PrefsRowStore(app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)),
         )
+    }
+
+    /** Settings › Rows' choices in the app's settings file, a key per page. */
+    private class PrefsRowStore(private val sp: SharedPreferences) : RowLayoutStore {
+        override fun read(page: Page): String? = sp.getString(key(page), null)
+        override fun write(page: Page, text: String?) {
+            sp.edit().apply { if (text == null) remove(key(page)) else putString(key(page), text) }.apply()
+        }
+
+        private fun key(page: Page) = "vod_rows_" + RowLayouts.prefix(page)
     }
 
     /** Daemon threads below the UI's priority, so rows never compete with the UI or a playing film. */
