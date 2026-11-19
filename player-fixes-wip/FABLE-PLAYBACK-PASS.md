@@ -26,6 +26,14 @@ Rules for the whole pass:
 
 ## Part 1 — VOD player: review, then fix and optimise
 
+**Read `player-fixes-wip/DEVICE-FINDINGS.md` first.** It holds measurements taken on the user's Stick during a
+4K ~84 Mb/s film (memory exhausted with a ~260 MB film buffer in the Java heap, 5–8 decoded 4K frames ≈ 121–198 MB,
+the Glass look redrawing ~20 times a second with nothing on screen, 7 % repeated refreshes, a "Not matched" title).
+Its priority order overrides guesses: fix what was measured first, and say in your report how each finding is
+addressed. Also from the user (2026-11-19): the player's **display size features** must keep working properly;
+if the Glass look is edited keep it fast and responsive (lowering its refresh through its setting is allowed);
+don't change the main and additional button layouts; optimise smoothness and fluid transitions where possible.
+
 1. **Review** the VOD playback path end to end as it is now (after Films & Shows step 3): the title page / Continue
    Watching handoff (`vod/play/*`, `vod/sources/*`), `PlayerActivity`, `PlayerHost`, FramePacer, buffering
    (LoadControl), the decoder/HDR path, subtitles (libass), skip previews, the Glass look in the player, and memory.
