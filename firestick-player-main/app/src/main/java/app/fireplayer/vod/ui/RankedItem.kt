@@ -26,9 +26,9 @@ class RankedItem(context: Context, private val t: Tokens) : FrameLayout(context)
     private val baseSize = posterH * VodSizes.RANK_TEXT
     private val room = posterH * VodSizes.RANK_ROOM + tuck
     private val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt()
+        color = VodSizes.RANK_COLOR
         textAlign = Paint.Align.RIGHT
-        letterSpacing = -0.06f
+        letterSpacing = VodSizes.RANK_SPACING
         typeface = Fonts.rank(context, t.bold)
         textSize = baseSize
     }

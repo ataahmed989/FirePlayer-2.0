@@ -1,0 +1,241 @@
+package app.fireplayer.ui
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
+import android.view.Gravity
+import android.view.View
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import app.fireplayer.R
+import app.fireplayer.shell.TextStyle
+import app.fireplayer.shell.Tokens
+
+/**
+ * The app's shared controls outside the settings windows: pill buttons, round buttons, info chips and the flat chips
+ * of a moving row. Each takes its surface from a [Glass.Kind] (glass, or the classic drawable) and its colours, faces
+ * and focus growth from [Tokens]; sizes and text styles come from the caller's look holder (Films & Shows: VodSizes).
+ * So a change to a kind, a colour or the focus growth changes every page that shows these. Focused: a white body
+ * with blue words and icons (design-layout's focus rule).
+ */
+object Buttons {
+
+    /** A pill's sizes, dp, and its words' style. */
+    class PillSpec(
+        val height: Float,
+        val pad: Float,
+        val text: TextStyle,
+        val icon: Float = 0f,
+        val iconGap: Float = 0f,
+        val progressH: Float = 0f,
+        val progressBottom: Float = 0f,
+    )
+
+    /** The blue-on-white text and icon colours of a focusable button (Live TV's controls; the title page's). */
+    fun buttonColors(context: Context): ColorStateList =
+        requireNotNull(ContextCompat.getColorStateList(context, R.color.sel_live_button))
+
+    /** An on/off button's: blue while on (selected) too, like Live TV's favourite star. */
+    fun toggleColors(context: Context): ColorStateList =
+        requireNotNull(ContextCompat.getColorStateList(context, R.color.sel_toggle_button))
+
+    /**
+     * A plain pill of words ("Try again"): [Glass.Kind.PILL] (set by [applyLook]), blue words when focused, padded
+     * [padX] x [padY] dp. Focusable.
+     */
+    fun textPill(context: Context, t: Tokens, label: String, style: TextStyle, padX: Float, padY: Float): TextView =
+        t.label(context, style).apply {
+            text = label
+            isFocusable = true
+            gravity = Gravity.CENTER
+            setPadding(t.dp(padX), t.dp(padY), t.dp(padX), t.dp(padY))
+            setTextColor(buttonColors(context))
+            Glass.background(this, Glass.Kind.PILL)
+        }
+
+    /**
+     * A pill button: an optional icon, its words and, for one that resumes, a thin progress line inside its bottom
+     * ([progress]). Grows [Tokens.GROW_PILL] when focused ([Tokens.focusEffect]). Its words change in place; the row it
+     * sits in lays out again only when they change width.
+     */
+    @SuppressLint("ViewConstructor")
+    class ActionPill(context: Context, private val t: Tokens, private val spec: PillSpec) : LinearLayout(context) {
+        val icon = ImageView(context).apply {
+            imageTintList = buttonColors(context)
+            isDuplicateParentStateEnabled = true
+            visibility = GONE
+        }
+        val label: TextView = t.label(context, spec.text).apply {
+            setTextColor(buttonColors(context))
+            isDuplicateParentStateEnabled = true
+        }
+
+        /** 0..1 shows the line (Resume); null hides it. */
+        var progress: Float? = null
+            set(v) {
+                if (field == v) return
+                field = v
+                invalidate()
+            }
+
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent }
+        private val line = RectF()
+
+        init {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            // OK is read by the page's key listener (on release): never View's own click.
+            isClickable = false
+            setWillNotDraw(false)
+            val pad = t.dp(spec.pad)
+            setPadding(pad, 0, pad, 0)
+            if (spec.icon > 0f) {
+                addView(icon, LayoutParams(t.dp(spec.icon), t.dp(spec.icon)).apply { rightMargin = t.dp(spec.iconGap) })
+            }
+            addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+            applyLook()
+        }
+
+        fun set(text: CharSequence, iconRes: Int?) {
+            if (label.text.toString() != text.toString()) label.text = text
+            if (iconRes != null && spec.icon > 0f) {
+                icon.setImageResource(iconRes)
+                icon.visibility = VISIBLE
+            } else {
+                icon.visibility = GONE
+            }
+            contentDescription = text
+        }
+
+        fun applyLook() = Glass.background(this, Glass.Kind.PILL)
+
+        override fun dispatchDraw(canvas: Canvas) {
+            super.dispatchDraw(canvas)
+            val p = progress ?: return
+            if (spec.progressH <= 0f) return
+            val side = paddingLeft.toFloat()
+            val h = t.dpf(spec.progressH)
+            val bottom = height - t.dpf(spec.progressBottom)
+            line.set(side, bottom - h, width - paddingRight.toFloat(), bottom)
+            val r = h / 2f
+            trackPaint.color = if (isFocused) t.buttonTrackFocused else t.buttonTrack
+            canvas.drawRoundRect(line, r, r, trackPaint)
+            val f = p.coerceIn(0f, 1f)
+            if (f > 0f) {
+                line.right = line.left + (line.right - line.left) * f
+                canvas.drawRoundRect(line, r, r, barPaint)
+            }
+        }
+
+        override fun drawableStateChanged() {
+            super.drawableStateChanged()
+            if (progress != null) invalidate()
+        }
+    }
+
+    /**
+     * A round button and its name under it, shown only while it's focused (Live TV's ButtonLabel): [button] is the
+     * focusable circle ([Glass.Kind.CIRCLE]), growing [Tokens.GROW_CIRCLE]; [label] hangs below without widening the
+     * row. [toggle] buttons stay blue while on ([setOn]).
+     */
+    @SuppressLint("ViewConstructor")
+    class RoundButton(context: Context, t: Tokens, sizeDp: Float, iconDp: Float, toggle: Boolean = false) : LinearLayout(context) {
+        val button = ImageView(context).apply {
+            isFocusable = true
+            isClickable = false
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            imageTintList = if (toggle) toggleColors(context) else buttonColors(context)
+            val pad = t.dp((sizeDp - iconDp) / 2f)
+            setPadding(pad, pad, pad, pad)
+        }
+        val label = TextView(context, null, 0, R.style.ButtonLabel)
+
+        init {
+            orientation = VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+            addView(button, LayoutParams(t.dp(sizeDp), t.dp(sizeDp)))
+            // The style's layout values don't apply to a view made in code: its gap and hanging sides, here.
+            addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = t.dp(LABEL_GAP)
+                leftMargin = -t.dp(LABEL_HANG)
+                rightMargin = -t.dp(LABEL_HANG)
+            })
+            Tokens.focusEffect(button, Tokens.GROW_CIRCLE, label)
+            applyLook()
+        }
+
+        fun set(iconRes: Int, name: String) {
+            button.setImageResource(iconRes)
+            button.contentDescription = name
+            if (label.text.toString() != name) label.text = name
+        }
+
+        /** A toggle's state: blue (selected) while on. */
+        fun setOn(on: Boolean) {
+            button.isSelected = on
+        }
+
+        fun applyLook() = Glass.background(button, Glass.Kind.CIRCLE)
+    }
+
+    /** A small chip of words beside a line of text (the title page's callout): [Glass.Kind.CHIP], not focusable. */
+    fun infoChip(context: Context, t: Tokens, style: TextStyle, padX: Float): TextView = t.label(context, style).apply {
+        gravity = Gravity.CENTER
+        setPadding(t.dp(padX), 0, t.dp(padX), 0)
+        Glass.background(this, Glass.Kind.CHIP)
+    }
+
+    /**
+     * A flat chip for a row that moves (genres, a show's seasons): a flat pill in both looks (glass in a moving strip
+     * would show the wrong part of the wallpaper), white with blue words when focused; [flatChipBackground] gives its
+     * surface (set again when the look changes).
+     */
+    fun flatChip(context: Context, t: Tokens, style: TextStyle, padX: Float): TextView = t.label(context, style).apply {
+        gravity = Gravity.CENTER
+        val pad = t.dp(padX)
+        setPadding(pad, 0, pad, 0)
+        setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text)))
+    }
+
+    /**
+     * A flat chip's surface, [radius] px: focused white; selected (the season shown) [selectedFill] with a blue ring
+     * [selectedRim] dp wide; otherwise the glass look's faint fill and [rim] dp rim, or the classic row fill.
+     */
+    fun flatChipBackground(t: Tokens, radius: Float, rim: Float, selectedFill: Int, selectedRim: Float): Drawable =
+        StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { cornerRadius = radius; setColor(t.focusFill) })
+            addState(intArrayOf(android.R.attr.state_selected), GradientDrawable().apply {
+                cornerRadius = radius
+                setColor(selectedFill)
+                setStroke(t.dp(selectedRim).coerceAtLeast(2), t.accent)
+            })
+            addState(intArrayOf(), GradientDrawable().apply {
+                cornerRadius = radius
+                if (Glass.on) {
+                    setColor(t.groupFillGlass)
+                    setStroke(t.dp(rim).coerceAtLeast(1), t.groupRimGlass)
+                } else {
+                    setColor(t.rowFill)
+                }
+            })
+        }
+
+    /** Whether [v] is shown and can take focus now (a button closed up or dimmed is passed by). */
+    fun canFocus(v: View): Boolean = v.visibility == View.VISIBLE && v.isFocusable
+
+    /** A round button's name: 4 dp under it, hanging out 48 dp each side (themes.xml ButtonLabel's layout values). */
+    private const val LABEL_GAP = 4f
+    private const val LABEL_HANG = 48f
+}

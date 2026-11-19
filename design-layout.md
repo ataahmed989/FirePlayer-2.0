@@ -442,6 +442,26 @@ choices made to keep going and are open to change. Progress is tracked in PROGRE
   - Wide Continue Watching cards use the smaller backdrop (metahub background/small, TMDB w780); the header keeps the
     medium one.
 
+- 2026-11-19 · Films & Shows step 2, the title page (layout A; design-brief.md §6.4). Built from the same parts as
+  Home, Movies and TV Shows so one change to the look reaches every page: rows, cards and their motion (TitleRow,
+  CardStrip, CardView, RowMotion), the column (PageColumn), the backdrop (HeaderArt) and the header's text styles, the
+  small window (HoldWindow over HoldPopup), Details in the settings window (SidePanel), the notice, and buttons, round
+  buttons and chips from ui/Buttons.kt over the Glass kinds and Tokens. Films & Shows' sizes, text styles, colours and
+  motion values are in one place (VodSizes; app-wide ones in Tokens and Glass); step 1's own values moved there
+  unchanged. Assumptions, all reversible:
+  - The title pages belong to the tab's page: a tab switch closes them, like See all; the screen stopping keeps them.
+  - Back while the rail has focus over a title page goes back into the page instead of leaving the app.
+  - Season pills are step 1's genre chips (36 dp, 14 sp) with the Episodes sheet's "season shown" fill and blue ring as
+    the selected state; they move only when they don't fit.
+  - While the header follows an episode card, the callout chip hides too.
+  - The story swaps to TMDB's overview only within the first 0.3 s, or when there was none.
+  - OK on an episode not aired yet says "Airs Dec 3"; holding OK on it does nothing.
+  - Sources is left out for a film not out yet and a show with nothing aired (so focus opens on (+), as briefed).
+  - Starting backdrop fade: clear → solid from 15% to 70% of the width (eased), solid → clear from 36% to 60% of the
+    height; to check on the TV.
+  - A show's page glides up so the buttons sit 14 dp from the top for More Like This (no cut line of text above them).
+  - More Like This posters from TMDB are decoded no larger than their source (w185: 185 x 247 px).
+
 ## Concept references (local preview artifacts)
 
 - Original approved Home base: C:/Users/ataah/.codex/generated_images/01a1e677-d453-78f1-87f1-88b8a51d61ad/exec-44794608-40c2-4a3d-9f9e-7e5c7ea59b4e.png

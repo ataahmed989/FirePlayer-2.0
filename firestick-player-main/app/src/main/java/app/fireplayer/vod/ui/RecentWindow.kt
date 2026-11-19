@@ -29,9 +29,9 @@ import java.util.concurrent.Executors
 class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(context) {
 
     private val main = Handler(Looper.getMainLooper())
-    private val logos = LogoCache(t.dp(76)) { _, _ -> refreshLogos() }
+    private val logos = LogoCache(t.dp(VodSizes.RECENT_LOGO_PX)) { _, _ -> refreshLogos() }
     private val lines = ArrayList<Line>()
-    private val emptyText = t.label(context, 13f, t.regular, t.textMuted).apply {
+    private val emptyText = t.label(context, VodSizes.RECENT_EMPTY).apply {
         text = "Channels you watch on Live TV appear here"
         maxLines = 3
     }
@@ -47,19 +47,19 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         orientation = VERTICAL
         isFocusable = false
         descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-        val pad = t.dp(16)
-        setPadding(pad, t.dp(14), pad, t.dp(12))
+        val pad = t.dp(VodSizes.RECENT_PAD_X)
+        setPadding(pad, t.dp(VodSizes.RECENT_PAD_TOP), pad, t.dp(VodSizes.RECENT_PAD_BOTTOM))
         val head = LinearLayout(context).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         head.addView(ImageView(context).apply {
             setImageResource(R.drawable.ic_history)
-            setColorFilter(HEAD_ICON)
-        }, LayoutParams(t.dp(16), t.dp(16)))
-        head.addView(t.label(context, 14f, t.semibold, HEADING).apply { text = "Recent channels" },
-            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(8) })
-        addView(head, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(20)))
+            setColorFilter(t.headingIcon)
+        }, LayoutParams(t.dp(VodSizes.RECENT_ICON), t.dp(VodSizes.RECENT_ICON)))
+        head.addView(t.label(context, VodSizes.RECENT_HEAD).apply { text = "Recent channels"; setTextColor(t.heading) },
+            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(VodSizes.RECENT_ICON_GAP) })
+        addView(head, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(VodSizes.RECENT_HEAD_H)))
         for (i in 0 until ROWS) {
             val row = LinearLayout(context).apply {
                 orientation = HORIZONTAL
@@ -67,17 +67,19 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
                 visibility = GONE
             }
             val logo = LogoView(context)
-            row.addView(logo, LayoutParams(t.dp(52), t.dp(32)))
+            row.addView(logo, LayoutParams(t.dp(VodSizes.RECENT_LOGO_W), t.dp(VodSizes.RECENT_LOGO_H)))
             val text = LinearLayout(context).apply { orientation = VERTICAL }
-            val name = t.label(context, 14f, t.semibold)
-            val now = t.label(context, 12.5f, t.regular, t.textMuted)
-            text.addView(name, LayoutParams(t.dp(220), LayoutParams.WRAP_CONTENT))
-            text.addView(now, LayoutParams(t.dp(220), LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(2) })
-            row.addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(12) })
-            addView(row, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(42)).apply { topMargin = t.dp(if (i == 0) 8 else 4) })
+            val name = t.label(context, VodSizes.RECENT_NAME)
+            val now = t.label(context, VodSizes.RECENT_NOW)
+            text.addView(name, LayoutParams(t.dp(VodSizes.RECENT_TEXT_W), LayoutParams.WRAP_CONTENT))
+            text.addView(now, LayoutParams(t.dp(VodSizes.RECENT_TEXT_W), LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.RECENT_LINE_GAP) })
+            row.addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(VodSizes.RECENT_LOGO_GAP) })
+            addView(row, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(VodSizes.RECENT_ROW_H)).apply {
+                topMargin = t.dp(if (i == 0) VodSizes.RECENT_FIRST_TOP else VodSizes.RECENT_ROW_GAP)
+            })
             lines += Line(row, logo, name, now)
         }
-        addView(emptyText, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(14) })
+        addView(emptyText, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.RECENT_EMPTY_TOP) })
         applyLook()
     }
 
@@ -147,8 +149,6 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
 
     private companion object {
         const val ROWS = 3
-        const val HEADING = 0xFFE3E6EA.toInt()
-        const val HEAD_ICON = 0xFF9CC3FF.toInt()
         val pool = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerRecent").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
     }
 }

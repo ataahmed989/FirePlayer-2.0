@@ -11,10 +11,8 @@ import android.os.SystemClock
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.TextView
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
-import app.fireplayer.ui.GlassDrawable
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
 
@@ -45,46 +43,44 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
     }.apply { orientation = LinearLayout.VERTICAL }
 
     private val textW = t.dp(cardW - 2 * VodSizes.HEADER_INSET)
-    private val title = t.label(context, VodSizes.HEADER_TITLE_SP, t.bold)
-    private val facts = t.label(context, VodSizes.HEADER_FACTS_SP, t.regular, FACTS_COLOR)
-    private val story = t.label(context, VodSizes.HEADER_STORY_SP, t.regular, t.textMuted).apply {
+    private val title = t.label(context, VodSizes.HEADER_TITLE)
+    private val facts = t.label(context, VodSizes.FACTS)
+    private val story = t.label(context, VodSizes.STORY).apply {
         // At most two lines, in a box two lines tall (see init): new words never change its height, so they're only
         // redrawn (a wrapped height would lay the page out again whenever one line became two).
         setLines(2)
-        setLineSpacing(t.dpf(2f), 1f)
     }
     private val dots = Dots(context, t)
 
     init {
         clipChildren = true
         val artW = t.dp(VodSizes.backdropW(cardW))
-        val inset = t.dp(1f)
+        val inset = t.dp(VodSizes.HEADER_ART_INSET)
         addView(art, LayoutParams(artW - inset, t.dp(VodSizes.HEADER_H) - 2 * inset).apply {
             gravity = android.view.Gravity.END or android.view.Gravity.TOP
             topMargin = inset
             rightMargin = inset
         })
         words.addView(title, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT))
-        words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(6) })
-        words.addView(story, LinearLayout.LayoutParams(t.dp(VodSizes.storyW(cardW)), story.lineHeight * 2).apply { topMargin = t.dp(8) })
+        words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.HEADER_FACTS_GAP) })
+        words.addView(story, LinearLayout.LayoutParams(t.dp(VodSizes.storyW(cardW)), story.lineHeight * 2).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
         addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
             leftMargin = t.dp(VodSizes.HEADER_INSET)
             topMargin = t.dp(VodSizes.headerTextTop())
         })
-        addView(dots, LayoutParams(t.dp(130), t.dp(6)).apply {
+        addView(dots, LayoutParams(t.dp(VodSizes.DOTS_W), t.dp(VodSizes.DOTS_H)).apply {
             gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
             leftMargin = t.dp(VodSizes.HEADER_INSET)
-            bottomMargin = t.dp(12)
+            bottomMargin = t.dp(VodSizes.DOTS_BOTTOM)
         })
         applyLook()
     }
 
-    /** The look's surface: a glass panel, or the classic dark one; the picture follows its corners. */
+    /** The look's surface: a glass panel, or the classic dark one; the picture follows its corners, 1 dp inside. */
     fun applyLook() {
         Glass.background(this, Glass.Kind.PANEL)
-        val d = t.density
-        // Classic panels have 15 dp corners; glass panels min(22 dp, half the height).
-        art.radius = if (background is GlassDrawable) minOf(22f * d, t.dp(VodSizes.HEADER_H) / 2f) - d else 15f * d - d
+        val r = Glass.cornerRadius(Glass.Kind.PANEL, t.dp(cardW), t.dp(VodSizes.HEADER_H), t.density)
+        art.radius = r - t.dpf(VodSizes.HEADER_ART_INSET)
     }
 
     /** The page's idle titles (up to 10). The title on screen stays when it's still among them. */
@@ -234,20 +230,19 @@ class VodHeader(context: Context, private val t: Tokens, private val cardW: Floa
             val h = height.toFloat()
             var x = 0f
             for (i in 0 until count) {
-                val w = if (i == index) t.dpf(16f) else h
-                paint.color = if (i == index) 0xFFFFFFFF.toInt() else 0x59FFFFFF
+                val w = if (i == index) t.dpf(VodSizes.DOT_BAR) else h
+                paint.color = if (i == index) VodSizes.DOT_ON else VodSizes.DOT_OFF
                 r.set(x, 0f, x + w, h)
                 canvas.drawRoundRect(r, h / 2, h / 2, paint)
-                x += w + t.dpf(5f)
+                x += w + t.dpf(VodSizes.DOT_GAP)
             }
         }
     }
 
     companion object {
         private const val MAX_FEED = 10
-        private const val TEXT_FADE_MS = 120L
-        private const val FOLLOW_ART_MS = 500L
-        private const val WARM_AHEAD_MS = 1_500L
-        private const val FACTS_COLOR = 0xFFC3CFDC.toInt()
+        private const val TEXT_FADE_MS = VodSizes.HEADER_TEXT_FADE_MS
+        private const val FOLLOW_ART_MS = VodSizes.FOLLOW_ART_MS
+        private const val WARM_AHEAD_MS = VodSizes.WARM_AHEAD_MS
     }
 }

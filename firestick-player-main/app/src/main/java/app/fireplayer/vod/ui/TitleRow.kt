@@ -2,16 +2,12 @@ package app.fireplayer.vod.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import app.fireplayer.shell.Tokens
-import app.fireplayer.ui.Glass
+import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.RowMotion
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Cancel
@@ -19,14 +15,26 @@ import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
 
 /**
- * One row of a Films & Shows page: its title (16 sp) and its strip of cards ([CardStrip]), moved like the Episodes
- * sheet's ([RowMotion]): the chosen card at the left edge (page x 36, screen x 94), grown, with a sliver of the one
- * before it showing (this band clips at the page's left edge). It owns its items, kept and filled in place when new
- * cards come (so focus survives), and remembers the card chosen in it ([chosen]). Keys on its items go to the page
- * ([Listener]); nothing here asks Android's focus search.
+ * One row of a Films & Shows page or a title page: its title (16 sp; none with [header] false) and its strip of cards
+ * ([CardStrip]), moved like the Episodes sheet's ([RowMotion]): the chosen card at the left edge (page x 36, screen
+ * x 94), grown, with a sliver of the one before it showing (the page clips at its left edge). It owns its items, kept
+ * and filled in place when new cards come (so focus survives), and remembers the card chosen in it ([chosen]). Keys
+ * on its items go to the page ([Listener]); nothing here asks Android's focus search.
+ *
+ * Its items: posters, wide cards, Top 10 posters, a show's episode cards ([RowStyle.EPISODE]), or chips (genres; a
+ * show's season pills, [RowStyle.SEASONS], one of them shown selected, [markSelected]).
  */
 @SuppressLint("ViewConstructor")
-class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, private val listener: Listener) : FrameLayout(context) {
+class TitleRow(
+    context: Context,
+    private val t: Tokens,
+    val spec: RowSpec,
+    private val listener: Listener,
+    /** Whether the row shows its title above the cards. */
+    val header: Boolean = true,
+    /** The room under the row, dp. */
+    gapBelow: Float = VodSizes.ROW_GAP,
+) : FrameLayout(context) {
 
     interface Listener {
         fun onItemFocused(row: TitleRow, index: Int)
@@ -37,12 +45,13 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
 
     val style: RowStyle get() = spec.style
     val strip = CardStrip(context, t, spec.style)
-    private val title = t.label(context, 16f, t.bold, TITLE_COLOR).apply { text = spec.label }
+    private val title = t.label(context, VodSizes.ROW_TITLE_STYLE).apply { text = spec.label }
 
-    /** The items in order: a card each, then See all when there is one; genre chips in a GENRES row. */
+    /** The items in order: a card each, then See all when there is one; chips in a GENRES or SEASONS row. */
     val items = ArrayList<View>()
     var cards: List<Card> = emptyList()
         private set
+    /** The chips' words (genres, seasons). */
     var genres: List<String> = emptyList()
         private set
     var hasSeeAll = false
@@ -50,6 +59,12 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
 
     /** The item chosen in this row (kept while focus is elsewhere). */
     var chosen = 0
+
+    /**
+     * How far the strip may move left, px. Unlimited for cards (each chosen one goes to the left edge); a row of season
+     * pills moves only as far as its last pill needs ([clampToView]).
+     */
+    var maxOffset = Float.MAX_VALUE
 
     // The page's bookkeeping for this row's data.
     /** Bumped for each load: older answers are dropped. */
@@ -66,7 +81,7 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
         override val itemCount: Int get() = items.size
         override fun itemLeft(i: Int): Float = strip.itemLeft(i)
         override fun place(offset: Float) {
-            strip.translationX = -offset
+            strip.translationX = -minOf(offset, maxOffset)
         }
 
         override fun item(i: Int, share: Float, shift: Float) {
@@ -83,8 +98,9 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
         }
     })
 
-    private val stripTop = t.dp(VodSizes.stripTop())
+    private val stripTop = if (header) t.dp(VodSizes.stripTop()) else 0
     private val pageX = t.dp(VodSizes.PAGE_X)
+    private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow))
 
     private val focusWatch = OnFocusChangeListener { v, has ->
         val i = items.indexOf(v)
@@ -111,18 +127,20 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
         // The chosen card's ring (and a rank number's edge) draw just outside the strip; the page clips at its edges.
         clipChildren = false
         clipToPadding = false
-        addView(title, LayoutParams(t.dp(VodSizes.tabHeaderW()), LayoutParams.WRAP_CONTENT).apply { leftMargin = pageX })
+        if (header) {
+            addView(title, LayoutParams(t.dp(VodSizes.tabHeaderW()), LayoutParams.WRAP_CONTENT).apply { leftMargin = pageX })
+        }
         addView(strip, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.stripH(spec.style))).apply {
             leftMargin = pageX
             topMargin = stripTop
         })
         // Chips are laid out at their own widths: their places are known once laid out.
-        if (spec.style == RowStyle.GENRES) strip.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> motion.apply() }
+        if (VodSizes.isChips(spec.style)) strip.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> motion.apply() }
         visibility = GONE
     }
 
     /** The band's height: title, cards and the gap under them. */
-    val bandHeight: Int get() = t.dp(VodSizes.bandH(spec.style))
+    val bandHeight: Int get() = band
 
     /** The index of the item holding focus, or -1. */
     fun focusedIndex(): Int {
@@ -176,7 +194,10 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
     }
 
     /** Shows genre chips: OK on one opens that genre's See all. */
-    fun bindGenres(names: List<String>) {
+    fun bindGenres(names: List<String>) = bindChips(names)
+
+    /** Shows chips with [names] (genres, seasons), filled in place. */
+    fun bindChips(names: List<String>) {
         genres = names
         while (items.size > names.size) {
             val v = items.removeAt(items.size - 1)
@@ -187,8 +208,26 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
             items += v
             strip.addView(v)
         }
-        names.forEachIndexed { i, n -> (items[i] as TextView).text = n }
+        names.forEachIndexed { i, n ->
+            val chip = items[i] as TextView
+            if (chip.text.toString() != n) chip.text = n
+        }
         chosen = if (items.isEmpty()) 0 else chosen.coerceIn(0, items.size - 1)
+        motion.apply()
+    }
+
+    /** Item [i] shows as selected (the season shown); the others not. */
+    fun markSelected(i: Int) {
+        items.forEachIndexed { j, v -> v.isSelected = j == i }
+    }
+
+    /**
+     * A chip row that fits needn't move: the strip moves left at most as far as its last chip needs to show within
+     * [viewW] px (from the content's left edge). Called once the chips are laid out.
+     */
+    fun clampToView(viewW: Int) {
+        val reach = strip.contentWidth + t.dp(VodSizes.extra(spec.style))
+        maxOffset = (reach - viewW).coerceAtLeast(0).toFloat()
         motion.apply()
     }
 
@@ -232,10 +271,11 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
 
     private fun makeItem(seeAll: Boolean): View {
         val v: View = when {
-            spec.style == RowStyle.GENRES -> chip()
+            VodSizes.isChips(spec.style) -> Buttons.flatChip(context, t, VodSizes.CHIP, VodSizes.CHIP_PAD).apply { background = chipBackground() }
             seeAll -> CardView(context, t, CardView.Kind.SEE_ALL)
             spec.style == RowStyle.RANKED -> RankedItem(context, t)
             spec.style == RowStyle.WIDE -> CardView(context, t, CardView.Kind.WIDE)
+            spec.style == RowStyle.EPISODE -> CardView(context, t, CardView.Kind.EPISODE)
             else -> CardView(context, t, CardView.Kind.POSTER)
         }
         v.isFocusable = true
@@ -247,33 +287,8 @@ class TitleRow(context: Context, private val t: Tokens, val spec: RowSpec, priva
         return v
     }
 
-    /** A genre chip: a flat pill (glass in a moving strip would show the wrong wallpaper), white with blue when chosen. */
-    private fun chip(): TextView = t.label(context, 14f, t.semibold).apply {
-        gravity = Gravity.CENTER
-        val pad = t.dp(VodSizes.CHIP_PAD)
-        setPadding(pad, 0, pad, 0)
-        setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text)))
-        background = chipBackground()
-    }
-
-    private fun chipBackground() = StateListDrawable().apply {
-        val r = t.dpf(VodSizes.CHIP_H / 2f)
-        addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { cornerRadius = r; setColor(t.focusFill) })
-        addState(intArrayOf(), GradientDrawable().apply {
-            cornerRadius = r
-            if (Glass.on) {
-                setColor(GLASS_FILL)
-                setStroke(t.dp(1f).coerceAtLeast(1), GLASS_RIM)
-            } else {
-                setColor(t.rowFill)
-            }
-        })
-    }
-
-    private companion object {
-        /** Row titles: the sizing page's light grey-blue. */
-        const val TITLE_COLOR = 0xFFE3E9F0.toInt()
-        const val GLASS_FILL = 0x14FFFFFF
-        const val GLASS_RIM = 0x24FFFFFF
-    }
+    /** A chip's surface: flat in both looks (glass in a moving strip would show the wrong wallpaper). */
+    private fun chipBackground() = Buttons.flatChipBackground(
+        t, t.dpf(VodSizes.CHIP_H / 2f), VodSizes.FLAT_RIM, VodSizes.CHIP_SELECTED_FILL, VodSizes.CHIP_SELECTED_RIM,
+    )
 }

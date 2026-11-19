@@ -1,8 +1,6 @@
 package app.fireplayer.vod.ui
 
 import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -14,12 +12,12 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.TextView
-import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
+import app.fireplayer.ui.SidePanel
 import app.fireplayer.ui.Spring
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Card
@@ -42,9 +40,9 @@ import kotlin.math.abs
  * Moving: Left/Right go card by card along a row, which glides like the Episodes sheet ([TitleRow]); Up/Down go row by
  * row, the page gliding with a Spring: below the first row the header slides away and the chosen row sits just under
  * the name line; back on the first row the header returns. Left from a row's first card goes to the rail. OK on a
- * poster says the title page comes next, on a Continue card that playback comes next (later steps), on See all or a
- * genre opens [SeeAllPage]; OK held on a title opens a small window ([HoldPopup]): + Add to list (or − Remove from
- * list), Mark watched, and on Continue cards Remove.
+ * poster opens its title page ([TitleStack], over the page; Back returns to the poster), on a Continue card says
+ * playback comes next (a later step), on See all or a genre opens [SeeAllPage]; OK held on a title opens the small
+ * window ([HoldWindow]): + Add to list (or − Remove from list), Mark watched, and on Continue cards Remove.
  *
  * Lean: pictures only for the rows on screen and near the chosen card, let go when the page is hidden or stopped;
  * rows laid out once, then moved by translation and scale alone; cached rows shown at once and refreshed behind.
@@ -54,11 +52,13 @@ class VodPage(
     private val host: Host,
     private val repoOf: () -> VodRepository?,
     val page: Page,
-) : TitleRow.Listener, SeeAllPage.Host {
+) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host {
 
     /** What the shell gives a page: the same as Live TV's (HomeActivity implements both). */
     interface Host {
         val tokens: Tokens
+        /** The settings window, which also shows a title's Details. */
+        val sidePanel: SidePanel
         fun focusRail()
         fun railHasFocus(): Boolean
         /** The settings window or a dialog is open over the page: its header holds still. */
@@ -67,11 +67,13 @@ class VodPage(
 
     private val t = host.tokens
     private val main = Handler(Looper.getMainLooper())
-    private var repo: VodRepository? = repoOf()
+    private var repoRef: VodRepository? = repoOf()
+    override val repo: VodRepository? get() = repoRef
 
     val root = FrameLayout(ctx)
-    private val nameText = t.label(ctx, 20f, t.bold)
-    private val clockText = t.label(ctx, 13f, t.regular, t.textMuted)
+    private val nameLine = LinearLayout(ctx)
+    private val nameText = t.label(ctx, VodSizes.PAGE_NAME)
+    private val clockText = t.label(ctx, VodSizes.CLOCK)
     /** Under the name line; clips, so nothing shows above it. */
     private val viewport = FrameLayout(ctx)
     private val column = PageColumn(ctx, t)
@@ -86,13 +88,26 @@ class VodPage(
     private var seeAllFrom: Pair<TitleRow, Int>? = null
 
     private val empty = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-    private val emptyText = t.label(ctx, 18f, t.semibold).apply { maxLines = 3; gravity = Gravity.CENTER }
-    private val emptyButton = t.label(ctx, 15f, t.semibold)
-    private val notice = t.label(ctx, 15f).apply { maxLines = 2 }
-    private val popup = HoldPopup(ctx, t)
+    private val emptyText = t.label(ctx, VodSizes.EMPTY).apply { maxLines = 3; gravity = Gravity.CENTER }
+    private val emptyButton = Buttons.textPill(ctx, t, "Try again", VodSizes.TRY_AGAIN, VodSizes.TRY_PAD_X, VodSizes.TRY_PAD_Y)
+    private val notice = t.label(ctx, VodSizes.NOTICE).apply { maxLines = 2 }
+    /** The title pages opened over this page (above its rows, See all and the message; under the notice and window). */
+    private val titleHost = FrameLayout(ctx).apply { visibility = View.GONE }
+    override val hold = HoldWindow(t, root, this)
+    private val titles = TitleStack(ctx, t, this, titleHost)
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
     /** The column's upward offset, px: 0 shows the header. */
-    private val pageSpring = Spring(omega = 14f, settle = 0.5f) { column.translationY = -it }
+    private val pageSpring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) { column.translationY = -it }
+
+    /** Where the open title pages were opened from: focus goes back there when the last one closes. */
+    private sealed class Origin {
+        abstract val id: String
+        data class InRow(val row: TitleRow, val index: Int, override val id: String) : Origin()
+        data class InGrid(override val id: String) : Origin()
+    }
+    private var origin: Origin? = null
+    /** A title page covers the page: its own content is hidden (and draws nothing) meanwhile. */
+    private var covered = false
 
     private var shown = false
     private var started = false
@@ -111,8 +126,6 @@ class VodPage(
     private var anchorRow: TitleRow? = null
     private var anchorTop = -1
     private var headerCancel: Cancel? = null
-    private var heldView: View? = null
-    private var heldRow: TitleRow? = null
     private var backClosedPopup = false
     private var seeAllBackDown = false
     private val libraryListener: () -> Unit = { onLibraryChanged() }
@@ -129,14 +142,12 @@ class VodPage(
         val pageX = t.dp(VodSizes.PAGE_X)
 
         // The name line: the page's name, then the date and time.
-        val nameLine = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            isBaselineAligned = true
-        }
+        nameLine.orientation = LinearLayout.HORIZONTAL
+        nameLine.isBaselineAligned = true
         nameText.text = pageName
         nameLine.addView(nameText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         // Fixed width: the clock's new minute only redraws it.
-        nameLine.addView(clockText, LinearLayout.LayoutParams(t.dp(300), ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(14) })
+        nameLine.addView(clockText, LinearLayout.LayoutParams(t.dp(VodSizes.CLOCK_W), ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(VodSizes.CLOCK_GAP) })
         root.addView(nameLine, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             leftMargin = pageX
             topMargin = t.dp(VodSizes.NAME_TOP)
@@ -150,7 +161,7 @@ class VodPage(
                 leftMargin = t.dp(VodSizes.windowX())
             })
         }
-        header.blocked = { host.overlayOpen() || popup.isOpen }
+        header.blocked = { host.overlayOpen() || hold.isOpen }
         column.header = headerBand
         column.onRowsMoved = { onRowsMoved() }
         viewport.clipChildren = true
@@ -162,11 +173,6 @@ class VodPage(
         // Nothing at all to show: a way to try again.
         emptyText.text = "Couldn't load titles. Check the connection."
         emptyButton.apply {
-            text = "Try again"
-            isFocusable = true
-            gravity = Gravity.CENTER
-            setPadding(t.dp(22), t.dp(10), t.dp(22), t.dp(10))
-            setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()), intArrayOf(t.accent, t.text)))
             setOnClickListener { retry() }
             setOnKeyListener { _, keyCode, event ->
                 if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) { host.focusRail(); true }
@@ -175,7 +181,7 @@ class VodPage(
         }
         empty.addView(emptyText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         empty.addView(emptyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = t.dp(18)
+            topMargin = t.dp(VodSizes.TRY_GAP)
             gravity = Gravity.CENTER_HORIZONTAL
         })
         empty.visibility = View.GONE
@@ -183,27 +189,14 @@ class VodPage(
             topMargin = t.dp(VodSizes.VIEWPORT_TOP)
         })
 
-        notice.setPadding(t.dp(16), t.dp(10), t.dp(16), t.dp(10))
+        root.addView(titleHost, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        notice.setPadding(t.dp(VodSizes.NOTICE_PAD_X), t.dp(VodSizes.NOTICE_PAD_Y), t.dp(VodSizes.NOTICE_PAD_X), t.dp(VodSizes.NOTICE_PAD_Y))
         notice.visibility = View.GONE
         root.addView(notice, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin = t.dp(30)
+            bottomMargin = t.dp(VodSizes.NOTICE_BOTTOM)
         })
-        root.addView(popup, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.LEFT))
-        popup.onClose = { focusBack ->
-            val back = heldView
-            val row = heldRow
-            heldView = null
-            heldRow = null
-            when {
-                // Back on the card held (or, if a change took it away, the row's chosen card, else the page's).
-                focusBack && back != null && back.isShown -> back.requestFocus()
-                focusBack && row != null && row.visibility == View.VISIBLE && row.items.isNotEmpty() -> row.focusChosen()
-                focusBack -> takeFocus()
-                // Something else took focus (the settings window): the held card shrinks back.
-                row != null && row.focusedIndex() < 0 -> if (onRowLeft(row)) row.motion.shrink()
-            }
-            updateHeaderPause()
-        }
+        hold.attach()
         buildRows()
         applyLook()
     }
@@ -218,12 +211,13 @@ class VodPage(
         resume()
     }
 
-    /** Another tab: hidden; See all and the small window close, its pictures go. */
+    /** Another tab: hidden; the title pages, See all and the small window close, its pictures go. */
     fun hide() {
         shown = false
         focusPending = false
         pendingFrom = null
-        if (popup.isOpen) popup.close(fade = false, focusBack = false)
+        if (hold.isOpen) hold.close(fade = false, focusBack = false)
+        titles.closeAll(focusBack = false)
         closeSeeAll(focusBack = false)
         pause()
         root.visibility = View.GONE
@@ -247,8 +241,9 @@ class VodPage(
         for (row in rows) row.cancel?.cancel()
         headerCancel?.cancel()
         window?.release()
+        titles.release()
         seeAll?.release()
-        if (popup.isOpen) popup.close(fade = false, focusBack = false)
+        if (hold.isOpen) hold.close(fade = false, focusBack = false)
         main.removeCallbacksAndMessages(null)
     }
 
@@ -261,6 +256,12 @@ class VodPage(
         val now = SystemClock.elapsedRealtime()
         if (lastLoad == 0L || now - lastLoad > RELOAD_MS) loadAll() else reloadLibrary()
         updateHeaderPause()
+        if (titles.isOpen) {
+            titles.resume()
+            // Behind the title page, only the row it was opened from keeps its pictures (for coming back).
+            originRow()?.let { row -> row.bindImages(RowMath.boundCards(row.chosen, row.items.size)) }
+            return
+        }
         updateImages()
         if (seeAll?.isOpen == true) seeAll?.bindImages()
     }
@@ -271,6 +272,7 @@ class VodPage(
         repo?.removeLibraryListener(libraryListener)
         main.removeCallbacks(clockTick)
         header.release()
+        titles.pause()
         if (pageSpring.moving) pageSpring.snap(pageSpring.target)
         for (row in rows) {
             row.motion.settle()
@@ -280,8 +282,14 @@ class VodPage(
         seeAll?.releaseImages()
     }
 
-    /** Memory is short: pictures of rows other than the chosen one go. */
+    /** Memory is short: pictures of rows other than the chosen one go (all of them under a title page). */
     fun trimImages() {
+        if (titles.isOpen) {
+            for (row in rows) row.releaseImages()
+            seeAll?.releaseImages()
+            titles.trim()
+            return
+        }
         val keep = focusedRow ?: lastRow
         for (row in rows) if (row !== keep) row.releaseImages()
     }
@@ -292,15 +300,26 @@ class VodPage(
         window?.applyLook()
         Glass.background(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
-        popup.applyLook()
+        hold.applyLook()
         for (row in rows) row.applyLook()
+        titles.applyLook()
     }
+
+    /** Whether a title page is open over the page. */
+    fun hasTitle(): Boolean = titles.isOpen
 
     // ---- Focus ------------------------------------------------------------------------------------------------------
 
-    /** Into the page (from the rail): the card chosen last, in See all when it's open; else the first row's first. */
-    fun takeFocus() {
+    /**
+     * Into the page (from the rail): the title page open over it, else the card chosen last, in See all when it's
+     * open; else the first row's first.
+     */
+    override fun takeFocus() {
         if (!shown) return
+        if (titles.isOpen) {
+            titles.takeFocus()
+            return
+        }
         val sa = seeAll
         if (sa != null && sa.isOpen) {
             sa.takeFocus()
@@ -343,18 +362,19 @@ class VodPage(
         rows.firstOrNull { !it.answered || it.visibility == View.VISIBLE }
             ?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() }
 
-    /** The page's Back: closes the small window, then See all. False when it's the shell's (to the rail). */
+    /** The page's Back: closes the small window, then the title pages ([TitleStack]), then See all. False when it's the shell's (to the rail). */
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_BACK) return false
-        if (popup.isOpen || backClosedPopup) {
+        if (hold.isOpen || backClosedPopup) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                popup.close()
+                hold.close()
                 backClosedPopup = true
             } else if (event.action == KeyEvent.ACTION_UP) {
                 backClosedPopup = false
             }
             return true
         }
+        if (titles.dispatchKey(event)) return true
         if (seeAll?.isOpen == true) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 seeAllBackDown = true
@@ -400,8 +420,10 @@ class VodPage(
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
+        // Into a title page opened from it: the card stays grown, the row as it was, until the viewer comes back.
+        if (titles.isOpen && originRow() === row) return false
         // Into its small window: the card stays grown and the header on its title until the window closes.
-        if (popup.isOpen && heldRow === row) return false
+        if (hold.isOpen && hold.heldRow === row) return false
         if (focusedRow === row) focusedRow = null
         press.cancel()
         // New cards held back while the viewer was in the row.
@@ -449,7 +471,7 @@ class VodPage(
             row.style == RowStyle.GENRES -> row.genres.getOrNull(index)?.let { openSeeAll(row, index, genreSpec(row.spec, it)) }
             row.isSeeAll(index) -> openSeeAll(row, index, row.spec)
             row.spec.continueRow -> showNotice(PLAYBACK_LATER)
-            else -> showNotice(TITLE_LATER)
+            else -> row.cards.getOrNull(index)?.let { openTitle(it, Origin.InRow(row, index, it.title.id)) }
         }
     }
 
@@ -457,7 +479,7 @@ class VodPage(
         if (row.style == RowStyle.GENRES || row.isSeeAll(index)) return
         val card = row.cards.getOrNull(index) ?: return
         val anchor = row.cardViewAt(index) ?: return
-        openHold(card, row.spec.continueRow, anchor, row.items[index], row)
+        hold.openPoster(card, row.spec.continueRow, anchor, row.items[index], hold.area(VodSizes.VIEWPORT_TOP), row, this)
     }
 
     private fun genreSpec(of: RowSpec, genre: String): RowSpec {
@@ -465,36 +487,10 @@ class VodPage(
         return RowSpec(key = "${of.key}:$genre", label = genre, style = RowStyle.POSTER, source = Source.Catalog(kind, "top", genre = genre))
     }
 
-    // ---- The small window (hold OK) --------------------------------------------------------------------------------
+    // ---- The small window (HoldWindow.Host) --------------------------------------------------------------------------
 
-    /**
-     * The small window for [card], beside [anchor] (the grown card); [focusBack] gets focus back when it closes. [row]:
-     * the row it was opened in (null in See all), whose card stays grown meanwhile.
-     */
-    private fun openHold(card: Card, continueRow: Boolean, anchor: View, focusBack: View, row: TitleRow? = null) {
-        val r = repo ?: return
-        val title = card.title
-        val buttons = ArrayList<HoldPopup.Button>(3)
-        buttons += listButton(title, r.inMyList(title.id))
-        buttons += HoldPopup.Button(if (r.isWatched(title.id)) "Mark unwatched" else "Mark watched") { toggleWatched(title) }
-        if (continueRow) buttons += HoldPopup.Button("Remove") { removeFromContinue(title) }
-        heldView = focusBack
-        heldRow = row
-        val area = RectF(t.dpf(12f), t.dpf(VodSizes.VIEWPORT_TOP), root.width - t.dpf(12f), root.height - t.dpf(12f))
-        popup.open(title.name, buttons, inRoot(anchor), area)
-        updateHeaderPause()
-    }
-
-    private fun listButton(title: Title, inList: Boolean) =
-        HoldPopup.Button(if (inList) "− Remove from list" else "+ Add to list") { toggleList(title) }
-
-    /** + Add to list / − Remove from list: changed at once (the rows too), and the window closes a moment later. */
-    private fun toggleList(title: Title) {
-        val r = repo ?: return
-        val inList = !r.inMyList(title.id)
-        r.setInMyList(title, inList)
-        popup.update(0, listButton(title, inList))
-        popup.closeAfter(LIST_CLOSE_MS)
+    /** + Add to list / − Remove from list: the My List rows (and its See all) change at once. */
+    override fun onListChanged(title: Title, inList: Boolean) {
         for (row in rows) {
             if (row.spec.source !is Source.MyList) continue
             val cards = RowRules.myListAfter(row.cards, title, inList)
@@ -504,26 +500,8 @@ class VodPage(
         if (!inList && sa != null && sa.isOpen && sa.spec?.source is Source.MyList) sa.remove(title.id)
     }
 
-    /** Mark watched also takes the title out of Continue Watching (until it's played again): at once, like Remove. */
-    private fun toggleWatched(title: Title) {
-        val r = repo ?: return
-        popup.close()
-        val watched = !r.isWatched(title.id)
-        r.setWatched(title, watched)
-        if (watched) dropFromContinue(title.id)
-        showNotice(if (watched) "Marked as watched" else "Marked as not watched")
-    }
-
-    /** Remove: out of Continue Watching (its resume point stays), at once. */
-    private fun removeFromContinue(title: Title) {
-        val r = repo ?: return
-        popup.close()
-        r.removeFromContinueWatching(title.id)
-        dropFromContinue(title.id)
-    }
-
     /** [id] has left Continue Watching: its cards go from the continue rows (and their See all) now. */
-    private fun dropFromContinue(id: String) {
+    override fun onLeftContinue(id: String) {
         for (row in rows) {
             if (!row.spec.continueRow && row.spec.source !is Source.ContinueWatching) continue
             if (row.cards.none { it.title.id == id }) continue
@@ -533,16 +511,79 @@ class VodPage(
         if (sa != null && sa.isOpen && sa.spec?.continueRow == true) sa.remove(id)
     }
 
-    /** [v]'s rectangle as drawn (grown, moved), in the page's coordinates. */
-    private fun inRoot(v: View): RectF {
-        val a = IntArray(2)
-        v.getLocationInWindow(a)
-        val b = IntArray(2)
-        root.getLocationInWindow(b)
-        val left = (a[0] - b[0]).toFloat()
-        val top = (a[1] - b[1]).toFloat()
-        return RectF(left, top, left + v.width * v.scaleX, top + v.height * v.scaleY)
+    override fun onHoldChanged() = updateHeaderPause()
+
+    // ---- Title pages (TitleStack.Host) -------------------------------------------------------------------------------
+
+    private fun originRow(): TitleRow? = (origin as? Origin.InRow)?.row
+
+    /**
+     * Opens [card]'s title page over the page. Focus goes into it first; only then is the page's own content hidden
+     * (a hidden view holding focus would hand it to the rail's first tab). The row it came from keeps its card grown.
+     */
+    private fun openTitle(card: Card, from: Origin) {
+        if (repo == null) return
+        press.cancel()
+        if (hold.isOpen) hold.close(fade = false, focusBack = false)
+        if (pageSpring.moving) pageSpring.snap(pageSpring.target)
+        for (row in rows) row.motion.settle()
+        seeAll?.settle()
+        origin = from
+        titles.open(card.title)
+        cover(true)
+        updateHeaderPause()
+        // Only the title page's pictures (and the row it came from, for coming back).
+        val keep = originRow()
+        for (row in rows) if (row !== keep) row.releaseImages()
     }
+
+    /** Hides the page's own content under a title page, or shows it again. */
+    private fun cover(on: Boolean) {
+        covered = on
+        val v = if (on) View.INVISIBLE else View.VISIBLE
+        nameLine.visibility = v
+        viewport.visibility = if (on || seeAll?.isOpen == true) View.INVISIBLE else View.VISIBLE
+        seeAll?.cover(on)
+        if (empty.visibility != View.GONE) empty.visibility = v
+    }
+
+    override fun restoreOrigin(focusBack: Boolean) {
+        val from = origin
+        cover(false)
+        if (!focusBack) return
+        when (from) {
+            is Origin.InGrid -> seeAll?.takeIf { it.isOpen }?.let {
+                it.takeFocus()
+                return
+            }
+            is Origin.InRow -> {
+                val row = from.row
+                if (row.visibility == View.VISIBLE && row.items.isNotEmpty()) {
+                    // By its title (a My List change made on the page may have moved it), else where it was.
+                    val i = row.cards.indexOfFirst { it.title.id == from.id }.takeIf { it >= 0 } ?: from.index
+                    row.chosen = i.coerceIn(0, row.items.size - 1)
+                    if (row.focusChosen()) return
+                }
+            }
+            null -> Unit
+        }
+        // Gone: the row chosen last, else the first, else the message or the rail.
+        val target = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: visibleRows().firstOrNull()
+        if (target == null || !target.focusChosen()) {
+            if (empty.visibility == View.VISIBLE) emptyButton.requestFocus() else host.focusRail()
+        }
+    }
+
+    override fun onStackClosed() {
+        val row = originRow()
+        origin = null
+        // Focus didn't come back to the row (a tab switch): it's left as if focus had gone, its card no longer grown.
+        if (row != null && row.focusedIndex() < 0 && onRowLeft(row)) row.motion.snap(row.chosen, isGrown = false)
+        updateHeaderPause()
+        if (seeAll?.isOpen == true) seeAll?.bindImages() else updateImages()
+    }
+
+    override val sidePanel: SidePanel get() = host.sidePanel
 
     // ---- See all ----------------------------------------------------------------------------------------------------
 
@@ -571,7 +612,7 @@ class VodPage(
         if (!sa.isOpen) return
         val from = seeAllFrom
         seeAllFrom = null
-        viewport.visibility = View.VISIBLE
+        viewport.visibility = if (covered) View.INVISIBLE else View.VISIBLE
         if (focusBack) {
             // Back on the card it was opened from, else the row chosen last, else the first: while the grid still
             // holds focus (closed first, it would hand focus to the rail's first tab).
@@ -592,15 +633,18 @@ class VodPage(
 
     override fun focusRail() = host.focusRail()
 
-    override fun onGridPick(card: Card, spec: RowSpec) = showNotice(if (spec.continueRow) PLAYBACK_LATER else TITLE_LATER)
+    override fun onGridPick(card: Card, spec: RowSpec) {
+        if (spec.continueRow) showNotice(PLAYBACK_LATER) else openTitle(card, Origin.InGrid(card.title.id))
+    }
 
-    override fun onGridHold(card: Card, spec: RowSpec, view: CardView) = openHold(card, spec.continueRow, view, view)
+    override fun onGridHold(card: Card, spec: RowSpec, view: CardView) =
+        hold.openPoster(card, spec.continueRow, view, view, hold.area(VodSizes.VIEWPORT_TOP))
 
     // ---- Loading ----------------------------------------------------------------------------------------------------
 
     private fun buildRows() {
         if (rowsBuilt) return
-        val r = repo ?: repoOf().also { repo = it } ?: return
+        val r = repo ?: repoOf().also { repoRef = it } ?: return
         rowsBuilt = true
         for (spec in r.rows(page)) {
             val row = TitleRow(ctx, t, spec, this)
@@ -638,9 +682,10 @@ class VodPage(
     }
 
     private fun onLibraryChanged() {
-        if (!released && resumed) reloadLibrary()
+        if (released || !resumed) return
+        reloadLibrary()
+        titles.onLibraryChanged()
     }
-
 
     private fun load(row: TitleRow) {
         val r = repo ?: return
@@ -748,7 +793,7 @@ class VodPage(
      * answered (not into whichever row answered first).
      */
     private fun takePendingFocus() {
-        if (!shown || !resumed) return
+        if (!shown || !resumed || titles.isOpen) return
         // Asked for while loading (and the viewer stayed on the rail's tab), or nothing has focus at all: never taken
         // from the rail otherwise.
         if (!stillPending() && root.rootView.findFocus() != null) return
@@ -760,13 +805,14 @@ class VodPage(
     }
 
     private fun checkEmpty() {
-        val inPage = root.findFocus() != null
+        // Focus in the page's own content (not in a title page over it).
+        val inPage = viewport.hasFocus() || empty.hasFocus() || seeAll?.root?.hasFocus() == true
         // Genre chips alone are no page (offline, each would open an empty grid): they don't count, and hide with the
         // rest until the next load brings them back with the titles.
         val nothing = repo == null ||
             (rows.all { it.answered } && rows.none { it.visibility == View.VISIBLE && it.style != RowStyle.GENRES })
         if (nothing) for (r in rows) if (r.style == RowStyle.GENRES) hideRow(r)
-        val was = empty.visibility == View.VISIBLE
+        val was = empty.visibility != View.GONE
         if (!nothing && was && empty.hasFocus()) {
             // Try again (or a reload): focus moves before the message hides (a hidden view holding focus would hand it
             // to the rail's first tab). With no row in yet, it waits on this page's tab: the first row takes it, or Try
@@ -777,8 +823,9 @@ class VodPage(
                 waitForRows()
             }
         }
-        empty.visibility = if (nothing) View.VISIBLE else View.GONE
-        if (nothing && !was && (stillPending() || inPage)) {
+        // Under a title page the message waits, unseen, until the page shows again.
+        empty.visibility = if (!nothing) View.GONE else if (covered) View.INVISIBLE else View.VISIBLE
+        if (nothing && !was && !covered && (stillPending() || inPage)) {
             focusPending = false
             pendingFrom = null
             emptyButton.requestFocus()
@@ -808,16 +855,17 @@ class VodPage(
 
     /** The header rotates only while it shows and nothing is open over the page. */
     private fun updateHeaderPause() {
-        val active = resumed && !released && pageSpring.target == 0f && !popup.isOpen && seeAll?.isOpen != true
+        val active = resumed && !released && pageSpring.target == 0f && !hold.isOpen && seeAll?.isOpen != true && !titles.isOpen
         if (active) header.resume() else header.pause()
     }
 
     /**
      * Pictures for the rows that show (where the page is heading) and the one above the chosen row, for the cards
      * near each row's chosen one; rows further away let theirs go. The next few posters are fetched ahead to disk.
+     * Under a title page nothing changes (the row it came from keeps its pictures).
      */
     private fun updateImages() {
-        if (!resumed) return
+        if (!resumed || titles.isOpen) return
         val vis = visibleRows()
         if (vis.isEmpty()) return
         val sa = seeAll
@@ -863,11 +911,12 @@ class VodPage(
         main.postDelayed(clockTick, 60_000L - now % 60_000L + 50L)
     }
 
-    private fun showNotice(text: String) {
+    /** The page's one notice ("Playback comes next"), over everything on it, title pages included. */
+    override fun showNotice(text: String) {
         notice.text = text
         notice.visibility = View.VISIBLE
         main.removeCallbacks(hideNotice)
-        main.postDelayed(hideNotice, NOTICE_MS)
+        main.postDelayed(hideNotice, VodSizes.NOTICE_MS)
     }
 
     private val hideNotice = Runnable { notice.visibility = View.GONE }
@@ -877,9 +926,6 @@ class VodPage(
         const val ROW_CARDS = RowRules.ROW_CARDS
         /** Rows are asked again when the page comes back after this long (the repository answers from its cache). */
         private const val RELOAD_MS = 10L * 60 * 1000
-        private const val LIST_CLOSE_MS = 450L
-        private const val NOTICE_MS = 3_500L
-        private const val TITLE_LATER = "Title page comes next"
         private const val PLAYBACK_LATER = "Playback comes next"
     }
 }

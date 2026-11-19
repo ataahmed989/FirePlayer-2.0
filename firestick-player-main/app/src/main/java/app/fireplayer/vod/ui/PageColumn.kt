@@ -7,13 +7,19 @@ import android.view.ViewGroup
 import app.fireplayer.shell.Tokens
 
 /**
- * A page's header and rows, one under the other: the header band (195 dp), 16 dp, then each row shown (rows that are
- * GONE take no room). Laid out once, and again only when a row appears, goes or changes; the page's Spring then moves
- * it with translationY alone, so the header slides up out of view with the rows. [onRowsMoved] runs after a layout
- * that moved rows, before it's drawn, so the page can keep the chosen row where it was on screen.
+ * A page's header and rows, one under the other: the header band ([headerH], 195 dp on the tab pages, the title page's
+ * 302 dp header block), [headerGap] (16 dp; none on the title page), then each row shown (rows that are GONE take no
+ * room). Laid out once, and again only when a row appears, goes or changes; the page's Spring then moves it with
+ * translationY alone, so the header slides up out of view with the rows. [onRowsMoved] runs after a layout that moved
+ * rows, before it's drawn, so the page can keep the chosen row where it was on screen.
  */
 @SuppressLint("ViewConstructor")
-class PageColumn(context: Context, private val t: Tokens) : ViewGroup(context) {
+class PageColumn(
+    context: Context,
+    private val t: Tokens,
+    headerHDp: Float = VodSizes.HEADER_H,
+    headerGapDp: Float = VodSizes.HEADER_GAP,
+) : ViewGroup(context) {
 
     /** The header band: Home's header card and window, or the other pages' header card. */
     var header: View? = null
@@ -26,8 +32,8 @@ class PageColumn(context: Context, private val t: Tokens) : ViewGroup(context) {
     /** Called after a layout that moved rows (main thread, before drawing). */
     var onRowsMoved: (() -> Unit)? = null
 
-    private val headerH = t.dp(VodSizes.HEADER_H)
-    private val headerGap = t.dp(VodSizes.HEADER_GAP)
+    private val headerH = t.dp(headerHDp)
+    private val headerGap = t.dp(headerGapDp)
     private var tops = IntArray(0)
 
     init {

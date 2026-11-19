@@ -43,13 +43,15 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
     }
     private val grid = PosterGrid(ctx, t)
     private val main = Handler(Looper.getMainLooper())
-    private val spring = Spring(omega = 14f, settle = 0.5f) { grid.translationY = -it }
+    private val spring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) { grid.translationY = -it }
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
     private val pitchY = t.dpf(VodSizes.gridPitchY())
 
     private var feed: GridFeed? = null
     val spec: RowSpec? get() = feed?.spec
-    val isOpen: Boolean get() = root.visibility == View.VISIBLE
+    /** Open (shown, or hidden under a title page opened from it, [cover]). */
+    var isOpen = false
+        private set
 
     private var cards: List<Card> = emptyList()
     private var chosen = 0
@@ -73,6 +75,7 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
     fun open(spec: RowSpec, first: List<Card>) {
         close()
         chosen = 0
+        isOpen = true
         root.visibility = View.VISIBLE
         spring.snap(0f)
         val f = GridFeed(repo, spec, first) { sync(force = false) }
@@ -91,10 +94,17 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         for (i in 0 until grid.childCount) (grid.getChildAt(i) as? CardView)?.releaseImage()
         grid.removeAllViews()
         cards = emptyList()
+        isOpen = false
         root.visibility = View.GONE
     }
 
     fun release() = close()
+
+    /** A title page opened from the grid covers it ([on]): hidden, kept as it is; shown again after. */
+    fun cover(on: Boolean) {
+        if (!isOpen) return
+        root.visibility = if (on) View.INVISIBLE else View.VISIBLE
+    }
 
     /** The poster chosen last takes focus (or the grid itself while it's empty). */
     fun takeFocus() {
