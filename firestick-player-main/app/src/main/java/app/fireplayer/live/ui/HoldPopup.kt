@@ -89,7 +89,8 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
     /** The look's surfaces: a popup's glass (or the classic popup), its buttons the pills of the app's small windows. */
     fun applyLook() {
-        Glass.background(this, Glass.Kind.POPUP)
+        // A window over the page: its glass shows the page behind it, blurred (copied each time it's shown).
+        Glass.overlay(this, Glass.Kind.POPUP)
         for (s in slots) if (s.round != null) style(s)
         below?.let { if (it.round != null) style(it) }
     }

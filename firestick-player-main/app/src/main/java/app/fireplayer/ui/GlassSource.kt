@@ -42,9 +42,21 @@ interface GlassSource {
      */
     fun onFadeDrawn(drawable: GlassDrawable) = drawable.invalidateSelf()
 
+    /**
+     * A window showing this picture appeared (it was made, became visible, or shows its backdrop again): a source that
+     * copies what's behind on demand ([PageGlass]) copies it before the window is next drawn.
+     */
+    fun onGlassAppeared() {}
+
     /** An activity whose glass shows something other than a film (the app's own screens). */
     interface Host {
         val glassSource: GlassSource?
+
+        /**
+         * What windows over this screen's page show through their glass ([Glass.overlay]): the page itself, blurred
+         * ([PageGlass]); null where there's none (their glass is then dark).
+         */
+        val pageGlass: GlassSource? get() = null
 
         /**
          * Its glass shows a live picture just now (Home's full-screen live controls): glass made meanwhile is dimmed
@@ -106,12 +118,8 @@ class StillGlass(private val panel: Bitmap, private val control: Bitmap, scale: 
 
         /** Pure pixel math (unit-tested): three separable box passes, then each channel times [light]. */
         internal fun boxBlur3(src: IntArray, w: Int, h: Int, radius: Int, light: Float): IntArray {
-            var a = src.copyOf()
-            val b = IntArray(a.size)
-            repeat(3) {
-                boxPass(a, b, w, h, radius, horizontal = true)
-                boxPass(b, a, w, h, radius, horizontal = false)
-            }
+            val a = src.copyOf()
+            boxBlur3InPlace(a, IntArray(a.size), w, h, radius)
             if (light != 1f) {
                 for (i in a.indices) {
                     val c = a[i]
@@ -124,10 +132,24 @@ class StillGlass(private val panel: Bitmap, private val control: Bitmap, scale: 
             return a
         }
 
+        /**
+         * The three box passes with the caller's own arrays, so nothing is made: [a] ([w] x [h] pixels) is the picture
+         * and holds the result, [b] (as long) is working room. The result is opaque.
+         */
+        internal fun boxBlur3InPlace(a: IntArray, b: IntArray, w: Int, h: Int, radius: Int) {
+            repeat(3) {
+                boxPass(a, b, w, h, radius, horizontal = true)
+                boxPass(b, a, w, h, radius, horizontal = false)
+            }
+        }
+
         private fun boxPass(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
             val lines = if (horizontal) h else w
             val len = if (horizontal) w else h
             val window = 2 * r + 1
+            // Dividing by the window as one multiplication and a shift: exact for sums of this size (255 x window),
+            // and several times quicker than three divisions a pixel on the Stick.
+            val recip = ((1L shl 24) + window - 1) / window
             for (line in 0 until lines) {
                 var sr = 0; var sg = 0; var sb = 0
                 fun at(i: Int): Int {
@@ -140,7 +162,8 @@ class StillGlass(private val panel: Bitmap, private val control: Bitmap, scale: 
                 }
                 for (i in 0 until len) {
                     val idx = if (horizontal) line * w + i else i * w + line
-                    dst[idx] = (0xFF shl 24) or ((sr / window) shl 16) or ((sg / window) shl 8) or (sb / window)
+                    dst[idx] = (0xFF shl 24) or (((sr * recip) ushr 24).toInt() shl 16) or
+                        (((sg * recip) ushr 24).toInt() shl 8) or ((sb * recip) ushr 24).toInt()
                     val add = at(i + r + 1)
                     val drop = at(i - r)
                     sr += ((add shr 16) and 0xFF) - ((drop shr 16) and 0xFF)

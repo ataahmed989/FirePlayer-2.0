@@ -73,6 +73,10 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
     private val holderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrimPaint = Paint()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
+    /** The glass look's very subtle edge of a card that isn't chosen ([app.fireplayer.ui.GlassStyle]). */
+    private val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = app.fireplayer.ui.GlassStyle.CARD_EDGE }
+    private val edgePx = app.fireplayer.ui.GlassStyle.cardEdgePx(resources.displayMetrics.density)
+    private val edgeAlpha = app.fireplayer.ui.GlassStyle.CARD_EDGE ushr 24
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(VodSizes.FLAT_RIM) }
     private val namePaint = textPaint(VodSizes.CARD_NAME)
@@ -218,7 +222,26 @@ class CardView(context: Context, private val t: Tokens, val kind: Kind) : View(c
             Kind.EPISODE -> drawEpisode(canvas)
             else -> drawCard(canvas)
         }
+        drawEdge(canvas)
         drawRing(canvas)
+    }
+
+    /**
+     * Glass look: a hairline just inside the picture's edge, so a dark picture still reads as a card on the dark
+     * wallpaper. It fades out as the white ring of the chosen card fades in, and stays a hairline whatever the card's
+     * growth. (See all has its own rim.)
+     */
+    private fun drawEdge(canvas: Canvas) {
+        if (!Glass.on || kind == Kind.SEE_ALL) return
+        val f = focus
+        if (f >= 1f) return
+        val scale = if (scaleX > 0f) scaleX else 1f
+        val stroke = edgePx / scale
+        edgePaint.strokeWidth = stroke
+        edgePaint.alpha = (edgeAlpha * (1f - f)).toInt()
+        val half = stroke / 2f
+        ringBox.set(box.left + half, box.top + half, box.right - half, box.bottom - half)
+        canvas.drawRoundRect(ringBox, radius - half, radius - half, edgePaint)
     }
 
     private fun drawCard(canvas: Canvas) {

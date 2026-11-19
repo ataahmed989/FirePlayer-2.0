@@ -15,7 +15,9 @@
         android:layout_width="1dp"
         android:layout_height="1dp" />
 
-    <FrameLayout
+    <!-- The wallpaper and the pages are what glass windows over the page show, blurred (PageGlass): each tells it when
+         something in it changes. -->
+    <app.fireplayer.ui.GlassLayer
         android:id="@+id/wallpaper_host"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
@@ -38,17 +40,21 @@
         android:visibility="gone" />
 
     <!-- Pages start right of the rail (NavRail.WIDTH_DP); Live TV lays out its own left side (HomeActivity.pageInset). -->
-    <FrameLayout
+    <app.fireplayer.ui.GlassLayer
         android:id="@+id/page_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginStart="58dp" />
 
-    <!-- The rail: a slim strip flush with the screen's left edge, full height (no margin around it). -->
+    <!-- The rail (NavRail): a narrow floating window inset from the left, top and bottom on every tab but Live TV,
+         where it is a strip flush with the screen's left edge. Its view is full height either way; widened, it is
+         drawn over the page, which never moves. Its window's shadow falls outside it. -->
     <FrameLayout
         android:id="@+id/rail_host"
         android:layout_width="wrap_content"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false" />
 
     <include
         android:id="@+id/panel"

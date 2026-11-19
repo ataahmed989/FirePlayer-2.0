@@ -376,7 +376,7 @@ class VodPage(
         window?.applyLook()
         searchBar?.applyLook()
         historyList?.applyLook()
-        Glass.background(notice, Glass.Kind.POPUP)
+        Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         hold.applyLook()
         for (row in rows) row.applyLook()

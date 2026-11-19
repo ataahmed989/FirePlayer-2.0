@@ -406,7 +406,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         sidebarPanel.background = null
         details.background = null
         columnRule.setBackgroundColor(if (Glass.on) 0x1FFFFFFF else 0x14FFFFFF)
-        Glass.background(notice, Glass.Kind.POPUP)
+        Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         popup.applyLook()
         guide.glass = Glass.on

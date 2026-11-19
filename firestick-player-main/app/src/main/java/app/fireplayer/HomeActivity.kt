@@ -80,6 +80,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     /** When [play] last handed a film to the player (elapsedRealtime ms); cleared once this screen shows again. */
     private var launchedAt = Long.MIN_VALUE / 2
     override val glassSource: GlassSource? get() = if (filmOn) film ?: still else still
+    /** What glass windows over the pages show: the wallpaper and the page behind them, blurred ([PageGlass]). */
+    private var behind: app.fireplayer.ui.PageGlass? = null
+    override val pageGlass: GlassSource? get() = behind
     private lateinit var shellTokens: Tokens
     override val tokens: Tokens get() = shellTokens
 
@@ -135,6 +138,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         busy = app.fireplayer.ui.BusyOverlay(this, shellTokens)
         root.addView(busy, root.indexOfChild(liveDimmer) + 1, busy.params())
         pages = findViewById(R.id.page_container)
+        // Glass windows over the page show these two layers, blurred: copied when a window appears, and again only
+        // when something under one changes (each layer says when).
+        val wallpaperHost = findViewById<app.fireplayer.ui.GlassLayer>(R.id.wallpaper_host)
+        val pageLayer = findViewById<app.fireplayer.ui.GlassLayer>(R.id.page_container)
+        val glass = app.fireplayer.ui.PageGlass(root, listOf(wallpaperHost, pageLayer)) { prefs.glassRefreshPerSec }
+        behind = glass
+        wallpaperHost.onContentChanged = { glass.contentChanged() }
+        pageLayer.onContentChanged = { glass.contentChanged() }
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
         liveSettings = LiveSettings(this, panel)
@@ -142,7 +153,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.liveWindows = { liveSettings.openCategory(it) }
 
         wallpaper = WallpaperView(this).apply { glassLook = Glass.on }
-        findViewById<FrameLayout>(R.id.wallpaper_host).addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        wallpaperHost.addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         wallpaper.onReady = { glass ->
             still = glass
             // Glass made before the wallpaper was ready showed the dark fill: made again now with the wallpaper.
@@ -184,6 +195,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 vodPages.trimImages()
                 ImageLoader.trim()
                 film?.stop()
+                behind?.trim()
                 live.dropMemory()
                 // The glass look's full-screen wallpaper (about 8 MB) too; it loads again on return.
                 wallpaper.release()
@@ -207,6 +219,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onStart()
         // Back from a film (or a while away): the snapshot shows at once while the page fills again.
         filmMode.onStart(root)
+        behind?.start()
         wallpaper.restore()
         launchedAt = Long.MIN_VALUE / 2
         // This screen's surface shows live again (another instance may have taken it meanwhile).
@@ -226,6 +239,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         vodPages.stop()
         ImageLoader.trim(ImageLoader.TRIM_HALF)
         film?.stop()
+        behind?.stop()
         root.keepScreenOn = false
         // A film starting: the rest of the memory goes now; otherwise after a while in the background.
         filmMode.onStop()
@@ -280,6 +294,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         vodPages.release()
         liveSettings.release()
         film?.release()
+        behind?.stop()
         filmMode.release()
         super.onDestroy()
     }
@@ -307,7 +322,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // The look was switched in the player while this screen was behind it.
         applyLook()
         if (panel.isOpen) {
-            Glass.background(panel.root, Glass.Kind.PANEL)
+            Glass.overlay(panel.root, Glass.Kind.PANEL)
             panel.refresh()
         }
     }
@@ -316,6 +331,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun showTab(tab: NavRail.Tab) {
         rail.setSelected(tab)
+        // Live TV's rail is a strip attached to the screen's edge; every other tab's a floating window. It moves from
+        // one to the other as Live TV is entered or left.
+        rail.setAttached(tab == NavRail.Tab.LIVE, NavRail.ATTACH_MS)
         pageInset(tab)
         if (tab != NavRail.Tab.LIVE) setRailShown(true, 0L)
         val isLive = tab == NavRail.Tab.LIVE
@@ -410,24 +428,43 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     /** A category's own window; the page dims while it's open and focus comes back to [from] when it closes. */
     private fun openCategory(category: SettingsCategory, from: View) {
         when (category) {
-            SettingsCategory.PLAYLISTS_EPG -> liveSettings.openPlaylistsAndEpg(onClose = { restore(from) }).also { dim() }
-            SettingsCategory.LIVE_TV -> liveSettings.openLiveOptions(onClose = { restore(from) }).also { dim() }
+            SettingsCategory.PLAYLISTS_EPG -> liveSettings.openPlaylistsAndEpg(onClose = { restore(from) }).also { stepBack(settingsPage) }
+            SettingsCategory.LIVE_TV -> liveSettings.openLiveOptions(onClose = { restore(from) }).also { stepBack(settingsPage) }
             else -> openPanel(category.title, from) { settingsPanels.renderCategory(this, category) }
         }
     }
 
-    // Faded as one layer, drawn once rather than each frame, and dropped when the fade ends.
-    private fun dim() = settingsPage.animate().alpha(0.35f).setDuration(160).withLayer().start()
+    /**
+     * [page] steps back behind a window opened over it. Classic: it fades to about a third (the classic window is
+     * partly see-through), as one layer, drawn once rather than each frame and dropped when the fade ends. Glass: it
+     * stays as it is, since the window's glass shows that very page, blurred, under its own tint; fading it too would
+     * darken the glass twice.
+     */
+    private fun stepBack(page: View, layer: Boolean = true) {
+        if (Glass.on) return
+        val fade = page.animate().alpha(0.35f).setDuration(160)
+        if (layer) fade.withLayer()
+        fade.start()
+    }
+
+    /** [page] comes forward again as the window over it closes (nothing to do if it never stepped back). */
+    private fun stepForward(page: View, layer: Boolean = true) {
+        page.animate().cancel()
+        if (page.alpha == 1f) return
+        val fade = page.animate().alpha(1f).setDuration(160)
+        if (layer) fade.withLayer()
+        fade.start()
+    }
 
     private fun restore(from: View) {
-        settingsPage.animate().alpha(1f).setDuration(160).withLayer().start()
+        stepForward(settingsPage)
         // The row it was opened from, if it's on screen (Menu can open Settings over the Live TV tab).
         if (from.isShown) from.requestFocus() else focusPage()
     }
 
     private fun openPanel(title: String, from: View, render: SidePanel.() -> Unit) {
         // The menu steps back while a window is open, so the window stands out.
-        dim()
+        stepBack(settingsPage)
         panel.open(title, onClose = { restore(from) }, render = render)
     }
 
@@ -440,9 +477,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     override fun openPlayerSettings(onClosed: (() -> Unit)?) {
         val back = currentFocus
         // The guide steps back while the window is open (the classic window is see-through), as the Settings tab does.
-        live.root.animate().alpha(0.35f).setDuration(160).start()
+        stepBack(live.root, layer = false)
         liveSettings.openPlayerSettings(settingsPanels, onClose = {
-            live.root.animate().alpha(1f).setDuration(160).start()
+            stepForward(live.root, layer = false)
             if (onClosed != null) onClosed() else if (back != null && back.isShown) back.requestFocus() else focusPage()
         })
     }
@@ -453,9 +490,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (panel.isOpen) panel.close()
         val back = currentFocus
         // The guide steps back while the window is open, as for Live FirePlayer Settings: one fade, drawn as one layer.
-        live.root.animate().alpha(0.35f).setDuration(160).withLayer().start()
+        stepBack(live.root)
         liveSettings.openAssignFavorites(playlistId, groupId, channel, onClose = {
-            live.root.animate().alpha(1f).setDuration(160).withLayer().start()
+            stepForward(live.root)
             // Back where it was. A popup it came from is gone by now, and a row of the groups column may show another
             // group after the guide read its data again: then the page puts focus back on its current entry.
             if (back != null && back.isShown && !isInside(back, live.sidebar)) back.requestFocus() else focusPage()
@@ -466,9 +503,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     override fun openManageGroups(playlistId: String, groupId: String?) {
         if (panel.isOpen) panel.close()
         val back = currentFocus
-        live.root.animate().alpha(0.35f).setDuration(160).withLayer().start()
+        stepBack(live.root)
         liveSettings.openManageGroups(playlistId, groupId, onClose = {
-            live.root.animate().alpha(1f).setDuration(160).withLayer().start()
+            stepForward(live.root)
             // The column's rows may show other groups after the edits made there (hidden, moved): then the page puts
             // focus back on its current entry.
             if (back != null && back.isShown && !isInside(back, live.sidebar)) back.requestFocus() else focusPage()

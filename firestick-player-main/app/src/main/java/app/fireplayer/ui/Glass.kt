@@ -12,6 +12,11 @@ import app.fireplayer.R
  * showing the blurred film behind them, with a light rim, while the layout, icons, text and colours stay as
  * they are. The date, time and seek line never get glass. Fire OS can't blur what's behind a view, so the
  * player keeps a small blurred copy of the film ([GlassBackdrop]) that each glass shape ([GlassDrawable]) shows.
+ *
+ * On the app's own screens (Home, Movies, TV Shows, My List, Search, Settings, the guide) glass is the one dark
+ * translucent style of [GlassStyle], made here three ways: [background] for a surface in the page (a button, a
+ * chip, a row, Recent channels, the banner's card), [overlay] for a window over the page (it shows the page behind
+ * it, blurred: [PageGlass]) and [edge] for an outline alone, over a picture.
  */
 object Glass {
     @Volatile var on = false
@@ -71,9 +76,69 @@ object Glass {
         return minOf(res.getDimension(classic), half)
     }
 
-    /** A new glass background of this shape, whatever the setting. Rows have no film of their own. */
+    /**
+     * A new glass background of this shape, whatever the setting. In the player (and over full-screen Live TV) it
+     * shows the blurred film; rows have no film of their own. On the app's own screens it's a surface in the page in
+     * the one browsing style ([GlassStyle]): the tint, hairline, highlight and shadow over whatever is behind it, as
+     * it is (the wallpaper, a picture), with nothing copied or blurred for it.
+     */
     fun drawable(context: Context, kind: Kind): Drawable =
-        GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+        if (inPlayer(context)) GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+        else GlassDrawable(context, kind, null, calm = true)
+
+    /**
+     * Glass for a window over the page (the settings window, a hold window, a small dialog, a dropdown's list, a
+     * notice) when the look is on, otherwise its classic background: as [background], but on the app's own screens
+     * the window shows what is really behind it, softly blurred ([PageGlass]: one shared small picture, copied when
+     * the window appears and when the page under it changes). A window that is shown again later by making its view
+     * visible is copied for again by itself; one shown some other way calls [appeared].
+     */
+    fun overlay(view: View, kind: Kind, classic: Int = classicRes(kind)) {
+        val l = view.paddingLeft
+        val t = view.paddingTop
+        val r = view.paddingRight
+        val b = view.paddingBottom
+        if (on) view.background = overlayDrawable(view.context, kind) else view.setBackgroundResource(classic)
+        view.setPadding(l, t, r, b)
+    }
+
+    /** The glass of [overlay], whatever the setting. */
+    fun overlayDrawable(context: Context, kind: Kind): GlassDrawable {
+        if (inPlayer(context)) return GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+        val behind = pageGlassFor(context)
+        val glass = GlassDrawable(context, kind, behind, calm = true, overlay = true)
+        behind?.register(glass)
+        behind?.onGlassAppeared()
+        return glass
+    }
+
+    /** A window over the page ([overlay]) is shown again without its view having been hidden: copied for afresh. */
+    fun appeared(view: View) {
+        if (on && !inPlayer(view.context)) pageGlassFor(view.context)?.onGlassAppeared()
+    }
+
+    /**
+     * The glass outline alone (the hairline and the top highlight of [kind]'s shape, nothing inside), for drawing over
+     * what a surface holds: a banner's or a card's picture. Null with the look off: classic surfaces have their own.
+     */
+    fun edge(context: Context, kind: Kind): Drawable? =
+        if (on) GlassDrawable(context, kind, null, calm = true, edgeOnly = true) else null
+
+    /** [edge] as [view]'s foreground (over its children), or none with the look off. */
+    fun edge(view: View, kind: Kind) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M || view is android.widget.FrameLayout) {
+            view.foreground = edge(view.context, kind)
+        }
+    }
+
+    private fun pageGlassFor(context: Context): GlassSource? {
+        var c: Context? = context
+        while (c is ContextWrapper) {
+            if (c is Activity) return (c as? GlassSource.Host)?.pageGlass
+            c = c.baseContext
+        }
+        return null
+    }
 
     /**
      * Whether [context] is the player's, or a screen whose glass shows a live picture just now (Home's full-screen

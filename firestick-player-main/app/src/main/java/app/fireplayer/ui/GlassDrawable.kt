@@ -42,11 +42,29 @@ import kotlin.math.sqrt
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
  * (two of each while fading), so moving focus and scrolling cost no more than the classic look.
  */
-class GlassDrawable(context: Context, val style: Glass.Kind, private val backdrop: GlassSource?) : Drawable() {
+class GlassDrawable(
+    context: Context,
+    val style: Glass.Kind,
+    private val backdrop: GlassSource?,
+    /**
+     * The app's own screens' style ([GlassStyle]): a restrained dark tint, a hairline, a top highlight and a soft
+     * shadow, in place of the film style's bright film, milky glaze, bevel and rim. The selected look is the same.
+     */
+    private val calm: Boolean = false,
+    /**
+     * In the calm style: a window over the page, which shows [backdrop]'s blurred picture of what's behind it under
+     * the tint ([Glass.overlay]). Otherwise a surface in the page: the tint over whatever is behind it, as it is.
+     */
+    private val overlay: Boolean = false,
+    /** In the calm style: the outline alone (hairline and top highlight), nothing inside or outside ([Glass.edge]). */
+    private val edgeOnly: Boolean = false,
+) : Drawable() {
 
     private val density = context.resources.displayMetrics.density
-    private val focusable = style == Glass.Kind.CIRCLE || style == Glass.Kind.PILL ||
-        style == Glass.Kind.MORE_ICON || style == Glass.Kind.ROW
+    private val focusable = !edgeOnly && (style == Glass.Kind.CIRCLE || style == Glass.Kind.PILL ||
+        style == Glass.Kind.MORE_ICON || style == Glass.Kind.ROW)
+    /** Which of [GlassBakes]' drawings the plain look is. */
+    private val variant = if (edgeOnly) GlassBakes.EDGE else if (calm) GlassBakes.CALM else GlassBakes.FILM
 
     /** Which film this shape shows. Rows have none: they sit on the glass of their window. */
     private val source: GlassBackdrop.Kind? = when (style) {
@@ -55,13 +73,29 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         Glass.Kind.ROW -> null
     }
     private val windowLike = source == GlassBackdrop.Kind.PANEL
-    private val filmAlpha = if (windowLike) 1f else CONTROL_FILM_ALPHA
+    private val filmAlpha = if (windowLike || calm) 1f else CONTROL_FILM_ALPHA
     /** How strong the dark fill is, for crossfades into or out of it. */
     private val fallbackAlpha = if (windowLike) PANEL_FALLBACK_ALPHA else Color.alpha(CONTROL_FALLBACK) / 255f
-    private val padPlain = GlassBakes.pad(style, false, density)
+    private val padPlain = if (edgeOnly) 0 else GlassBakes.pad(style, false, density, calm)
     private val padFocused = GlassBakes.pad(style, true, density)
     private val fade = FocusFade()
     private var alphaValue = 255
+
+    /**
+     * A window over the page ([overlay]) shows the blurred page behind it. Off while there is nothing but the still
+     * wallpaper behind it (the rail while it's narrow): the wallpaper then shows through the tint as it is, and nothing
+     * is copied or blurred for this glass. Turned on, the page is copied before it's next drawn.
+     */
+    var backdropOn = true
+        set(v) {
+            if (field == v) return
+            field = v
+            if (v && overlay) backdrop?.onGlassAppeared()
+            invalidateSelf()
+        }
+
+    /** Whether this is glass over the page that shows the page's blurred picture now ([PageGlass] copies for it). */
+    internal fun wantsBackdrop(): Boolean = overlay && backdropOn && isShown()
 
     /**
      * Draws only the selected look, nothing while plain: a row inside a card of rows ([RowGroups]), where the card
@@ -80,7 +114,8 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             laidOut.setEmpty()
             invalidateSelf()
         }
-    private val flatGlaze = Paint().apply { color = FLAT_GLAZE }
+    private val flatColor = if (calm) GlassStyle.WINDOW_TINT else FLAT_GLAZE
+    private val flatGlaze = Paint().apply { color = flatColor }
 
     private val laidOut = Rect()
     private val shape = RectF()
@@ -148,13 +183,21 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     override fun draw(canvas: Canvas) {
         val b = bounds
         if (b.width() <= 0 || b.height() <= 0) return
+        if (overlay && PageGlass.capturing) {
+            // The page is being drawn into the picture this glass shows (a hold window lies inside the page): it
+            // leaves itself out, and what its view holds with it. A view's background is drawn first and its canvas
+            // isn't restored until the whole view is drawn, so cutting the canvas to nothing here does both.
+            canvas.clipRect(0f, 0f, 0f, 0f)
+            return
+        }
         if (b != laidOut) layOut(b)
         updateFilters()
         val now = SystemClock.uptimeMillis()
         val a = alphaValue / 255f
-        if (source != null) drawFilm(canvas, source, a)
+        // The film style always shows its film; the calm style only as a window over the page.
+        if (source != null && !edgeOnly && (!calm || (overlay && backdropOn))) drawFilm(canvas, source, a)
         if (flat) {
-            flatGlaze.alpha = (Color.alpha(FLAT_GLAZE) * a).roundToInt()
+            flatGlaze.alpha = (Color.alpha(flatColor) * a).roundToInt()
             canvas.drawRect(shape, flatGlaze)
             return
         }
@@ -307,7 +350,7 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     private fun drawBake(canvas: Canvas, focusedLook: Boolean, strength: Float) {
         if (strength <= 0f) return
         val bake = (if (focusedLook) bakeFocused else bakePlain)
-            ?: GlassBakes.glass(style, focusedLook, laidOut.width(), laidOut.height(), density).also {
+            ?: GlassBakes.glass(style, focusedLook, laidOut.width(), laidOut.height(), density, if (focusedLook) GlassBakes.FILM else variant).also {
                 if (focusedLook) bakeFocused = it else bakePlain = it
             }
         val pad = if (focusedLook) padFocused else padPlain
@@ -358,6 +401,13 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     }
 
     override fun getAlpha(): Int = alphaValue
+
+    /** A window over the page whose view is made visible again (a hold window) has what's behind it copied afresh. */
+    override fun setVisible(visible: Boolean, restart: Boolean): Boolean {
+        val changed = super.setVisible(visible, restart)
+        if (changed && visible && overlay && backdropOn) backdrop?.onGlassAppeared()
+        return changed
+    }
 
     override fun setColorFilter(colorFilter: ColorFilter?) {}
 
@@ -433,10 +483,18 @@ internal object GlassBakes {
      */
     fun trim() = cache.evictAll()
 
-    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float): Bitmap {
-        val key = Key(kind.ordinal, focused, w, h, 0, density)
+    /** The plain look's drawings: the film style's, the calm style's ([GlassStyle]), and the calm outline alone. */
+    const val FILM = 0
+    const val CALM = 1
+    const val EDGE = 2
+
+    /** The glass of [kind] at this size: selected ([focused], the same in every style) or plain, as [variant]. */
+    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float, variant: Int = FILM): Bitmap {
+        val look = if (focused) FILM else variant
+        val key = Key(kind.ordinal, focused, w, h, look, density)
         cache.get(key)?.let { return it }
-        val bitmap = Baker(density).glass(kind, focused, w, h, pad(kind, focused, density))
+        val pad = if (look == EDGE) 0 else pad(kind, focused, density, look == CALM)
+        val bitmap = Baker(density).glass(kind, focused, w, h, pad, look)
         cache.put(key, bitmap)
         return bitmap
     }
@@ -452,28 +510,32 @@ internal object GlassBakes {
     }
 
     /** How far shadows and glows reach past the shape: the bitmap is that much bigger on every side. */
-    fun pad(kind: Glass.Kind, focused: Boolean, density: Float): Int {
+    fun pad(kind: Glass.Kind, focused: Boolean, density: Float, calm: Boolean = false): Int {
         val dp = when (kind) {
-            Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> PANEL_SHADOW.reach
-            Glass.Kind.CHIP -> CHIP_SHADOW.reach
+            Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> if (calm) CALM_WINDOW_SHADOW.reach else PANEL_SHADOW.reach
+            Glass.Kind.CHIP -> if (calm) CALM_CHIP_SHADOW.reach else CHIP_SHADOW.reach
             // The selected row's glow stays inside the row: no room may be added around it.
             Glass.Kind.ROW -> 0f
-            Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.MORE_ICON ->
-                if (focused) max(FOCUS_GLOW.reach, FOCUS_SHADOW.reach) else CONTROL_SHADOW.reach
+            Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.MORE_ICON -> when {
+                focused -> max(FOCUS_GLOW.reach, FOCUS_SHADOW.reach)
+                calm -> CALM_CONTROL_SHADOW.reach
+                else -> CONTROL_SHADOW.reach
+            }
         }
         return ceil(dp * density).toInt()
     }
 
     fun togglePad(density: Float): Int = ceil(TOGGLE_GLOW.reach * density).toInt()
 
+    /** The corner radius of [kind] at this size, px: the shared radii of [GlassStyle], in both styles. */
     fun radius(kind: Glass.Kind, w: Int, h: Int, density: Float): Float {
         val half = min(w, h) / 2f
         return when (kind) {
-            Glass.Kind.PANEL -> min(22f * density, half)
-            Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> min(15f * density, half)
+            Glass.Kind.PANEL -> min(GlassStyle.RADIUS_WINDOW * density, half)
+            Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> min(GlassStyle.RADIUS_POPUP * density, half)
             Glass.Kind.CIRCLE, Glass.Kind.MORE_ICON, Glass.Kind.PILL, Glass.Kind.CHIP -> half
             // A pill while one line high; taller rows (search results) keep soft corners instead of round ends.
-            Glass.Kind.ROW -> min(18f * density, half)
+            Glass.Kind.ROW -> min(GlassStyle.RADIUS_ROW * density, half)
         }
     }
 }
@@ -492,13 +554,14 @@ private class Baker(private val density: Float) {
 
     private fun px(dp: Float) = dp * density
 
-    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, pad: Int): Bitmap {
+    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, pad: Int, variant: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w + 2 * pad, h + 2 * pad, Bitmap.Config.ARGB_8888)
         val c = Canvas(bitmap)
         c.translate(pad.toFloat(), pad.toFloat())
         val rect = RectF(0f, 0f, w.toFloat(), h.toFloat())
         val r = GlassBakes.radius(kind, w, h, density)
         when {
+            !focused && variant == GlassBakes.EDGE -> edge(c, rect, r)
             kind == Glass.Kind.ROW && focused -> {
                 // As the released selected row: a white body 3dp inside the row, its glow in that margin.
                 val margin = px(3f)
@@ -512,16 +575,42 @@ private class Baker(private val density: Float) {
                 }
             }
             kind == Glass.Kind.ROW -> {
-                fill(c, rect, r, ROW_FILL)
-                crescent(c, rect, r, px(0.75f), ROW_CRESCENT)
+                fill(c, rect, r, GlassStyle.ROW_FILL)
+                crescent(c, rect, r, px(0.75f), GlassStyle.ROW_HIGHLIGHT)
             }
             focused -> {
                 outside(c, pad, w, h, rect, r, FOCUS_SHADOW, FOCUS_GLOW)
                 focusedBody(c, pad, w, h, rect, r)
             }
+            variant == GlassBakes.CALM -> calm(c, kind, pad, w, h, rect, r)
             else -> clear(c, kind, pad, w, h, rect, r)
         }
         return bitmap
+    }
+
+    /**
+     * Unselected glass in the calm style ([GlassStyle]): a soft shadow outside, then one dark tint, a faint light from
+     * above, the hairline and the top highlight. What shows through the tint (the blurred page, or whatever is behind)
+     * is drawn under this by [GlassDrawable], or is simply there.
+     */
+    private fun calm(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float) {
+        val window = kind == Glass.Kind.PANEL || kind == Glass.Kind.POPUP || kind == Glass.Kind.DIALOG_POPUP
+        val chip = kind == Glass.Kind.CHIP
+        outside(c, pad, w, h, rect, r, if (window) CALM_WINDOW_SHADOW else if (chip) CALM_CHIP_SHADOW else CALM_CONTROL_SHADOW)
+        fill(c, rect, r, if (window) GlassStyle.WINDOW_TINT else GlassStyle.CONTROL_TINT)
+        val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
+        sheen.shader = LinearGradient(
+            0f, rect.top, 0f, rect.top + rect.height() * GlassStyle.SHEEN_SHARE,
+            GlassStyle.SHEEN, 0x00FFFFFF, Shader.TileMode.CLAMP,
+        )
+        c.drawRoundRect(rect, r, r, sheen)
+        edge(c, rect, r)
+    }
+
+    /** The calm style's outline: the hairline all round and the highlight along the top edge. */
+    private fun edge(c: Canvas, rect: RectF, r: Float) {
+        stroke(c, rect, r, GlassStyle.hairlinePx(density), GlassStyle.HAIRLINE)
+        crescent(c, rect, r, px(GlassStyle.HIGHLIGHT_DP), GlassStyle.HIGHLIGHT)
     }
 
     /** Unselected glass: shadow, glaze, bevel and rim over the film. */
@@ -762,6 +851,10 @@ private const val DIALOG_LIGHT = 0xBF / 255f
 private val PANEL_SHADOW = Shadow(0x59000000, 6f, 12f)
 private val CONTROL_SHADOW = Shadow(0x4D000000, 4f, 6f)
 private val CHIP_SHADOW = Shadow(0x33000000, 2f, 3f)
+// The calm style's (the app's own screens'), from the shared style.
+private val CALM_WINDOW_SHADOW = Shadow(GlassStyle.WINDOW_SHADOW, GlassStyle.WINDOW_SHADOW_DY, GlassStyle.WINDOW_SHADOW_BLUR)
+private val CALM_CONTROL_SHADOW = Shadow(GlassStyle.CONTROL_SHADOW, GlassStyle.CONTROL_SHADOW_DY, GlassStyle.CONTROL_SHADOW_BLUR)
+private val CALM_CHIP_SHADOW = Shadow(GlassStyle.CHIP_SHADOW, GlassStyle.CHIP_SHADOW_DY, GlassStyle.CHIP_SHADOW_BLUR)
 // Small and faint: the controls sit just under the time, which a big blue haze would cover.
 private val FOCUS_GLOW = Shadow(0x663D8BFF, 0f, 5f)
 private val FOCUS_SHADOW = Shadow(0x59000000, 5f, 7f)
@@ -780,8 +873,6 @@ private val RIM = intArrayOf(0xA6FFFFFF.toInt(), 0x40FFFFFF, 0x1AFFFFFF, 0x1AFFF
 private val RIM_STOPS = floatArrayOf(0f, 0.3f, 0.5f, 0.85f, 1f)
 private val RIM_CRESCENT = 0x73FFFFFF
 
-private val ROW_FILL = 0x12FFFFFF
-private val ROW_CRESCENT = 0x1FFFFFFF
 
 private val FOCUS_BODY = intArrayOf(0xFAFFFFFF.toInt(), 0xF0F2F5FF.toInt(), 0xE6DCE6FF.toInt())
 private val FOCUS_BODY_STOPS = floatArrayOf(0f, 0.55f, 1f)
