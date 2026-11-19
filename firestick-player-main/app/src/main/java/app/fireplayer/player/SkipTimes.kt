@@ -87,6 +87,9 @@ object SkipTimes {
         get(context, "$INTRODB?imdb_id=$imdbId$what$movie")
     }
 
+    /** Whether [id] is an IMDb id ("tt0903747"), the only kind SkipDB and IntroDB know a title by. */
+    fun isImdbId(id: String): Boolean = id.matches(IMDB)
+
     /** SkipDB's address for a film or episode ([what]) in a file [durationMs] long: [find] and [warm] ask the same one. */
     internal fun skipDbUrl(imdbId: String, what: String, durationMs: Long): String =
         "$SKIPDB?imdb_id=$imdbId$what&duration=${Math.round(durationMs / 1000.0)}&adjust=conservative"

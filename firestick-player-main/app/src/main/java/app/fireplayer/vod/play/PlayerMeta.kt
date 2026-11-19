@@ -85,6 +85,29 @@ object PlayerMeta {
         return if (name.equals("TBA", true) || STAND_IN.matches(name)) "" else name
     }
 
+    /**
+     * What Skip intro's times are asked for and kept by, for [request]: the title's id with the season and episode, or
+     * "film". Made from the ids handed over alone, so it's the same before and after the show's details arrive, and
+     * never another episode's.
+     */
+    fun skipKey(request: PlayRequest): String {
+        val ep = request.target.episode ?: return "${request.target.title.id}/film"
+        return "${request.target.title.id}/${ep.season}/${ep.episode}"
+    }
+
+    /**
+     * The length in minutes that Skip intro's times are weighed against ([app.fireplayer.player.SkipRules.runtimeAgrees]):
+     * for an episode its own, where the show's [details] list it, else the show's usual one; for a film its own. 0 when
+     * unknown (IntroDB's times then go by their other evidence).
+     */
+    fun runtimeMinutes(request: PlayRequest, details: TitleDetails?): Int {
+        val ep = request.target.episode
+        val usual = TitleDetails.runtimeMinutes(request.target.title.runtime) ?: 0
+        if (ep == null) return details?.runtimeMin?.takeIf { it > 0 } ?: usual
+        val own = details?.episodes?.firstOrNull { it.season == ep.season && it.episode == ep.episode }?.runtimeMin
+        return own?.takeIf { it > 0 } ?: usual
+    }
+
     /** The episode of [guide] that [request] plays; null for a film or an episode the guide doesn't list. */
     fun episode(guide: ShowGuide?, request: PlayRequest): ShowGuide.Ep? = guide?.episode(episodeId(request))
 

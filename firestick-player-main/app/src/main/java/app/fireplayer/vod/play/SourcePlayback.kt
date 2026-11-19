@@ -110,6 +110,8 @@ class SourcePlayback(
     /** A stall's first aid: the same source opened again before any switch ([StallAid]). */
     private val aid = StallAid()
     private var stalledAt = 0L
+    /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
+    private var netWait: Cancel? = null
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -199,6 +201,8 @@ class SourcePlayback(
         stalled = false
         aid.reset()
         loadTimer?.cancel()
+        netWait?.cancel()
+        netWait = null
         if (switching) host.log("another source starts at ${PlayRules.clock(start)}")
         host.startSource(o, start, switching)
         if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
@@ -238,6 +242,9 @@ class SourcePlayback(
     fun pause() {
         loadTimer?.cancel()
         loadTimer = null
+        // The player is taken down with its screen and built again on return, which opens the film afresh anyway.
+        netWait?.cancel()
+        netWait = null
     }
 
     /** Back on screen: a source still loading gets its limit afresh (the player loads it again from here). */
@@ -342,9 +349,41 @@ class SourcePlayback(
         val s = current ?: return end(GENERIC_STOP)
         val failure = session.failureOf(errorCode, httpStatus)
         playing = false
+        // The network dropped under a film that was playing: not the source's doing. Nothing is counted against it,
+        // and it plays on from the same link, where it stood, once the network is back.
+        if (failure.kind == FailureKind.NO_INTERNET && everPlayed) {
+            awaitNetwork()
+            return
+        }
         val step = session.failed(s, failure)
         host.log("error $errorCode" + (httpStatus?.let { " (HTTP $it)" } ?: "") + " counted as ${failure.kind}: " + stepWords(step))
         act(step)
+    }
+
+    private fun awaitNetwork() {
+        netWait?.cancel()
+        host.log("no network: waiting for it with the same source at ${PlayRules.clock(host.positionMs())}")
+        host.showProgress(Recovery.NET_WAITING)
+        pollNetwork(ticker.now())
+    }
+
+    private fun pollNetwork(since: Long) {
+        netWait = ticker.after(Recovery.NET_POLL_MS) {
+            netWait = null
+            if (closed || playing || stopped) return@after
+            val waited = ticker.now() - since
+            when (Recovery.netStep(session.online(), waited)) {
+                Recovery.NetStep.WAIT -> pollNetwork(since)
+                Recovery.NetStep.PLAY -> {
+                    host.log("network back after ${waited / 1000} s: same source again")
+                    host.retryAfter(Recovery.NET_SETTLE_MS)
+                }
+                Recovery.NetStep.GIVE_UP -> {
+                    host.log("no network for ${waited / 1000} s: stopping")
+                    end(NO_NETWORK)
+                }
+            }
+        }
     }
 
     private fun stepWords(step: Step): String = when (step) {
@@ -428,6 +467,7 @@ class SourcePlayback(
         closed = true
         opening?.cancel()
         loadTimer?.cancel()
+        netWait?.cancel()
         nextLookup?.cancel()
         session.close()
     }
@@ -445,6 +485,8 @@ class SourcePlayback(
         const val LIMIT_NOTE = "Playback keeps pausing · Next source in Picture & sound tries another"
         const val NOT_FETCHED = "Nothing played · Sources lists every file"
         const val GENERIC_STOP = "This title couldn't play · Sources lists every file"
+        /** The network stayed away ([Recovery.NET_WAIT_MS]): the failure table's words for it. */
+        const val NO_NETWORK = "No internet connection. Check the Wi-Fi and try again."
         /** A switch for stalls that found nothing is tried again after this long, ms. */
         const val STALL_RETRY_MS = 120_000L
         /** A stall at least this long is noted in the log when it ends. */

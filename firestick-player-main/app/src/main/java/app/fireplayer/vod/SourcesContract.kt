@@ -660,6 +660,9 @@ interface SourceSession {
     /** A player error as a failure (PlaybackException code, HTTP status when the load error had one). */
     fun failureOf(errorCode: Int, httpStatus: Int?): Failure
 
+    /** Whether the TV has a network now (asked while a play waits for it to come back). */
+    fun online(): Boolean = true
+
     /** Whether an automatic switch is allowed at [now] (elapsedRealtime ms); after the last one, a note points to Next source. */
     fun maySwitch(now: Long): Boolean
 

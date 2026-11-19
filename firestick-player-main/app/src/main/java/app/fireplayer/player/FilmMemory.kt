@@ -142,6 +142,33 @@ object FilmMemory {
     fun fillLimit(capBytes: Int, budgetBytes: Int, aheadUs: Long): Int =
         if (aheadUs >= MIN_AHEAD_US) capBytes else maxOf(capBytes, budgetBytes)
 
+    /** Less film than this loaded says too little about how much of it fits. */
+    const val ROOM_MIN_US = 1_000_000L
+    const val ROOM_MIN_BYTES = 4L shl 20
+    /** After a stall the film never plays on with less than this ahead, however little fits. */
+    const val STALL_WAIT_LEAST_US = 2_000_000L
+
+    /**
+     * How much of this film fits ahead of the picture, in µs: as it stood the last time the buffer was full
+     * ([fullUs]; 0: it hasn't been yet), else worked out from what's loaded now ([aheadUs] of film in
+     * [allocatedBytes], of [limitBytes]). 0 while there's too little to tell. An 80 Mb/s film in 128 MiB: 10 to 12 s.
+     */
+    fun roomUs(fullUs: Long, aheadUs: Long, allocatedBytes: Long, limitBytes: Long): Long {
+        if (fullUs > 0) return fullUs
+        if (aheadUs < ROOM_MIN_US || allocatedBytes < ROOM_MIN_BYTES || limitBytes <= 0) return 0L
+        return (aheadUs.toDouble() * limitBytes / allocatedBytes).toLong()
+    }
+
+    /**
+     * How much film to wait for before playing (on), when the rules ask for [wantedUs]: never more than half of what
+     * fits ([roomUs]; 0: not known), nor less than [leastUs]. A cushion sized for a minute's smooth playing can't be
+     * had where 10 s fill the memory: waiting for all of it kept a high-quality film on the loading ring for as long
+     * as the whole buffer takes to arrive, at every start, jump and stall. Half is there in half the time, and the
+     * rest fills as it plays.
+     */
+    fun waitUs(wantedUs: Long, roomUs: Long, leastUs: Long): Long =
+        if (roomUs <= 0) wantedUs else minOf(wantedUs, maxOf(leastUs, roomUs / 2))
+
     @Volatile private var tier: RamTier? = null
 
     /** This TV's tier, read once (its total memory doesn't change). */
