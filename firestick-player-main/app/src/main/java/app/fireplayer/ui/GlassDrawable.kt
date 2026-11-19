@@ -211,7 +211,9 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             drawSource(canvas, under, lower)
             drawSource(canvas, top, a * f)
             // Held still while the D-pad moves round (see GlassBackdrop.navigating): drawn again when it carries on.
-            if (seen && !bd.navigating) invalidateSelf()
+            // Otherwise drawn again as the fade goes on, at the pace the source sets (the TV's own refreshes for the film's
+            // glass: Fire OS draws 60 times a second on a TV showing 24, which redrew every glass 2.5 times a refresh).
+            if (seen && !bd.navigating) bd.onFadeDrawn(this)
         }
         if (seen) bd.onGlassDrawn() else bd.onGlassHidden()
     }

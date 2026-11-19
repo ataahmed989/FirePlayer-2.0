@@ -14,7 +14,8 @@ import app.fireplayer.player.BlackBars
  * Looks at the film now and then while Fill screen or Stretch is chosen, to find black bars that are part of its file
  * ([BlackBars]). A small copy of the picture about once a second until that's known, then every few seconds in case
  * the film changes shape; none at all in the other display sizes, while paused, or once it's sure there are no bars.
- * Half as often while a 4K film plays on a TV short of memory ([heavyVideo]), as for the glass ([GlassLoad]).
+ * Once the bars are known, half as often while a 4K film plays on a TV short of memory ([heavyVideo]), as for the glass
+ * ([GlassLoad]); while they're still looked for it's as quick as ever, so Fill screen and Stretch settle as fast.
  * Android 7 and later (PixelCopy); older TVs keep the film's own shape.
  */
 class BarWatch(
@@ -38,7 +39,7 @@ class BarWatch(
     val vertical: Float get() = bars.vertical
     val horizontal: Float get() = bars.horizontal
 
-    /** The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): looks come half as often. */
+    /** The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): once the bars are known, looks come half as often. */
     var heavyVideo = false
 
     /** Fill screen or Stretch is chosen and a film is showing. */
@@ -125,14 +126,15 @@ class BarWatch(
         private const val SOON_MS = 1_000L
         private const val KEEP_MS = 4_000L
         private const val PATIENCE = 90
-        /** How many times longer the gaps are with heavy video. */
+        /** How many times longer the gaps are with heavy video, once the bars are known. */
         private const val HEAVY_GAP_FACTOR = 2
 
         /**
-         * The wait before the next look: about a second while the bars are looked for, a few seconds once they're
-         * [known] (found, or given up on); twice as long with [heavy] video.
+         * The wait before the next look: about a second while the bars are looked for (whatever the video: the display
+         * size settles as quickly), a few seconds once they're [known] (found, or given up on), twice that with [heavy]
+         * video.
          */
         fun gapMs(known: Boolean, heavy: Boolean): Long =
-            (if (known) KEEP_MS else SOON_MS) * (if (heavy) HEAVY_GAP_FACTOR else 1)
+            if (known) KEEP_MS * (if (heavy) HEAVY_GAP_FACTOR else 1) else SOON_MS
     }
 }

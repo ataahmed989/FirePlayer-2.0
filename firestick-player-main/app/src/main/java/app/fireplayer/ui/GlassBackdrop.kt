@@ -288,6 +288,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         main.removeCallbacks(idleCheck)
         main.removeCallbacks(look)
         lookPending = false
+        main.removeCallbacks(fadeStep)
+        fadeStepPending = false
         idlePending = false
         navigating = false
         ticking = false
@@ -385,6 +387,33 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             lookPending = true
             main.postDelayed(this, if (++looks < LOOKS_SOON) LOOK_SOON_MS else LOOK_LATER_MS)
         }
+    }
+
+    /**
+     * Glass drew part-way through a fade: all the glass on screen is drawn again together one of the TV's refreshes
+     * later ([GlassLoad.fadeStepMs]), not each piece on every frame Fire OS offers.
+     */
+    override fun onFadeDrawn(drawable: GlassDrawable) {
+        val step = fadeStepMs
+        if (step <= 0L) {
+            drawable.invalidateSelf()
+            return
+        }
+        if (fadeStepPending || !started) return
+        fadeStepPending = true
+        main.postDelayed(fadeStep, step)
+    }
+
+    private var fadeStepPending = false
+    /** Between the glass's drawings through a fade, ms; 0: every frame. Read from the TV with each new copy. */
+    private var fadeStepMs = 0L
+
+    private val fadeStep = Runnable {
+        fadeStepPending = false
+        if (!started || navigating || drawables.isEmpty()) return@Runnable
+        visiting.addAll(drawables.keys)
+        for (drawable in visiting) if (drawable.isOnScreen()) drawable.invalidateSelf()
+        visiting.clear()
     }
 
     /**
@@ -931,6 +960,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         fadeStart = now
         fastFade = job.cut
         shownSignature = signature
+        // The TV's refresh as it is now (it changes when a film's rate is matched): the fade is drawn at that pace.
+        @Suppress("DEPRECATION")
+        val hz = runCatching { activity.windowManager.defaultDisplay.refreshRate }.getOrDefault(60f)
+        fadeStepMs = GlassLoad.fadeStepMs(hz, heavyVideo)
         scheduleExpiry()
         if (playing) startTicking(now)
         invalidateAll()

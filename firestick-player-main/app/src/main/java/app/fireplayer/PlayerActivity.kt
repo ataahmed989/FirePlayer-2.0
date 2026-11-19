@@ -655,7 +655,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop = GlassBackdrop(this, surfaceView).also {
             // With no glass on screen for a few seconds (the controls hidden, the windows closed) the drawing cache's
             // unused pictures go too, on a TV short of memory: the film needs it (41 MB measured on the Stick 4K Max).
-            it.onIdle = { if (GlassLoad.smallRam(this) && player?.isPlaying == true) GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS) }
+            it.onIdle = { trimGraphicsWhenQuiet() }
         }
         // Another display size moves the picture on screen: the glass's copy of it is out of place.
         videoFrame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -5144,6 +5144,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (shown <= 0) return null
         return "Last minute: ${diag.tally.minuteLine()}\n" +
             "In all: ${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames dropped"
+    }
+
+    /**
+     * The glass has been off screen a few seconds while a film plays on a TV short of memory: the drawing cache's unused
+     * pictures go ([GraphicsTrim]). Where Android only lets go of what went unused for half a minute, it's asked again
+     * that long after, if the controls and windows stayed away.
+     */
+    private fun trimGraphicsWhenQuiet() {
+        if (!GlassLoad.smallRam(this) || player?.isPlaying != true) return
+        GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS)
+        handler.removeCallbacks(trimStaleGraphics)
+        if (GraphicsTrim.staleOnly) handler.postDelayed(trimStaleGraphics, GraphicsTrim.STALE_MS + 1_000L)
+    }
+
+    private val trimStaleGraphics = Runnable {
+        if (!isFinishing && !controlsShown && !panel.isOpen && !episodesSheet.isOpen && player?.isPlaying == true) GraphicsTrim.trim()
     }
 
     // The glass's copies and probes when the log line was last written.

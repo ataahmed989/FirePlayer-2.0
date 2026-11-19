@@ -36,6 +36,12 @@ interface GlassSource {
      */
     fun onGlassHidden() {}
 
+    /**
+     * Called by a glass shape that drew part-way through a fade to a newer picture, where it can be seen: it has to be
+     * drawn again as the fade goes on. As it stands, at once (the next frame).
+     */
+    fun onFadeDrawn(drawable: GlassDrawable) = drawable.invalidateSelf()
+
     /** An activity whose glass shows something other than a film (the app's own screens). */
     interface Host {
         val glassSource: GlassSource?

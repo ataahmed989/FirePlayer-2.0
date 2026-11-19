@@ -75,6 +75,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     /** Back: the release that hadn't run yet doesn't; after one, the snapshot covers the page while it fills again. */
     fun onStart(over: FrameLayout) {
         main.removeCallbacks(backgroundRelease)
+        main.removeCallbacks(trimStale)
         filmStarting = false
         val shot = snapshot
         if (released && shot != null) show(over, shot) else dropSnapshot()
@@ -83,6 +84,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
     fun release() {
         main.removeCallbacks(backgroundRelease)
+        main.removeCallbacks(trimStale)
         overlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         overlay = null
         dropSnapshot()
@@ -167,7 +169,12 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private fun trimGraphics() {
         val trimmed = GraphicsTrim.trim()
         Log.i(TAG, "Film mode: the pages' pictures and caches let go" + if (trimmed) ", graphics trimmed" else "")
+        // Where Android only lets go of graphics unused for half a minute, the pages' go once they've been hidden that long.
+        main.removeCallbacks(trimStale)
+        if (GraphicsTrim.staleOnly) main.postDelayed(trimStale, GraphicsTrim.STALE_MS + 1_000L)
     }
+
+    private val trimStale = Runnable { if (released) GraphicsTrim.trim() }
 
     companion object {
         /** In the background this long before the shell's memory is released (not at once: a quick return stays as it was). */

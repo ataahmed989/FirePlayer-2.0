@@ -56,6 +56,21 @@ class GlassLoadTest {
         assertNull(GlassLoad.refreshLabel(8, heavy = false))
     }
 
+    @Test fun fadesAreDrawnAtTheTvsRefreshNotAtFireOsSixtyFrames() {
+        // A TV switched to a film's 23.976 Hz: one drawing a refresh, asked for a little early.
+        assertEquals(37L, GlassLoad.fadeStepMs(23.976f, heavy = false))
+        assertEquals(37L, GlassLoad.fadeStepMs(23.976f, heavy = true))
+        assertEquals(36L, GlassLoad.fadeStepMs(25f, heavy = false))
+        // At 50 or 60 Hz every frame, as before; heavy video never oftener than 30 a second.
+        assertEquals(16L, GlassLoad.fadeStepMs(50f, heavy = false))
+        assertEquals(0L, GlassLoad.fadeStepMs(59.94f, heavy = false))
+        assertEquals(33L, GlassLoad.fadeStepMs(59.94f, heavy = true))
+        assertEquals(33L, GlassLoad.fadeStepMs(50f, heavy = true))
+        // A refresh the TV doesn't report counts as 60.
+        assertEquals(0L, GlassLoad.fadeStepMs(0f, heavy = false))
+        assertEquals(0L, GlassLoad.fadeStepMs(Float.NaN, heavy = false))
+    }
+
     @Test fun smallRamIsUnder1point8GiB() {
         // The Fire TV Stick 4K Max (AFTKRT): 1.7 GB in all.
         assertTrue(GlassLoad.smallRam(1_710_000_000L, lowRam = false))

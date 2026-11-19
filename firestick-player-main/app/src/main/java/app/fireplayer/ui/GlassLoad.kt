@@ -46,6 +46,26 @@ object GlassLoad {
 
     fun probeMs(heavy: Boolean): Long = if (heavy) HEAVY_PROBE_MS else PROBE_MS
 
+    /** The glass is never redrawn through a fade faster than this with heavy video (30 times a second). */
+    const val HEAVY_FADE_STEP_MS = 33L
+    /** Asked for this much before the refresh it's meant for, so the drawing is ready by then. */
+    const val FADE_STEP_EARLY_MS = 4L
+
+    /**
+     * How long to wait between the glass's drawings while a new copy of the film fades in: one of the TV's refreshes
+     * ([refreshHz], as the display reports it: 23.976 on a TV switched to a film's rate), a little early. Drawing
+     * oftener shows nothing more: on a Fire TV the app is asked to draw 60 times a second whatever the TV's rate, and
+     * with a glass window open over a 4K film that was 48 full redraws a second for a TV showing 24. With [heavy] video
+     * never oftener than every [HEAVY_FADE_STEP_MS]. 0 means every frame (a TV at 60 Hz or more, light video).
+     */
+    fun fadeStepMs(refreshHz: Float, heavy: Boolean): Long {
+        val hz = if (refreshHz.isNaN() || refreshHz < 20f) 60f else refreshHz.coerceAtMost(120f)
+        val step = (1000f / hz).toLong() - FADE_STEP_EARLY_MS
+        val least = if (heavy) HEAVY_FADE_STEP_MS else 0L
+        // Under a 60 Hz frame there's nothing to wait for.
+        return maxOf(if (step < 16L) 0L else step, least)
+    }
+
     /**
      * What the Glass refresh row shows while the setting is lowered for heavy video, such as "8 a second · 2 in 4K";
      * null when it isn't (the row then shows the setting's own name).

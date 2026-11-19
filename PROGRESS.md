@@ -151,7 +151,26 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 - [x] Choppy 4K Dolby Vision + HDR10+ film measured (SurfaceFlinger frame timing, memory, CPU, decoder log): about 1
       frame in 6 lost in the user's session; smooth in a 10-minute replay; smooth after HDR was enabled on the TV
       (Samsung Input Signal Plus). Causes and the eight approved fixes: design-brief.md §6.6.
-- [ ] Player fixes 1–8 in FirePlayer 2.0.
+- [x] Player fixes 1–8 in FirePlayer 2.0 (playback pass part 1, branch `play/vod2`, 919 unit tests), adapted to the
+      measurements in `player-fixes-wip/DEVICE-FINDINGS.md`:
+  - Glass: glass drawn out of sight asks for nothing (no copies, probes or redraws with the controls and windows
+    away); a copy is asked for the moment controls or a window open; 4K on a small-memory TV refreshes at most twice
+    a second; the drawing cache is trimmed 5 s after the last glass leaves the screen.
+  - Film buffer: by RAM tier and by the memory free at the start (260 MiB left for the decoder's frames and the TV);
+    what's kept behind is also held to a size (24 MiB on the Stick: 2.3 s of an 84 Mb/s film, all 6 s under 32 Mb/s).
+  - Frames: every lost frame counted (Picture & sound's Dropped row, `FirePlayerDiag` log every 10 s), steadier pacer,
+    lost frames in copy health; no second 4K decoder for skip previews on small TVs; HDR10+ masked when the TV has
+    none; libass's overlay only once a styled track is chosen.
+  - Plays from Films & Shows: OK again plays the best so far; the link check starts at OK (not when the player's screen
+    is up); the title and episode come from the ids handed over ("Matched", never a name search); Episodes sheet, Next
+    episode, the end card and Film/Show details from the title page's stored details; Skip intro's times asked ahead.
+  - Recovery: a stall with nothing arriving reopens the same source at the same spot before any switch; each recovery
+    is logged (`FirePlayerDiag: recovery …`).
+  - For the TV: `adb logcat -s FirePlayerDiag FirePlayer` shows `start …` (OK to first picture, step by step), the
+    10-second `play …` line (frames, buffer, `down`/`free`/`best` Mb/s for the one-connection question, glass copies,
+    memory) and `recovery …`.
+- [ ] Device check of the above with the user (checklist in the pass's report); then fix 12 (second connection) decided
+      from the `best=` figure.
 
 ## 4. Films, shows, Home, navigation (handoff step 4) — step 1 built and checked on the TV
 
