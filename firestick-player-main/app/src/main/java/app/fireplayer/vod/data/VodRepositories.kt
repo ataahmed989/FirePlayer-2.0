@@ -46,7 +46,7 @@ object VodRepositories {
     }
 
     /** Daemon threads below the UI's priority, so rows never compete with the UI or a playing film. */
-    private fun threads(name: String, priority: Int) = java.util.concurrent.ThreadFactory { r ->
+    internal fun threads(name: String, priority: Int) = java.util.concurrent.ThreadFactory { r ->
         Thread({
             Process.setThreadPriority(priority)
             r.run()

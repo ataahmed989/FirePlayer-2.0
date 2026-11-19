@@ -10,6 +10,7 @@ import app.fireplayer.vod.HeaderFeed
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.Page
+import app.fireplayer.vod.PlayAction
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.Source
@@ -17,6 +18,7 @@ import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.hasImdbId
+import app.fireplayer.vod.playTarget
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -98,8 +100,7 @@ class DefaultVodRepository(
             is Source.Trending -> trendingCards(s.kind, skip, limit, req, sink)
             is Source.ContinueWatching -> local(req, skip, limit, sink) { library.continueWatching(s.kind) }
             Source.MyList -> local(req, skip, limit, sink) { library.myList().map { Card(it) } }
-            // Filled by playback in a later step.
-            is Source.NextEpisodes -> local(req, skip, limit, sink) { emptyList() }
+            is Source.NextEpisodes -> local(req, skip, limit, sink) { nextEpisodes() }
             // Chips come from genres().
             is Source.Genres -> local(req, skip, limit, sink) { emptyList() }
             // The title page fills these rows itself (details(), moreLikeThis()).
@@ -413,6 +414,29 @@ class DefaultVodRepository(
 
     override fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) =
         library.recordProgress(title, episode, positionMs, durationMs)
+
+    /**
+     * Next Episodes (§6.2): for each show followed whose latest episode is over, the next aired episode not watched,
+     * from the show's stored episodes (its title page stored them; nothing is fetched for a row). The latest played
+     * first. On [io].
+     */
+    private fun nextEpisodes(): List<Card> {
+        val now = clock()
+        return library.followedShows().mapNotNull { (title, last) ->
+            val meta = storedMeta(Kind.SERIES, title.id)?.value ?: return@mapNotNull null
+            val target = playTarget(meta.episodes, last, now) ?: return@mapNotNull null
+            if (target.action != PlayAction.PLAY) return@mapNotNull null
+            val ep = target.episode
+            val same = last.episode?.let { it.season == ep.season && it.episode == ep.episode } == true
+            if (same || library.isEpisodeWatched(ep)) return@mapNotNull null
+            Card(
+                title = title,
+                caption = "S${ep.season} E${ep.episode}",
+                episode = ep.ref,
+                picture = ep.still,
+            )
+        }
+    }
 
     // ---- Details: Cinemeta's meta and TMDB's details, stored and fetched ----
 

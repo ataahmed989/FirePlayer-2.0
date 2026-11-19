@@ -658,7 +658,7 @@ object Sources {
     @Volatile private var instance: SourcesRepository? = null
 
     fun get(context: Context): SourcesRepository =
-        instance ?: synchronized(this) { instance ?: StubSources(context.applicationContext).also { instance = it } }
+        instance ?: synchronized(this) { instance ?: app.fireplayer.vod.sources.DefaultSourcesRepository.create(context.applicationContext).also { instance = it } }
 }
 
 /** Knows no add-ons: every look-up is complete and empty, and a play stops with "No add-ons yet". */
