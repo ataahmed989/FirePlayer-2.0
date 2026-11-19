@@ -169,6 +169,28 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
   - For the TV: `adb logcat -s FirePlayerDiag FirePlayer` shows `start …` (OK to first picture, step by step), the
     10-second `play …` line (frames, buffer, `down`/`free`/`best` Mb/s for the one-connection question, glass copies,
     memory) and `recovery …`.
+- [x] Measured on the Stick 4K Max after those (`player-fixes-wip/DEVICE-RESULTS-AFTER.md`): 0 repeated refreshes of
+      1,436, 254 MB in all, the title "Matched".
+- [x] The rest of part 1 (branch `play/vod3`, 932 unit tests):
+  - Recovery past the first aid: a refused link (401, 403, 404, 410) from an add-on isn't asked again for up to a
+    minute, the add-on is asked for a fresh one at once (then the next source, by the failure table); the Wi-Fi gone
+    under a playing film counts against no source, the ring says "No internet connection · playing again when it's
+    back", and the same link opens where the film stood when the network returns (10 minutes at most); a download
+    gone quiet is given up on after 8 s, not 12, so the new connection is made while the 10 to 12 s that fit of a
+    high-quality film are still playing.
+  - Waits for film: never for more than half of what fits in the TV's memory (a start, a jump or a stall of an
+    80 Mb/s film waited for up to the whole 128 MiB before; now for 6 s of it at most, the rest fills as it plays).
+  - Skip intro / recap / credits for add-on plays: asked by the IMDb id and the season and episode handed over alone
+    (the same key before and after the show's details arrive), the databases before the file's own chapters (their
+    answers are on disk from the ask made while the sources were found), weighed against the episode's own length,
+    and by TMDB's IMDb id for a title the catalogue only has a TMDB id for.
+  - Names (IPTV, other apps): Skip intro's times and the original language only from a film TMDB confirms, never its
+    nearest guess; a match found once is kept for the app's whole run and a miss isn't asked again; the same TMDB
+    search isn't sent twice in half an hour.
+  - Read and found sound, nothing changed: the Episodes sheet, Next episode, the end card and autoplay for shows from
+    Films & Shows; the display sizes with the pacer and the glass; the controls' and windows' fades and slides.
+  - For the TV: `FirePlayerDiag` also shows `recovery …` for every retry, fresh link and network wait, and
+    `leave stop +…ms · player let go in …ms` on Back.
 - [ ] Device check of the above with the user (checklist in the pass's report); then fix 12 (second connection) decided
       from the `best=` figure.
 

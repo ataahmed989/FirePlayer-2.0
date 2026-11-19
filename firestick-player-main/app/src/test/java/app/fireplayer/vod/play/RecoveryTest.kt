@@ -195,8 +195,12 @@ class RecoveryTest {
         // What the rules ask for anyway when it's less: a first stall's 4 s, a start's 1 s.
         assertEquals(4 * s, FilmMemory.waitUs(4 * s, room, FilmMemory.STALL_WAIT_LEAST_US))
         assertEquals(1 * s, FilmMemory.waitUs(1 * s, room, 1 * s))
-        // A lighter film, of which minutes fit: untouched.
+        // A lighter film, of which a minute or more fits: untouched, whatever the rules ask for (30 s at most).
         assertEquals(20 * s, FilmMemory.waitUs(20 * s, 120 * s, FilmMemory.STALL_WAIT_LEAST_US))
+        assertEquals(30 * s, FilmMemory.waitUs(30 * s, 60 * s, FilmMemory.STALL_WAIT_LEAST_US))
+        // In between (40 s fit): the wait leaves a quarter of a minute to fill as it plays.
+        assertEquals(25 * s, FilmMemory.waitUs(30 * s, 40 * s, FilmMemory.STALL_WAIT_LEAST_US))
+        assertEquals(20 * s, FilmMemory.waitUs(20 * s, 40 * s, FilmMemory.STALL_WAIT_LEAST_US))
         // Not known yet: untouched.
         assertEquals(20 * s, FilmMemory.waitUs(20 * s, 0L, FilmMemory.STALL_WAIT_LEAST_US))
         // Hardly anything fits: still a couple of seconds after a stall, but never more than was asked.

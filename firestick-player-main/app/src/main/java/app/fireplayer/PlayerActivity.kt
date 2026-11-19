@@ -2133,12 +2133,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private val showBuffering = Runnable {
-        buffering.visibility = View.VISIBLE
+        // Over a picture that stopped to load, the ring fades in (its alpha only) instead of popping up.
+        if (buffering.visibility != View.VISIBLE) {
+            buffering.alpha = 0f
+            buffering.visibility = View.VISIBLE
+            buffering.animate().alpha(1f).setDuration(RING_FADE_MS).start()
+        }
         handler.removeCallbacks(updateBufferingInfo)
         handler.post(updateBufferingInfo)
     }
 
     private fun hideBuffering() {
+        // Gone at once (the film plays), and whole again for wherever it's next put up without a fade.
+        buffering.animate().cancel()
+        buffering.alpha = 1f
         buffering.visibility = View.GONE
         bufferingInfo.visibility = View.GONE
         handler.removeCallbacks(updateBufferingInfo)
@@ -6681,6 +6689,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val NOTE_MS = 4_000L
         /** How long a picture subtitle that wasn't read ahead is kept back while it's read. */
         const val PICTURE_READ_WAIT_MS = 700L
+        /** The loading ring's fade-in over a film that stopped to load. */
+        const val RING_FADE_MS = 150L
         const val MAX_RETRIES = 4
         const val RETRY_WINDOW_MS = 75_000L
         const val MAX_DEVICE_RETRIES = 3

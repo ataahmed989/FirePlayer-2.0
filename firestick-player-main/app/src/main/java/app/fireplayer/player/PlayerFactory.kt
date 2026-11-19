@@ -596,7 +596,7 @@ private class FilmLoadControl(
             }
             maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
         }
-        // Never for more than half of what fits in this TV's memory (a few seconds of a high-quality film).
+        // Never for all that fits in this TV's memory: half of it, where that's a few seconds of a high-quality film.
         val neededUs = FilmMemory.waitUs(wantedUs, room, if (parameters.rebuffering) FilmMemory.STALL_WAIT_LEAST_US else START_US)
         // Whichever comes first ends the wait: enough film, or full memory.
         val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)

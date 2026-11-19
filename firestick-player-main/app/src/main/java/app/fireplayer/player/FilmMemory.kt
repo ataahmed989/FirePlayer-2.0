@@ -147,6 +147,8 @@ object FilmMemory {
     const val ROOM_MIN_BYTES = 4L shl 20
     /** After a stall the film never plays on with less than this ahead, however little fits. */
     const val STALL_WAIT_LEAST_US = 2_000_000L
+    /** A wait leaves this much of what fits still to fill, or half of it where that is less. */
+    const val WAIT_HEADROOM_US = 15_000_000L
 
     /**
      * How much of this film fits ahead of the picture, in µs: as it stood the last time the buffer was full
@@ -160,14 +162,15 @@ object FilmMemory {
     }
 
     /**
-     * How much film to wait for before playing (on), when the rules ask for [wantedUs]: never more than half of what
-     * fits ([roomUs]; 0: not known), nor less than [leastUs]. A cushion sized for a minute's smooth playing can't be
-     * had where 10 s fill the memory: waiting for all of it kept a high-quality film on the loading ring for as long
-     * as the whole buffer takes to arrive, at every start, jump and stall. Half is there in half the time, and the
-     * rest fills as it plays.
+     * How much film to wait for before playing (on), when the rules ask for [wantedUs]: never more than what fits
+     * ([roomUs]; 0: not known) less [WAIT_HEADROOM_US], or half of what fits where that's more, nor less than
+     * [leastUs]. A cushion sized for a minute's smooth playing can't be had where 10 s fill the memory: waiting for
+     * all of it kept a high-quality film on the loading ring for as long as the whole buffer takes to arrive, at
+     * every start, jump and stall. Half is there in half the time, and the rest fills as it plays. A film of which
+     * a minute or more fits waits as it always did.
      */
     fun waitUs(wantedUs: Long, roomUs: Long, leastUs: Long): Long =
-        if (roomUs <= 0) wantedUs else minOf(wantedUs, maxOf(leastUs, roomUs / 2))
+        if (roomUs <= 0) wantedUs else minOf(wantedUs, maxOf(leastUs, roomUs / 2, roomUs - WAIT_HEADROOM_US))
 
     @Volatile private var tier: RamTier? = null
 
