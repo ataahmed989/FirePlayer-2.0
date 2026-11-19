@@ -16,6 +16,19 @@ import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.ui.Spring
 import app.fireplayer.vod.Cancel
+import app.fireplayer.vod.PlayRequest
+import app.fireplayer.vod.SourceList
+import app.fireplayer.vod.SourceTarget
+import app.fireplayer.vod.Sources
+import app.fireplayer.vod.SourcesRepository
+import app.fireplayer.vod.StartAt
+import app.fireplayer.vod.LookupWhy
+import app.fireplayer.vod.EpisodeRef
+import app.fireplayer.vod.play.MainTicker
+import app.fireplayer.vod.play.PlayOutcomes
+import app.fireplayer.vod.play.PlayRules
+import app.fireplayer.vod.play.PlayWait
+import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.Kind
@@ -46,14 +59,27 @@ import java.util.Calendar
  * Moving: the buttons Left/Right; Down to the Play target's episode card (a show) or More Like This (a film); season
  * pills change the season once focus rests on one; a show's page glides up for More Like This and back. Hold OK on an
  * episode card or a poster opens the shared small window ([HoldWindow]); (⋯) opens it with Mark watched, Remove from
- * Continue Watching and Details (a [SidePanel] window). Playback and sources are the next step: they say so.
+ * Continue Watching and Details (a [SidePanel] window).
+ *
+ * Sources and playback (step 3, design-brief.md §6.4-6.5): what Play would start is looked up after 1.5 s on the page
+ * (0.5 s with a resume point, or when [soon]), never from the rows; the source line then says which source it would
+ * be, and Sources its count. Play, Resume, Play from beginning and an episode's OK wait for both add-ons ([PlayWait]:
+ * the pill counts, the source line becomes the strip, OK again plays the best so far, Back cancels), then hand the play
+ * to FirePlayer's player ([Host.play]). Sources opens the wide Sources panel ([SourcesPanel]). Back from a play that
+ * gave up lands here with the reason in the source line and focus on Sources.
  *
  * Lean: the backdrop is decoded once at half the screen with its fade baked in, stills at their shown size, posters as
  * the rows'; only translations and scales change while anything moves; pictures, loads and timers stop when the page is
  * covered or closed.
  */
-class TitlePage(private val ctx: Context, private val t: Tokens, private val host: Host, private val opened: Title) :
-    TitleRow.Listener, TitleButtons.Listener {
+class TitlePage(
+    private val ctx: Context,
+    private val t: Tokens,
+    private val host: Host,
+    private val opened: Title,
+    /** Opened from Next Episodes or a Continue card's small window: sources are looked up after 0.5 s. */
+    private val soon: Boolean = false,
+) : TitleRow.Listener, TitleButtons.Listener {
 
     interface Host {
         val repo: VodRepository?
@@ -63,6 +89,8 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         fun focusRail()
         /** OK on a More Like This poster (its IMDb id known): that title's page, on top of this one. */
         fun openNext(title: Title)
+        /** A film or an episode starts in FirePlayer's player (the shell makes room first: film mode). */
+        fun play(request: PlayRequest)
     }
 
     /** Where focus was in the page, to come back to it. */
@@ -125,6 +153,30 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     private var logoUrl: String? = null
     private var backdropUrl: String? = null
 
+    // ---- Sources (step 3) ----
+    private val sources: SourcesRepository? = try {
+        Sources.get(ctx)
+    } catch (e: RuntimeException) {
+        null
+    }
+    /** The page's look-up of what Play would start, and that target's key. */
+    private var dwell: Cancel? = null
+    private var dwellKey: String? = null
+    /** What the add-ons said so far for [dwellKey]. */
+    private var shownList: SourceList? = null
+    /** Play waiting for the add-ons; and where it was pressed (Play, or an episode card). */
+    private val wait: PlayWait? = sources?.let { PlayWait(it, MainTicker, waitListener()) }
+    private var waitFromButtons = true
+    private var waitStart: StartAt = StartAt.Beginning
+    private var waitNext: EpisodeRef? = null
+    /** The strip while waiting; the reason the last play stopped (shown until the page is left or plays again). */
+    private var strip: String? = null
+    private var stopped: String? = null
+    /** The film or episode handed to the player last, to hear on return why it stopped (if it did). */
+    private var handedOff: SourceTarget? = null
+    private var sourcesPanel: SourcesPanel? = null
+    private var panelLookup: Cancel? = null
+
     init {
         root.addView(backdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         column.header = header
@@ -164,6 +216,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         if (paused) return
         paused = true
         stopLoads()
+        stopSources()
         main.removeCallbacksAndMessages(null)
         // The moment for the logo has passed.
         if (mode == TitleMode.WAITING) decide(TitleMode.NAME)
@@ -187,6 +240,12 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         if (!detailsFresh || !moreFresh) startLoads()
         backdropUrl?.let { backdrop.show(it) }
         if (mode == TitleMode.LOGO) logoUrl?.let { loadLogo(it) }
+        // Back from the player: a play that gave up says why, and focus waits on Sources.
+        handedOff?.let { PlayOutcomes.take(it) }?.let { why ->
+            stopped = why
+            header.buttons.focus(TitleButtons.Which.SOURCES)
+        }
+        handedOff = null
         refreshAll()
         updateImages()
     }
@@ -338,6 +397,170 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
         if (mode == TitleMode.NAME) header.showName(details.title.name)
         if (isShow) refreshSeasons()
         buttons.setEpisodes(isShow && episodes.visibility == View.VISIBLE)
+        lookUpSources(play.enabled, play.restart)
+        showSourceLine()
+    }
+
+    // ---- Sources and playing ----------------------------------------------------------------------------------------
+
+    /** What Play would start: the film, or the show's Play target episode; null when it can't play now. */
+    private fun playTargetNow(): SourceTarget? {
+        if (isShow) {
+            val ep = target?.episode ?: return null
+            return SourceTarget(details.title, ep.ref)
+        }
+        return SourceTarget(details.title, null)
+    }
+
+    /**
+     * The page's look-up of what Play would start (§6.4): after 1.5 s, 0.5 s with a resume point ([resumable]) or when
+     * opened [soon]; again only when the target changes (a show's episodes known, an episode watched).
+     */
+    private fun lookUpSources(enabled: Boolean, resumable: Boolean) {
+        val s = sources ?: return
+        if (paused || released) return
+        val tgt = if (enabled) playTargetNow() else null
+        val key = tgt?.key
+        if (key == dwellKey) return
+        dwell?.cancel()
+        dwell = null
+        dwellKey = key
+        shownList = null
+        header.buttons.setSourcesLabel(PlayRules.sourcesLabel(null))
+        if (tgt == null) return
+        dwell = s.lookUp(tgt, PlayRules.pageLookup(resumable, soon)) { list -> onSources(tgt, list) }
+    }
+
+    private fun onSources(tgt: SourceTarget, list: SourceList) {
+        if (released || tgt.key != dwellKey) return
+        shownList = list
+        header.buttons.setSourcesLabel(PlayRules.sourcesLabel(list))
+        showSourceLine()
+    }
+
+    /** The source line: the strip while Play waits, why the last play stopped, else which source Play would start. */
+    private fun showSourceLine() {
+        header.setSourceLine(strip ?: stopped ?: PlayRules.sourceLine(shownList))
+    }
+
+    private fun stopSources() {
+        dwell?.cancel()
+        dwell = null
+        dwellKey = null
+        panelLookup?.cancel()
+        panelLookup = null
+        if (wait?.isWaiting == true) {
+            wait.release()
+            endWait()
+        }
+    }
+
+    /**
+     * Plays [tgt] from [start] once the add-ons have answered ([PlayWait]); pressed again for the same target while it
+     * waits, the best so far plays. [fromButtons] when pressed on Play (its pill counts), else an episode card.
+     */
+    private fun play(tgt: SourceTarget, start: StartAt, fromButtons: Boolean) {
+        val w = wait
+        if (w == null) {
+            host.showNotice(NO_SOURCES)
+            return
+        }
+        if (w.waitingFor?.key != tgt.key) {
+            waitStart = start
+            waitFromButtons = fromButtons
+            waitNext = if (isShow) tgt.episode?.let { PlayRules.nextEpisode(details.episodes, it, System.currentTimeMillis())?.ref } else null
+        }
+        stopped = null
+        w.press(tgt)
+    }
+
+    private fun waitListener() = object : PlayWait.Listener {
+        override fun onWaiting(label: String, fraction: Float, strip: String?) {
+            if (released) return
+            if (waitFromButtons) header.buttons.setWaiting(label, fraction)
+            this@TitlePage.strip = strip ?: label
+            showSourceLine()
+        }
+
+        override fun onPlay(target: SourceTarget, list: SourceList) {
+            endWait()
+            if (released || paused) return
+            hand(VodLaunch.fromTitlePage(target, waitStart, list, sources?.library, next = waitNext))
+        }
+
+        override fun onEnded(message: String?) {
+            endWait()
+            if (message != null) {
+                stopped = message
+                showSourceLine()
+                host.showNotice(message)
+            }
+        }
+    }
+
+    private fun endWait() {
+        strip = null
+        header.buttons.setWaiting(null)
+        showSourceLine()
+    }
+
+    /** Back on the page: a wait in progress ends (true); nothing else happens then. */
+    fun cancelWait(): Boolean = wait?.cancel() == true
+
+    private fun hand(request: PlayRequest) {
+        handedOff = request.target
+        host.play(request)
+    }
+
+    /** Play, Resume or Play from beginning ([fromBeginning]) on the buttons. */
+    private fun playButton(fromBeginning: Boolean) {
+        val tgt = playTargetNow() ?: return
+        play(tgt, if (fromBeginning) StartAt.Beginning else currentStart(), fromButtons = true)
+    }
+
+    /** OK on an aired episode card: that episode, from where it stopped if it can resume. */
+    private fun playEpisode(ep: Episode) {
+        val tgt = SourceTarget(details.title, ep.ref)
+        play(tgt, PlayRules.startAt(host.repo?.positionOf(ep), fromBeginning = false), fromButtons = false)
+    }
+
+    /** The Sources panel for what Play would start (a show: its episode, named in the title). */
+    private fun openSources() {
+        val s = sources ?: return
+        val tgt = playTargetNow() ?: return
+        val activity = ctx as? android.app.Activity ?: return
+        val panel = sourcesPanel ?: SourcesPanel(activity, host.sidePanel).also { sourcesPanel = it }
+        val ep = tgt.episode
+        val title = if (ep == null) "Sources" else {
+            val name = target?.episode?.name?.takeIf { it.isNotBlank() }
+            "Sources · ${TitleRules.episodeCode(ep)}" + (name?.let { " \"$it\"" } ?: "")
+        }
+        val back = header.buttons.viewOf(TitleButtons.Which.SOURCES)
+        panelLookup?.cancel()
+        panel.open(title, s.cached(tgt) ?: shownList, onClose = {
+            panelLookup?.cancel()
+            panelLookup = null
+            if (!released && back.isShown) back.requestFocus() else if (!released) takeFocusBack()
+        }) { source, fromBeginning ->
+            host.sidePanel.close()
+            val start = if (fromBeginning) StartAt.Beginning else currentStart()
+            stopped = null
+            hand(VodLaunch.fromTitlePage(tgt, start, s.cached(tgt) ?: shownList, s.library, chosen = source,
+                next = ep?.let { PlayRules.nextEpisode(details.episodes, it, System.currentTimeMillis())?.ref }))
+        }
+        // Asked now (never held back by a budget), joining the page's look-up when it's running.
+        panelLookup = s.lookUp(tgt, LookupWhy.SOURCES) { list ->
+            if (tgt.key == dwellKey) onSources(tgt, list)
+            panel.update(list)
+        }
+    }
+
+    /** Where Play would start now: the resume point, else the beginning. */
+    private fun currentStart(): StartAt = if (isShow) {
+        val pt = target
+        if (pt != null && pt.action == app.fireplayer.vod.PlayAction.RESUME) PlayRules.startAt(pt.position, false) else StartAt.Beginning
+    } else {
+        PlayRules.startAt(host.repo?.lastPlayed(opened))
     }
 
     private fun refreshSeasons() {
@@ -674,9 +897,10 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
 
     override fun onButton(which: TitleButtons.Which) {
         when (which) {
-            TitleButtons.Which.PLAY, TitleButtons.Which.RESTART -> host.showNotice(PLAYBACK_LATER)
+            TitleButtons.Which.PLAY -> playButton(fromBeginning = false)
+            TitleButtons.Which.RESTART -> playButton(fromBeginning = true)
             TitleButtons.Which.EPISODES -> focusEpisodes(toTarget = true)
-            TitleButtons.Which.SOURCES -> host.showNotice(SOURCES_LATER)
+            TitleButtons.Which.SOURCES -> openSources()
             TitleButtons.Which.MY_LIST -> {
                 val r = host.repo ?: return
                 val inList = !r.inMyList(opened.id)
@@ -785,7 +1009,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
             pills -> moveDownFrom(Part.PILLS)
             episodes -> {
                 val ep = shownEpisodes.getOrNull(index) ?: return
-                host.showNotice(if (ep.aired(System.currentTimeMillis())) PLAYBACK_LATER else TitleRules.airs(ep, thisYear()))
+                if (ep.aired(System.currentTimeMillis())) playEpisode(ep) else host.showNotice(TitleRules.airs(ep, thisYear()))
             }
             more -> {
                 val card = more.cards.getOrNull(index) ?: return
@@ -957,8 +1181,7 @@ class TitlePage(private val ctx: Context, private val t: Tokens, private val hos
     private fun thisYear(): Int = Calendar.getInstance().get(Calendar.YEAR)
 
     private companion object {
-        const val PLAYBACK_LATER = "Playback comes next"
-        const val SOURCES_LATER = "Sources come next"
+        const val NO_SOURCES = "Sources aren't available just now"
         const val COULDNT_OPEN = "Couldn't load this title"
     }
 }

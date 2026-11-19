@@ -204,6 +204,16 @@ class TitleHeader(context: Context, private val t: Tokens, buttonsListener: Titl
         callout.translationX = w + t.dpf(VodSizes.CALLOUT_GAP)
     }
 
+    /**
+     * The source line (design-brief.md §6.4): empty until an add-on answers, then which source Play would start and
+     * where its facts came from; while Play waits, the strip of who is still looking. One line, cut to its width; its
+     * height is reserved, so nothing moves.
+     */
+    fun setSourceLine(text: String?) {
+        val t = text.orEmpty()
+        if (source.text.toString() != t) source.text = t
+    }
+
     /** The buttons' top in this block, px (where the page glides to on a show). */
     fun buttonsTop(): Int = buttons.top
 

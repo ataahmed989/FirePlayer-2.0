@@ -566,6 +566,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         backDownSeen = false
     }
 
+    /**
+     * Film mode (design-brief.md §6.6), while the tab is stopped: the guide's listings and the channel logos leave
+     * memory; they load again as they show.
+     */
+    fun dropMemory() {
+        if (started) return
+        guide.forgetProgrammes()
+        logos.clear()
+    }
+
     fun release() {
         stop()
         more.release()

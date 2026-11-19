@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.SidePanel
+import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.VodRepository
 
@@ -35,9 +36,11 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
         fun restoreOrigin(focusBack: Boolean)
         /** The last page has gone. */
         fun onStackClosed()
+        /** A film or an episode starts in the player, from a title page. */
+        fun play(request: PlayRequest)
     }
 
-    private class Entry(val title: Title) {
+    private class Entry(val title: Title, val soon: Boolean = false) {
         var page: TitlePage? = null
         var saved: TitlePage.Saved? = null
     }
@@ -55,18 +58,19 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
         override fun showNotice(text: String) = host.showNotice(text)
         override fun focusRail() = host.focusRail()
         override fun openNext(title: Title) = push(title)
+        override fun play(request: PlayRequest) = host.play(request)
     }
 
     /** Opens [title]'s page: the first over the tab, or on top of the one showing. Focus goes into it. */
-    fun open(title: Title) {
-        if (isOpen) push(title) else first(title)
+    fun open(title: Title, soon: Boolean = false) {
+        if (isOpen) push(title) else first(title, soon)
     }
 
-    private fun first(title: Title) {
+    private fun first(title: Title, soon: Boolean = false) {
         backDown = false
         container.visibility = View.VISIBLE
-        val e = Entry(title)
-        e.page = build(title)
+        val e = Entry(title, soon)
+        e.page = build(title, soon)
         trail.push(e)
         e.page?.takeFocus()
     }
@@ -91,7 +95,7 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
         }
         val leaving = trail.pop() ?: return
         val back = trail.top ?: return
-        val page = back.page ?: build(back.title).also { back.page = it }
+        val page = back.page ?: build(back.title, back.soon).also { back.page = it }
         page.resume(show = true)
         page.restoreFocus(back.saved)
         back.saved = null
@@ -117,7 +121,8 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
             KeyEvent.ACTION_UP -> if (backDown) {
                 backDown = false
                 val page = trail.top?.page
-                if (page != null && page.focusInRows()) page.backToButtons() else pop()
+                if (page != null && page.cancelWait()) Unit
+                else if (page != null && page.focusInRows()) page.backToButtons() else pop()
             }
         }
         return true
@@ -159,8 +164,8 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
         trail.top?.page?.onLibraryChanged()
     }
 
-    private fun build(title: Title): TitlePage {
-        val page = TitlePage(ctx, t, pageHost, title)
+    private fun build(title: Title, soon: Boolean = false): TitlePage {
+        val page = TitlePage(ctx, t, pageHost, title, soon)
         container.addView(page.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         page.start()
         if (!running) page.pause(hide = false)
