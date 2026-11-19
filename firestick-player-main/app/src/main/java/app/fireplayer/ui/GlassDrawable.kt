@@ -263,6 +263,18 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         shader1?.setLocalMatrix(filmMatrix)
     }
 
+    /**
+     * Off screen a while ([GlassBackdrop]'s idle release): lets go of the pictures of the film it drew last, so they and
+     * their copies in the TV's drawing cache can go. Drawn again, it takes the newest film.
+     */
+    internal fun forgetFilm() {
+        filmPaint.shader = null
+        film0 = null
+        shader0 = null
+        film1 = null
+        shader1 = null
+    }
+
     private fun shaderFor(film: Bitmap): BitmapShader {
         val s0 = shader0
         if (film === film0 && s0 != null) return s0
@@ -400,6 +412,12 @@ internal object GlassBakes {
 
     /** About 12 MB, less on a small heap: the film's buffer takes most of it on older TVs. */
     private fun cacheBytes(): Int = min(12L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 16).toInt()
+
+    /**
+     * With no glass on screen for a while ([GlassBackdrop]'s idle release), every bitmap kept here goes; glass that
+     * still exists keeps the ones it drew, and the rest are made again (a few milliseconds each) when next needed.
+     */
+    fun trim() = cache.evictAll()
 
     fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float): Bitmap {
         val key = Key(kind.ordinal, focused, w, h, 0, density)

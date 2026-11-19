@@ -36,6 +36,9 @@ import kotlin.math.sqrt
  * look off nothing here runs. Everything happens on the main thread except the copy and the blur, which run on
  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
  * reaches the glass at once instead of at the next refresh.
+ *
+ * While a 4K HDR film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
+ * screen for a while, what only copies need is let go ([idleCheck]).
  */
 class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
 
@@ -55,8 +58,22 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private val density = activity.resources.displayMetrics.density
     private val prefs = Prefs(activity)
 
-    /** Time between copies while the film plays, from Settings (Look, Glass refresh); read each time, so a change applies at once. */
-    private val refreshMs: Long get() = 1_000L / prefs.glassRefreshPerSec.coerceIn(1, 8)
+    /**
+     * Time between copies while the film plays, from Settings (Look, Glass refresh), lowered for [heavyVideo]; read each
+     * time, so a change applies at once.
+     */
+    private val refreshMs: Long get() = 1_000L / GlassLoad.refreshPerSec(prefs.glassRefreshPerSec, heavyVideo)
+
+    /** Time between cut probes while the film plays: longer for [heavyVideo]. */
+    private val probeMs: Long get() = GlassLoad.probeMs(heavyVideo)
+
+    /**
+     * The film playing is 4K HDR on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
+     * (fewer if that's the setting) and probes for cuts every half second, as each copy of such a frame weighs on the
+     * TV's graphics chip and memory. Told by the player whenever the video's format or size changes; the saved setting
+     * stays as it is.
+     */
+    var heavyVideo = false
 
     /**
      * Each new copy fades in over nearly the whole gap to the next one, so the glass keeps drifting with the film
@@ -132,7 +149,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private var copying = false
     private var queued: Job? = null
     private var probeBitmap: Bitmap? = null
-    /** A PixelCopy.OnPixelCopyFinishedListener (Android 7), made once: probes come ten times a second. */
+    /** A PixelCopy.OnPixelCopyFinishedListener (Android 7), made once: probes come up to ten times a second. */
     private var probeListener: Any? = null
     private var probing = false
     private var probeGen = 0
@@ -267,6 +284,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         main.removeCallbacks(probeWatchdog)
         main.removeMessages(MSG_PROBED)
         main.removeCallbacks(endNavigation)
+        main.removeCallbacks(idleCheck)
+        idlePending = false
         navigating = false
         ticking = false
         inFlight = false
@@ -276,6 +295,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         blocked = false
         dropFrames(fade = false, now = 0L)
         capturedAt = 0L
+        // Nothing is copied until the activity starts again: the copies' working pictures can go meanwhile.
+        worker?.post { releaseBuffers() }
     }
 
     /** The activity's onDestroy. Everything after it does nothing. */
@@ -317,8 +338,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
 
     /** Called by each glass shape as it draws: glass on screen is what asks for copies. */
     override fun onGlassDrawn() {
-        if (!started || !copiesPossible()) return
+        if (!started) return
         val now = SystemClock.uptimeMillis()
+        glassDrawnAt = now
+        if (!idlePending) scheduleIdleCheck(now + IDLE_RELEASE_MS)
+        if (!copiesPossible()) return
         if (playing) startTicking(now)
         if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
     }
@@ -390,7 +414,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     // ---- Cut probe (main thread) -----------------------------------------
 
     /**
-     * Beside [tick], under the same conditions: every PROBE_MS a tiny copy is compared with the picture the glass
+     * Beside [tick], under the same conditions: every [probeMs] a tiny copy is compared with the picture the glass
      * shows. A camera cut or a big flash then gets a copy at once, rather than up to a whole refresh later.
      */
     private val probeTick = object : Runnable {
@@ -400,14 +424,14 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             val now = SystemClock.uptimeMillis()
             requestProbe(now)
             probeLooping = true
-            main.postAtTime(this, now + PROBE_MS)
+            main.postAtTime(this, now + probeMs)
         }
     }
 
     private fun startProbing(now: Long) {
         if (probeLooping || probesOff || !started || !copiesPossible()) return
         probeLooping = true
-        main.postAtTime(probeTick, now + PROBE_MS)
+        main.postAtTime(probeTick, now + probeMs)
     }
 
     /** No probe while a copy is on its way or about due (that copy shows the cut anyway), or nothing is shown. */
@@ -529,6 +553,77 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             val now = SystemClock.uptimeMillis()
             dropFrames(fade = drawableAt(now) && anyVisible(), now = now)
         }
+    }
+
+    // ---- Letting go while no glass shows (main thread) ---------------------
+
+    /** When glass last drew ([onGlassDrawn]). */
+    private var glassDrawnAt = 0L
+    private var idlePending = false
+
+    private fun scheduleIdleCheck(at: Long) {
+        idlePending = true
+        main.postAtTime(idleCheck, at)
+    }
+
+    /**
+     * Glass that hasn't been on screen for [IDLE_RELEASE_MS] (the controls hidden, the windows closed) lets go of what
+     * only copies and glass need, so a film that needs the TV's memory gets it back. Glass on screen, drawn lately or
+     * still standing (a paused film under its controls), keeps everything; it's looked at again later.
+     */
+    private val idleCheck = Runnable {
+        idlePending = false
+        if (!started) return@Runnable
+        val now = SystemClock.uptimeMillis()
+        if (anyVisible()) {
+            scheduleIdleCheck(now + IDLE_RELEASE_MS)
+        } else if (now - glassDrawnAt < IDLE_RELEASE_MS) {
+            scheduleIdleCheck(glassDrawnAt + IDLE_RELEASE_MS)
+        } else {
+            releaseIdle()
+        }
+    }
+
+    /**
+     * What goes with no glass on screen. FirePlayer's own share of the graphics memory the glass look brings is small:
+     * the copy and its working pictures (about a megabyte), the blurred film (a few small pictures) and the baked glass
+     * ([GlassBakes], up to 12 MB). The rest (118 MB of graphics memory seen on a Fire TV Stick 4K Max, from when the
+     * glass Settings window opened over a 4K HDR film until after it closed) is most likely the TV's own drawing cache in
+     * FirePlayer's process: the pictures drawn, the layers windows slide in on, and the graphics work of each copy of the
+     * 4K frame. On Android 11 that cache may grow to the screen's size in pixels times 48 bytes, about 400 MB at a 4K
+     * screen mode, so nothing in it is pushed out by size; it's emptied only when Fire OS trims the app (in the
+     * background) or what's in it goes unused for a while. No public call lets an app empty it, but it lets go of a
+     * picture once the app has let go of it. So the app lets go of every picture the glass only needs while it shows,
+     * and copies 4K HDR film less often ([heavyVideo]): the baked glass is made again in a few milliseconds when glass
+     * next needs it, and the next copy brings the film back. A paused film's blurred picture is kept, so glass shown
+     * over it again is right at once.
+     */
+    private fun releaseIdle() {
+        // A fade is over by now (unless held still by the D-pad): what faded out, and the rows the blend worked in,
+        // aren't needed.
+        if (fadeFraction() >= 1f) for (i in fadingFrom.indices) fadingFrom[i] = null
+        blendA = IntArray(0)
+        blendB = IntArray(0)
+        // Each piece of glass off screen lets go of the pictures it last drew; on screen again, it takes the newest.
+        if (drawables.isNotEmpty()) {
+            visiting.addAll(drawables.keys)
+            for (drawable in visiting) if (!drawable.isOnScreen()) drawable.forgetFilm()
+            visiting.clear()
+        }
+        worker?.post { releaseBuffers() }
+        GlassBakes.trim()
+    }
+
+    /** On the worker: the copy's working pictures go, unless a copy or probe is under way (they're made again as needed). */
+    private fun releaseBuffers() {
+        if (copying || probing || queued != null) return
+        copyBitmap = null
+        composite = null
+        compositeCanvas = null
+        probeBitmap = null
+        pixels = IntArray(0)
+        work = IntArray(0)
+        temp = IntArray(0)
     }
 
     private fun surfaceReady() {
@@ -1093,10 +1188,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         const val WATCHDOG_MS = 5_000L
 
         /**
-         * How often a probe looks for a cut while the film plays: soon enough that the glass changes with the new
-         * shot, and cheap, as a probe is only PROBE_WIDTH x PROBE_HEIGHT pixels with no blur.
+         * How long no glass must have been on screen before what only the glass needs is let go ([releaseIdle]): long
+         * enough that moving between the controls and a window keeps it, short enough to hand the memory back to a
+         * film soon after the last window closes.
          */
-        const val PROBE_MS = 100L
+        const val IDLE_RELEASE_MS = 5_000L
         /** No probe when a copy is due this soon: that copy shows the cut anyway. */
         const val PROBE_LEAD_MS = 60L
         /**

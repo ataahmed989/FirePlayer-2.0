@@ -266,6 +266,8 @@ object PlayerFactory {
         pictureText: PictureText,
         /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
         vsync: VsyncFix,
+        /** Whether the TV takes HDR10+, which the film's video renderer keeps from the decoder when it doesn't. */
+        hdr10Plus: Hdr10PlusGate,
         /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
         displaySwitch: DisplaySwitch,
         /** A copy of the sound for subtitle auto sync, taken only while it listens (see [SpeechTap]). */
@@ -284,7 +286,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap, frameCounts)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, hdr10Plus, speechTap, frameCounts)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -789,6 +791,7 @@ private class TvRenderersFactory(
     private val passthrough: Boolean,
     private val displaySwitch: DisplaySwitch,
     private val vsync: VsyncFix,
+    private val hdr10Plus: Hdr10PlusGate,
     private val speechTap: SpeechTap,
     private val frameCounts: FrameCounts,
 ) : DefaultRenderersFactory(context) {
@@ -820,6 +823,7 @@ private class TvRenderersFactory(
                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
             vsync,
             frameCounts,
+            hdr10Plus,
         )
     }
 

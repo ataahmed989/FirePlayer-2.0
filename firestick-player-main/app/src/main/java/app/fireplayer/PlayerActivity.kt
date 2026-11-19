@@ -98,6 +98,7 @@ import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
+import app.fireplayer.player.Hdr10PlusGate
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.player.Copies
 import app.fireplayer.player.CopyRank
@@ -133,6 +134,7 @@ import app.fireplayer.ui.EpisodesSheet
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassBackdrop
+import app.fireplayer.ui.GlassLoad
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
@@ -263,6 +265,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var droppedFact: TextView? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
     private var vsyncFix: VsyncFix? = null
+    // Whether the TV takes HDR10+, which the film's decoder isn't given when it doesn't (see Hdr10PlusGate).
+    private var hdr10PlusGate: Hdr10PlusGate? = null
     // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
     private var backdrop: GlassBackdrop? = null
     override val glassBackdrop: GlassBackdrop? get() = backdrop
@@ -1066,6 +1070,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return
         }
         val vsync = VsyncFix(this)
+        val hdr10Plus = Hdr10PlusGate(this)
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -1075,6 +1080,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             headers = headersFromIntent(),
             pictureText = pictureText,
             vsync = vsync,
+            hdr10Plus = hdr10Plus,
             displaySwitch = displaySwitch,
             speechTap = speechTap,
             embeddedCues = embeddedCues,
@@ -1082,6 +1088,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             frameCounts = diag.counts,
         )
         vsyncFix = vsync.also { it.start() }
+        // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
+        hdr10PlusGate = hdr10Plus.also { it.start() }
         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
         frameRateMatcher.watch { rematchFrameRate() }
         val p = built.player
@@ -1199,6 +1207,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         countPlaying(false)
         vsyncFix?.stop()
         vsyncFix = null
+        hdr10PlusGate?.stop()
+        hdr10PlusGate = null
         frameRateMatcher.unwatch()
         threadBeat = null
         p.removeListener(this)
@@ -1629,6 +1639,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         followSubtitle()
         refreshLabels()
         updateChips()
+        updateGlassLoad()
         matchFrameRate()
         updatePictureReading()
         // libass's overlay goes up the first time a styled track is chosen (see AssOverlay).
@@ -1650,7 +1661,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         applyDisplayMode()
         updateChips()
+        updateGlassLoad()
         backdrop?.frameChanged()
+    }
+
+    /**
+     * Tells the glass and the black-bar watch whether the video playing is 4K HDR on a TV short of memory
+     * ([GlassLoad.heavy]): they copy the film less often then. Asked again whenever the video's format or size changes.
+     */
+    private fun updateGlassLoad() {
+        val heavy = GlassLoad.heavy(
+            selectedFormat(C.TRACK_TYPE_VIDEO),
+            player?.videoSize?.width ?: 0,
+            player?.videoSize?.height ?: 0,
+            GlassLoad.smallRam(this),
+        )
+        backdrop?.heavyVideo = heavy
+        barWatch?.heavyVideo = heavy
     }
 
     // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.

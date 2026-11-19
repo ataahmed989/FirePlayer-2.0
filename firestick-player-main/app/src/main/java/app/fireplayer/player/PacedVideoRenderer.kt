@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.decoder.DecoderInputBuffer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
@@ -30,12 +31,15 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
  * before, and the decoder gets its buffer back sooner), and frames the decoder never gave ([FrameGaps]). A frame
  * Media3 waits on as the first one shown (after a jump, a new decoder or surface, the next film) is always sent: until
  * one is shown Media3 isn't ready, and skipping it would only hold the picture back.
+ *
+ * It also keeps HDR10+ from the decoder while the TV doesn't report HDR10+ ([hdr10Plus], [Hdr10PlusMask]).
  */
 @OptIn(UnstableApi::class)
 class PacedVideoRenderer(
     builder: Builder,
     private val vsync: VsyncFix,
     private val counts: FrameCounts,
+    private val hdr10Plus: Hdr10PlusGate,
 ) : MediaCodecVideoRenderer(builder) {
 
     // On the playback thread.
@@ -43,6 +47,10 @@ class PacedVideoRenderer(
     private val gaps = FrameGaps()
     // A frame has been sent since Media3 last started waiting for its first one: only then may one be skipped.
     private var firstSent = false
+    /** The decoder is given HEVC (Dolby Vision on HEVC included), whose HDR10+ can be masked. */
+    private var hevc = false
+    /** HDR10+ was masked since the decoder was made: logged the first time, which shows the film has HDR10+. */
+    private var masked = false
 
     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
         val periodNs = vsync.tvPeriodNs
@@ -67,6 +75,8 @@ class PacedVideoRenderer(
         pacer.reset()
         gaps.reset()
         firstSent = false
+        hevc = Hdr10PlusMask.hevcStream(codecInfo?.mimeType, codecInputFormat?.codecs)
+        masked = false
         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
         if (getConfiguration().tunneling) return
         val looper = Looper.myLooper() ?: return
@@ -130,6 +140,22 @@ class PacedVideoRenderer(
         }
         firstSent = true
         super.renderOutputBufferV21(codec, index, presentationTimeUs, at)
+    }
+
+    /**
+     * Each sample on its way to the decoder, after Media3 has put it together and before it's queued: HDR10+ is masked
+     * in place when the TV doesn't report HDR10+. Only the few hundred bytes before the picture data are read, with
+     * nothing made, so it costs microseconds a frame.
+     */
+    override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
+        if (hevc && hdr10Plus.mask && !buffer.isEncrypted) {
+            val data = buffer.data
+            if (data != null && Hdr10PlusMask.mask(data) > 0 && !masked) {
+                masked = true
+                Log.i(TAG, "HDR10+ metadata in this video is masked before the decoder (the TV doesn't report HDR10+)")
+            }
+        }
+        super.onQueueInputBuffer(buffer)
     }
 
     private companion object {
