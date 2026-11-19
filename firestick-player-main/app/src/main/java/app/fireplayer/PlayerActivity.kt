@@ -8,6 +8,17 @@ import android.graphics.Paint
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
+import androidx.lifecycle.Lifecycle
+import app.fireplayer.vod.Opened
+import app.fireplayer.vod.PlayHandoff
+import app.fireplayer.vod.PlayRequest
+import app.fireplayer.vod.Sources
+import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.data.VodRepositories
+import app.fireplayer.vod.play.MainTicker
+import app.fireplayer.vod.play.PlayRules
+import app.fireplayer.vod.play.SourcePlayback
+import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -146,6 +157,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val subtitles: MutableList<MediaItem.SubtitleConfiguration> = mutableListOf(),
         /** The next episode of a show, found with the provider: gets the end-of-episode card. */
         val nextEpisode: Boolean = false,
+        /**
+         * A film or episode from the add-ons: what it is kept by instead of its link ("vod|tt…:2:5|<hash>|<index>"), as
+         * the link holds the Real-Debrid download and changes daily. Subtitles, chapters and the like key by it.
+         */
+        val storeKey: String? = null,
     ) {
         /** The subtitles the opening app handed over with it, and their names, to hand over again on resuming. */
         val handedSubtitles = mutableListOf<Pair<Uri, String?>>()
@@ -177,7 +193,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 // Numbered as the provider numbers it, not by its place in TiviMate's list.
                 real?.takeIf { base.episode != null }?.let { base.withEpisode(it.season, it.episode) } ?: base
             }.also { parsed = it }
-        val key: String get() = uri.toString()
+        val key: String get() = storeKey ?: uri.toString()
     }
 
     private class TrackOption(
@@ -497,6 +513,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var watchNotedAt = 0L
     // Opened from Glass Home's Continue Watching row: the link is FirePlayer's own, never handed back in a result.
     private var resumedFromRow = false
+
+    // ---- A film or episode from the add-ons (Films & Shows step 3; design-brief.md §6.5) ----
+    /** The play from the add-ons this player runs (stages 2-4), or null for any other video. */
+    private var source: SourcePlayback? = null
+    private var sourceToken: String? = null
+    private var sourcesPanel: SourcesPanel? = null
+    private var nextLookup: app.fireplayer.vod.Cancel? = null
+    /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
+    private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
     private var stoppedAt = 0L
     // A newer title was handed to this player (onNewIntent): it starts over with that one, the old film never shows.
@@ -627,6 +652,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         displayMode = prefs.displayMode
         applyDim()
+
+        // A film or episode from Films & Shows: the request is handed over in memory, the Intent holds only a token (its
+        // "fireplayer-vod:" link is never opened as a video).
+        if (intent.action == PlayHandoff.ACTION || intent.data?.scheme == PlayHandoff.SCHEME) {
+            val token = PlayHandoff.tokenOf(intent)
+            val request = PlayHandoff.get(token)
+            if (request == null) {
+                // From before the app was restarted: nothing to play, as for an old film.
+                finish()
+                return
+            }
+            sourceToken = token
+            // Never hand a link back to an app as a result.
+            resumedFromRow = true
+            applySubtitleStyle()
+            startSourcePlay(request)
+            return
+        }
 
         // From Glass Home's Continue Watching row: the title just as its app first opened it, from where it was left; or
         // another episode of its show, chosen in Glass Home's Episodes window.
@@ -807,6 +850,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         segmentWorker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
+        nextLookup?.cancel()
+        source?.close()
+        if (isFinishing) PlayHandoff.done(sourceToken)
     }
 
     // ---------------------------------------------------------------------
@@ -1006,7 +1052,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
-            passthrough = prefs.passthrough,
+            passthrough = prefs.passthrough && !soundOnDevice,
             useAss = prefs.keepAssStyling,
             assSubtitleView = frameSubtitles,
             headers = headersFromIntent(),
@@ -1207,6 +1253,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val pos = p.currentPosition
         val dur = p.duration
         val nearEnd = dur != C.TIME_UNSET && dur - pos < 3 * 60_000
+        // From the add-ons: the library keeps it by title and episode (never by link, nor in Glass Home's row yet).
+        source?.let {
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            return
+        }
         prefs.savePosition(entry.key, if (pos > 30_000 && !nearEnd && !p.isCurrentMediaItemLive) pos else 0L)
         noteWatched(entry, pos, dur, finished = nearEnd, live = p.isCurrentMediaItemLive)
     }
@@ -1291,6 +1342,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // bring the title back. Leaving or moving on notes it, with the time played meanwhile.
         if (dur != C.TIME_UNSET && dur - pos < 3 * 60_000) return
         // The resume point too: behind Home, Fire OS stops FirePlayer outright when memory is short, without onStop.
+        source?.let {
+            watchNotedAt = SystemClock.elapsedRealtime()
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            return
+        }
         if (pos > 30_000 && !p.isCurrentMediaItemLive) prefs.savePosition(entry.key, pos)
         noteWatched(entry, pos, dur, finished = false, live = p.isCurrentMediaItemLive)
     }
@@ -1378,6 +1434,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.removeCallbacks(showBuffering)
         updateKeepScreenOn()
         noteStall(state)
+        // Stage 4's watch: stalls while playing (after the first frame).
+        source?.let { s ->
+            if (state == Player.STATE_BUFFERING) s.buffering(true) else if (state == Player.STATE_READY) s.buffering(false)
+        }
         if (state == Player.STATE_BUFFERING) {
             shownPercent = 0
             handler.postDelayed(showBuffering, 400)
@@ -1424,7 +1484,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (state == Player.STATE_ENDED) {
             completed = true
-            prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
+            val s = source
+            if (s != null) {
+                // Watched to the end; the next episode then starts from its own sources, when there is one.
+                player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) }
+                if (s.ended(prefs.playNextEpisode)) return
+            } else {
+                prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
+            }
             finishWithResult()
         }
         updateProgress()
@@ -1586,6 +1653,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onRenderedFirstFrame() {
         // The first picture of a new player or video, or after a jump: the glass copies it.
         backdrop?.frameChanged()
+        // A source from the add-ons started: it's the last release used, and stage 3's limit is over.
+        source?.firstFrame()
     }
 
     override fun onCues(cueGroup: CueGroup) {
@@ -1607,6 +1676,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         freezeWatch.jumped()
         // The wait after a jump is the jump's, not the copy's.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) source?.jumped()
         // A jump of FirePlayer's own back into step isn't checked again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) frameCheckArmed = SystemClock.elapsedRealtime() - lastFrameFixAt > 1_000L
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
@@ -1734,6 +1804,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         retries = 0
         deviceRetries = 0
         retryPending = false
+        // From the add-ons: the failure table says what's next (another source, a retry, the sound on the Stick, stop).
+        source?.let { s ->
+            hideBuffering()
+            health = health.copy(failures = health.failures + 1)
+            keepHealth()
+            s.failed(error.errorCode, status)
+            return
+        }
         hideBuffering()
         // The error box needs OK, so a settings window can't be left in front of it.
         if (panel.isOpen) panel.close()
@@ -2300,6 +2378,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updateSkip()
             updatePostPlay()
             noteWhilePlaying()
+            source?.let { s -> player?.takeIf { it.duration != C.TIME_UNSET }?.let { s.nearEnd(it.currentPosition, it.duration) } }
             checkFreeze()
             tellDamageSkip()
             // The pods' data rates firm up as the film loads.
@@ -2606,7 +2685,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A second, short connection to read the start of the file: only where previews are allowed one too.
         val readChapters = !known && prefs.seekPreviews && uri.scheme?.startsWith("http") == true &&
             uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
-        val online = tmdb.isConfigured && (ep != null || film)
+        // From the add-ons: the IMDb id and episode are known (no TMDB key needed to ask SkipDB / IntroDB).
+        val vod = source?.request
+        val online = vod != null || tmdb.isConfigured && (ep != null || film)
         if (!online && !readChapters && knownChapters == null) return
         // The first look-up is still reading the chapters: asked again once it has.
         if (again && !fresh && readChapters) { handler.postDelayed(lookUpSegmentsAgain, SEGMENTS_AGAIN_MS); return }
@@ -2621,7 +2702,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
             // Only what the chapters don't say is asked for.
             val db = if (!online || (chapters?.intro != null && chapters.creditsAt != null)) null else runCatching {
-                if (ep != null) {
+                if (vod != null) {
+                    SkipTimes.find(app, vod.imdbId, vod.season, vod.episode, duration, TitleDetails.runtimeMinutes(vod.target.title.runtime) ?: 0, sync)
+                } else if (ep != null) {
                     tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin, sync) }
                 } else {
                     val id = fixed ?: filmTmdbId(entry)
@@ -4062,6 +4145,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** One key per film (its link's file on its provider) or show (its name), for the sound last picked for it. */
     private fun audioKey(entry: Entry): String? {
+        // A film from the add-ons: by its release (never its link).
+        entry.storeKey?.takeIf { entry.info.episode == null }?.let { return "film|$it" }
         val episode = entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)
         if (episode) {
             val name = entry.info.searchQuery.trim().lowercase(Locale.ROOT)
@@ -4668,6 +4753,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun openQuality(show: Boolean) {
         val entry = currentEntry() ?: return
+        source?.let { s ->
+            // From the add-ons: Next source (one press, at the current position) and Sources instead of copies.
+            panel.openSub("Picture & sound") {
+                sourceRows(s)
+                pictureAndSound()
+            }
+            return
+        }
         if (copiesFor != entry.key) loadCopies(entry, show)
         panel.openSub("Picture & sound") {
             val v = copyVerdict()
@@ -5122,9 +5215,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Plays another copy of this title from where this one is, in place of it. */
     private fun playCopy(copy: Copies.Copy) {
         val p = player ?: return
+        val current = entries.getOrNull(p.currentMediaItemIndex) ?: return
+        playInstead(copy.uri, current.rawTitle, null, p.currentPosition)
+    }
+
+    /**
+     * Plays [uri] (another copy of this title, or another source from the add-ons with its [storeKey]) from [at], in
+     * place of what plays: its subtitles, names and choices come along.
+     */
+    private fun playInstead(uri: Uri, rawTitle: String?, storeKey: String?, at: Long) {
+        val p = player ?: return
         val index = p.currentMediaItemIndex
         val current = entries.getOrNull(index) ?: return
-        val at = p.currentPosition
         panel.close()
         hideControls()
         savePosition()
@@ -5134,7 +5236,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             p.removeMediaItem(i)
         }
         // The same film: its subtitles (handed over or downloaded), names and episode numbers come along.
-        val entry = Entry(copy.uri, current.rawTitle, null, current.subtitles.toMutableList(), nextEpisode = current.nextEpisode)
+        val entry = Entry(uri, rawTitle, null, current.subtitles.toMutableList(), nextEpisode = current.nextEpisode, storeKey = storeKey)
         entry.handedSubtitles += current.handedSubtitles
         entry.showName = current.showName
         entry.english = current.english
@@ -5165,7 +5267,147 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         nextLookedUpFor = null
         copiesFor = null
         p.seekTo(entries.lastIndex, at)
+        // After a failure the player has stopped: it loads again from here.
+        if (p.playbackState == Player.STATE_IDLE) p.prepare()
         p.play()
+    }
+
+    // ---------------------------------------------------------------------
+    // A film or episode from the add-ons (Films & Shows step 3). The logic is SourcePlayback's; these are its hooks.
+
+    /** Starts [request]: the loading screen while the sources are found and the link is checked, then the film. */
+    private fun startSourcePlay(request: PlayRequest) {
+        val repo = Sources.get(this)
+        val s = SourcePlayback(request, repo.session(request), repo.library, MainTicker, sourceHost)
+        source = s
+        buffering.visibility = View.VISIBLE
+        bufferingInfo.visibility = View.GONE
+        s.start()
+        val ep = request.target.episode
+        if (ep != null && s.next == null) {
+            // The episode after this one, from the show's stored details, for the next episode's play.
+            nextLookup = VodRepositories.get(this).details(request.target.title) { d, _ ->
+                if (s.next == null) s.next = PlayRules.nextEpisode(d.episodes, ep, System.currentTimeMillis())?.ref
+            }
+        }
+    }
+
+    /** How the player names a film or episode from the add-ons, as a video's title is read ("Show S02E05"). */
+    private fun vodRawTitle(r: PlayRequest): String {
+        val t = r.target.title
+        val ep = r.target.episode ?: return listOfNotNull(t.name, t.year?.take(4)?.let { "($it)" }).joinToString(" ")
+        return String.format(Locale.ROOT, "%s S%02dE%02d", t.name, ep.season, ep.episode)
+    }
+
+    /** What a source's video is kept by: the film or episode and its release, never the link. */
+    private fun vodKey(r: PlayRequest, ready: Opened.Ready): String {
+        val rel = ready.source.release
+        return "vod|${r.target.streamId}|" + (rel?.let { "${it.infoHash}|${it.fileIdx ?: -1}" } ?: ready.offer.addon.name.lowercase(Locale.ROOT))
+    }
+
+    private val sourceHost = object : SourcePlayback.Host {
+        override fun showProgress(text: String) {
+            if (isFinishing) return
+            buffering.visibility = View.VISIBLE
+            bufferingInfo.text = text
+            bufferingInfo.visibility = View.VISIBLE
+        }
+
+        override fun startSource(ready: Opened.Ready, startMs: Long, switching: Boolean) {
+            val request = source?.request ?: return
+            if (isFinishing || isDestroyed) return
+            val uri = Uri.parse(ready.link.reveal())
+            // What was measured of this file is kept by its release (the link changes daily).
+            ready.source.release?.let { copyKeys[uri.toString()] = it.storeKey }
+            errorBox.visibility = View.GONE
+            cannotOpen = false
+            bufferingInfo.visibility = View.GONE
+            val p = player
+            if (switching && p != null && entries.isNotEmpty()) {
+                playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
+                return
+            }
+            if (p != null) releasePlayer()
+            entries.clear()
+            val entry = Entry(uri, vodRawTitle(request), null, storeKey = vodKey(request, ready))
+            entries += entry
+            startIndex = 0
+            // Explicit either way: FirePlayer's own plays never ask "Resume from?".
+            startPositionMs = startMs
+            attachSaved(entry, chooseOn = true)
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer()
+        }
+
+        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>) {
+            if (isFinishing) return
+            if (panel.isOpen) panel.close()
+            FireDialog.ask(this@PlayerActivity, question, choices)
+        }
+
+        override fun stopWith(message: String) {
+            if (isFinishing) return
+            hideBuffering()
+            if (panel.isOpen) panel.close()
+            player?.pause()
+            updateTitle()
+            errorText.text = message
+            errorHint.text = "Press Back for Sources"
+            errorBox.visibility = View.VISIBLE
+            // OK leaves too, as Back does: the title page's Sources lists the rest.
+            cannotOpen = true
+            updateKeepScreenOn()
+            hideControls()
+        }
+
+        override fun notice(text: String) {
+            if (!isFinishing) showNotice(text, NOTE_MS)
+        }
+
+        override fun positionMs(): Long = player?.currentPosition ?: startPositionMs.coerceAtLeast(0L)
+
+        override fun retryAfter(ms: Long) {
+            if (player != null) retryQuietly(ms)
+        }
+
+        override fun decodeOnDevice() {
+            soundOnDevice = true
+            rebuildPlayer()
+            player?.play()
+        }
+
+        override fun playNext(next: PlayRequest) {
+            savePosition()
+            startActivity(PlayHandoff.intent(this@PlayerActivity, next))
+            finish()
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
+    }
+
+    /** Picture & sound's rows for a play from the add-ons: Next source (at the current position) and Sources. */
+    private fun SidePanel.sourceRows(s: SourcePlayback) {
+        val playing = s.current
+        val note = playing?.let { listOf(PlayRules.badges(it), "from ${PlayRules.addonsOf(it)}").filter { t -> t.isNotEmpty() }.joinToString(" · ") }
+        actionRow("Next source", note, "Next", Rows.Badge.ACTIVE) {
+            panel.close()
+            hideControls()
+            s.nextSource()
+        }
+        val count = s.session.list?.sources?.size
+        row("Sources", count?.let { "$it" }) { openSourcesPanel(s) }
+    }
+
+    /** The Sources panel over Picture & sound: OK on a row plays it at the current position (or from the beginning). */
+    private fun openSourcesPanel(s: SourcePlayback) {
+        val sp = sourcesPanel ?: SourcesPanel(this, panel).also { sourcesPanel = it }
+        val ep = s.request.target.episode
+        val title = if (ep == null) "Sources" else "Sources · S${ep.season} E${ep.episode}"
+        sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true) { picked, beginning ->
+            panel.close()
+            hideControls()
+            s.pick(picked, beginning)
+        }
+        s.session.setListener { sp.update(s.session.list, s.session.attempts, s.current?.key) }
     }
 
     /** A subtitle or sound track as a wish (see reapplyChoices): a track labelled forced or signs counts as forced. */
@@ -5741,6 +5983,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         findMatch = null
         panel.refresh()
         val guideTmdb = findTmdb.takeIf { it > 0 && show && query == guide?.searchName }
+        // From the add-ons: the title's own TMDB id (the show's for an episode), while the search is for its name.
+        val vodTmdb = source?.request?.tmdbId?.takeIf { query == entry.info.searchQuery }
         val hashable = prefs.seekPreviews && entry.uri.scheme?.startsWith("http") == true
         val headers = headersFromIntent()
         // The release the file is: the provider's file name, else the name it came with.
@@ -5756,7 +6000,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         io.execute {
             // With a TMDB key, the search asks for the exact film or show instead of anything with that name.
             // The show as its guide matched it, else asked of TMDB by name.
-            val known = guideTmdb?.let { Tmdb.Match(it, query, null) }
+            val known = guideTmdb?.let { Tmdb.Match(it, query, null) } ?: vodTmdb?.let { Tmdb.Match(it, query, null) }
             val match = if (known != null) Result.success(known) else if (tmdb.isConfigured) runCatching { tmdb.find(query, year, show) } else null
             val found = match?.getOrNull()
             // The file's fingerprint marks subtitles made for it; read only where a second connection is fine.
