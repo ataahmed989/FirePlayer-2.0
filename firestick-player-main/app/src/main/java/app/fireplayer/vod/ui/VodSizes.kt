@@ -184,6 +184,11 @@ internal object VodSizes {
     const val HEADER_BUTTON_ICON = 15f
     const val HEADER_BUTTON_ICON_GAP = 7f
     /**
+     * Room kept above the buttons, inside their row, for a focused one's growth and glow (its shadow falls into the
+     * margin under it; the margins left and right hold the rest).
+     */
+    const val HEADER_BUTTON_ROOM = 14f
+    /**
      * While the page hides the card's top (a first row of posters moves the page up a little), the words stay
      * [HEADER_TOP_KEEP] under the cut: they move down, as far as leaves [HEADER_WORDS_MIN_GAP] above the buttons
      * ([headerWordsShift]).

@@ -96,6 +96,8 @@ class VodHeader(
     private val textW = t.dp(VodSizes.storyW(cardW))
     private val title = HeaderTitle(context, t, cardW)
     private val facts = t.label(context, VodSizes.FACTS)
+    /** A facts line's width as it's drawn: only whole facts are shown ([VodSizes.headerFacts]). */
+    private val factsWidth: (String) -> Float = { facts.paint.measureText(it) }
     private val story = t.label(context, VodSizes.STORY).apply {
         // Always two lines, in a box two lines tall (see init): new words never change its height, so they're only
         // redrawn (a wrapped height would lay the page out again whenever one line became two).
@@ -142,10 +144,15 @@ class VodHeader(
             buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
                 leftMargin = t.dp(VodSizes.HEADER_BUTTON_GAP)
             })
-            addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
+            // The row reaches the card's left and bottom edges round the pills (as padding, not margins): the card clips
+            // each of its parts to that part's own bounds, and a focused pill's growth, glow and shadow lie outside
+            // the pill. Inside the row's padding they are drawn whole.
+            buttons.clipToPadding = false
+            buttons.setPadding(
+                t.dp(VodSizes.HEADER_INSET), t.dp(VodSizes.HEADER_BUTTON_ROOM), t.dp(VodSizes.HEADER_INSET), t.dp(VodSizes.HEADER_BUTTONS_BOTTOM),
+            )
+            addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
-                leftMargin = t.dp(VodSizes.HEADER_INSET)
-                bottomMargin = t.dp(VodSizes.HEADER_BUTTONS_BOTTOM)
             })
             for ((which, pill) in listOf(Button.WATCH to watch, Button.DETAILS to details)) {
                 Tokens.focusEffect(pill, Tokens.GROW_PILL, null) { has -> onButtonFocus(has) }
@@ -408,8 +415,6 @@ class VodHeader(
             buttons.visibility = if (title == null) INVISIBLE else VISIBLE
         }
     }
-
-    private val factsWidth: (String) -> Float = { facts.paint.measureText(it) }
 
     private fun now() = SystemClock.uptimeMillis()
 

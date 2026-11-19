@@ -182,8 +182,16 @@ class VodSizesTest {
         assertEquals(158f, VodSizes.headerButtonsTop())
         assertTrue(VodSizes.headerButtonsTop() - VodSizes.headerWordsEnd() >= 16f)
         assertTrue(VodSizes.HEADER_BUTTONS_BOTTOM >= VodSizes.DOTS_BOTTOM + VodSizes.DOTS_H + 8f)
-        // A focused button's growth (4%, about its centre) stays inside the card with room to spare.
-        assertTrue(VodSizes.HEADER_BUTTON_H * 0.02f < VodSizes.HEADER_BUTTONS_BOTTOM - 8f)
+        // A focused button grows 4% about its centre, with a glow 12.5 dp out all round and a shadow that falls
+        // 22.5 dp under it (GlassDrawable's FOCUS_GLOW and FOCUS_SHADOW). All of it lies inside the buttons' row, whose
+        // padding is the card's margins and this room above: nothing of a focused button is cut.
+        val grow = app.fireplayer.shell.Tokens.GROW_PILL - 1f
+        val widest = 140f
+        assertTrue(widest * grow / 2f + 12.5f <= VodSizes.HEADER_INSET)
+        assertTrue(VodSizes.HEADER_BUTTON_H * grow / 2f + 12.5f <= VodSizes.HEADER_BUTTON_ROOM)
+        assertTrue(VodSizes.HEADER_BUTTON_H * grow / 2f + 22.5f <= VodSizes.HEADER_BUTTONS_BOTTOM)
+        // That room above the buttons is still below the words.
+        assertTrue(VodSizes.headerButtonsTop() - VodSizes.HEADER_BUTTON_ROOM >= VodSizes.headerWordsEnd())
         // The backdrop: at most 2.6 header heights wide, right-aligned; Home's fills its card.
         assertEquals(496f, VodSizes.backdropW(VodSizes.homeHeaderW()))
         near(561.6f, VodSizes.backdropW(VodSizes.tabHeaderW()), 0.001f)

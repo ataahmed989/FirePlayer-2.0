@@ -556,7 +556,7 @@ class VodPage(
         press.cancel()
         // New cards held back while the viewer was in the row.
         row.pending?.let { (cards, seeAll) -> showCards(row, cards, seeAll) }
-        // Up to the banner's buttons: it stays on the card's title, which they act on.
+        // Up to the banner's buttons: it stays on the card's title, which they act on (until it turns by itself).
         if (row.spec.continueRow && focusedRow?.spec?.continueRow != true && !header.hasButtonFocus) header.unfollow()
         return true
     }
