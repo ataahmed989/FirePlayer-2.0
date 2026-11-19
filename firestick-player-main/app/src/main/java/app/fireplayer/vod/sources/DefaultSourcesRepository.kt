@@ -35,6 +35,7 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.EnumMap
+import java.util.EnumSet
 import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -101,6 +102,8 @@ class DefaultSourcesRepository(
         /** The row each release went into (merged copies). */
         var rowOf: Map<String, String> = emptyMap()
         var version = 0
+        /** The add-ons whose answers are in [ranked]; one answered but not yet ranked still counts as looking. */
+        var rankedFrom: Set<Addon> = emptySet()
     }
 
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
@@ -158,6 +161,7 @@ class DefaultSourcesRepository(
             entry.ranked = emptyList()
             entry.best = null
             entry.lastUsed = null
+            entry.rankedFrom = emptySet()
             entry.version++
             val live = entry.subs.filterNot { it.cancelled || it.start != null }
             if (live.isEmpty()) {
@@ -169,6 +173,11 @@ class DefaultSourcesRepository(
             notify(entry)
             ask(entry, (user ?: live.first()).why, only)
         }
+    }
+
+    /** This TV's plan changed: the lists in memory rank again from the answers they have (nothing is asked again). */
+    fun rerank() {
+        for (entry in entries.values.toList()) if (entry.answers.isNotEmpty()) rebuild(entry)
     }
 
     // ---- For the session ----
@@ -384,6 +393,7 @@ class DefaultSourcesRepository(
 
     private fun rebuild(entry: Entry) {
         val v = ++entry.version
+        val from = entry.order.filterTo(EnumSet.noneOf(Addon::class.java)) { entry.answers.containsKey(it) }
         val answers = entry.order.mapNotNull { entry.answers[it]?.parsed?.streams }
         val target = entry.target
         val input = RankInput(
@@ -394,18 +404,25 @@ class DefaultSourcesRepository(
             episode = target.episode != null,
         )
         work.execute {
-            val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin)
-            val ranked = SourceRank.rank(merged.sources, input)
-            val best = SourceRank.best(ranked)
-            val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
-            val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
-            val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }?.takeIf { it.key != best?.key }
+            // Always posted, so an answer never stays "looking" (a rank that throws keeps the list it had).
+            val made = runCatching {
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin)
+                val ranked = SourceRank.rank(merged.sources, input)
+                val best = SourceRank.best(ranked)
+                val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
+                val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
+                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }?.takeIf { it.key != best?.key }
+                Ranked(merged.rowOf, ranked, best, lastUsed)
+            }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
-                entry.rowOf = merged.rowOf
-                entry.ranked = ranked
-                entry.best = best
-                entry.lastUsed = lastUsed
+                entry.rankedFrom = from
+                if (made != null) {
+                    entry.rowOf = made.rowOf
+                    entry.ranked = made.sources
+                    entry.best = made.best
+                    entry.lastUsed = made.lastUsed
+                }
                 notify(entry)
             }
         }
@@ -414,10 +431,20 @@ class DefaultSourcesRepository(
     private fun listOf(entry: Entry): SourceList {
         val states = EnumMap<Addon, AddonState>(Addon::class.java)
         for (addon in Addon.entries) {
-            states[addon] = if (links(addon) == null) AddonState.NotSet else entry.states[addon] ?: AddonState.NotAsked
+            val state = if (links(addon) == null) AddonState.NotSet else entry.states[addon] ?: AddonState.NotAsked
+            // Answered, but its sources are still being ranked: not final yet, or another add-on's failure would make
+            // the list "complete" without them (the rank's post brings the answer in).
+            states[addon] = if (state is AddonState.Answered && addon !in entry.rankedFrom) {
+                val now = elapsed()
+                AddonState.Asking(now, now + addon.answerLimitMs)
+            } else {
+                state
+            }
         }
         return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed)
     }
+
+    private class Ranked(val rowOf: Map<String, String>, val sources: List<PlaybackSource>, val best: PlaybackSource?, val lastUsed: PlaybackSource?)
 
     private fun notify(entry: Entry) {
         if (entry.subs.isEmpty()) return
@@ -459,10 +486,11 @@ class DefaultSourcesRepository(
             var engine: DefaultSourcesRepository? = null
             val vault = AddonVault.of(app) { engine?.forget() }
             val vod = VodRepositories.repository(app)
+            val tv = ThisTvReader(app, app.getSharedPreferences(ThisTvReader.FILE, Context.MODE_PRIVATE), System::currentTimeMillis)
             val made = DefaultSourcesRepository(
                 addons = vault,
                 links = vault::link,
-                thisTv = ThisTvReader(app, app.getSharedPreferences(ThisTvReader.FILE, Context.MODE_PRIVATE), System::currentTimeMillis),
+                thisTv = tv,
                 library = RecordedLibrary(vod.library),
                 http = StreamsHttp.URL_STREAMS,
                 linkCheck = LinkCheck(LinkCheck.URL_HOP, online, SystemClock::elapsedRealtime),
@@ -484,6 +512,8 @@ class DefaultSourcesRepository(
                 online = online,
             )
             engine = made
+            // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.
+            tv.onChanged = { loop.post { made.rerank() } }
             watchNetwork(connectivity, loop) { made.forget() }
             return made
         }

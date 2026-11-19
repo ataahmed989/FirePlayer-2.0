@@ -22,6 +22,7 @@ class SourcePlaybackTest {
     private val library = FakeLibrary()
     private val log = ArrayList<String>()
     private var questions = ArrayList<Pair<String, List<Pair<String, () -> Unit>>>>()
+    private val dismisses = ArrayList<() -> Unit>()
     private var position = 0L
     private var nextPlay: PlayRequest? = null
     private var starts = ArrayList<Triple<String, Long, Boolean>>()
@@ -31,7 +32,7 @@ class SourcePlaybackTest {
         override fun startSource(ready: Opened.Ready, startMs: Long, switching: Boolean) {
             starts += Triple(ready.source.key, startMs, switching)
         }
-        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>) { questions += question to choices }
+        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) { questions += question to choices; dismisses += onDismiss }
         override fun stopWith(message: String) { log += "stop $message" }
         override fun notice(text: String) { log += "notice $text" }
         override fun positionMs() = position
@@ -140,6 +141,70 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aStallThatNeverEndsIsJudgedWhileItLasts() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        p.buffering(true)
+        assertEquals(1, s.opens.size)
+        p.tick()
+        assertEquals(1, s.opens.size)
+        // The stall goes on past the watch's limit: the tick switches without waiting for it to end.
+        s.switchNow = true
+        p.tick()
+        assertEquals(null to OpenWhy.STALLS, s.opens.last())
+        // While that switch is opened, the ticks wait for it.
+        p.tick()
+        assertEquals(2, s.opens.size)
+        // Nothing to switch to: not tried again at once.
+        s.answer(Opened.NoneLeft("No other source left"))
+        p.tick()
+        assertEquals(2, s.opens.size)
+        ticker.advance(SourcePlayback.STALL_RETRY_MS)
+        p.tick()
+        assertEquals(3, s.opens.size)
+        // Not stalled: ticks don't judge.
+        s.answer(Opened.NoneLeft("No other source left"))
+        p.buffering(false)
+        ticker.advance(SourcePlayback.STALL_RETRY_MS)
+        val opens = s.opens.size
+        p.tick()
+        assertEquals(opens, s.opens.size)
+    }
+
+    @Test
+    fun aResumeCountsAsAJumpForTheStallWatch() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        s.stallEvents.clear()
+        p.pause()
+        p.resume()
+        assertEquals(listOf("jumped"), s.stallEvents)
+    }
+
+    @Test
+    fun backOnTheQuestionsIsNotNowOrKeepWaiting() {
+        val (_, s) = play()
+        val nr = Fixtures.source(9, readiness = Readiness.NOT_READY, group = SourceGroup.NOT_ON_RD)
+        s.answer(Opened.AskFetch(nr))
+        val back: () -> Unit = dismisses[dismisses.size - 1]
+        back()
+        assertEquals("stop ${SourcePlayback.NOT_FETCHED}", log.last())
+        PlayOutcomes.clear(SourceTarget(Fixtures.film))
+
+        val (_, s2) = play()
+        s2.ready(Fixtures.source(1, mbps = 10.0))
+        ticker.advance(30_000)
+        assertEquals("This source is slow to start.", questions.last().first)
+        val asked = questions.size
+        val back2: () -> Unit = dismisses[dismisses.size - 1]
+        back2()
+        ticker.advance(30_000)
+        assertEquals(asked + 1, questions.size)
+    }
+
+    @Test
     fun stallsBeforeTheFirstFrameAreStageThrees() {
         val (p, s) = play()
         s.ready(Fixtures.source(1))
@@ -160,8 +225,11 @@ class SourcePlaybackTest {
         p.failed(5001, null)
         assertEquals("decode", log.last())
         s.step = Step.Refresh
+        val opens = s.opens.size
         p.failed(2004, 403)
-        assertEquals("k1" to OpenWhy.FAILED, s.opens.last().first?.key to s.opens.last().second)
+        // The session refreshes the same file's link (its add-on asked again), not a switch.
+        assertEquals(listOf("k1"), s.refreshed.map { it.key })
+        assertEquals(opens, s.opens.size)
         s.step = Step.Stop("Real-Debrid says your account has expired.")
         p.failed(2004, 403)
         assertEquals("stop Real-Debrid says your account has expired.", log.last())

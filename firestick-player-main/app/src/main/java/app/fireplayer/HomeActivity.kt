@@ -76,6 +76,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     /** The live picture, blurred, for the full-screen controls' glass (Android 7+); made when first needed. */
     private var film: GlassBackdrop? = null
     private var filmOn = false
+    /** When [play] last handed a film to the player (elapsedRealtime ms); cleared once this screen shows again. */
+    private var launchedAt = Long.MIN_VALUE / 2
     override val glassSource: GlassSource? get() = if (filmOn) film ?: still else still
     private lateinit var shellTokens: Tokens
     override val tokens: Tokens get() = shellTokens
@@ -172,6 +174,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 ImageLoader.trim()
                 film?.stop()
                 live.dropMemory()
+                // The glass look's full-screen wallpaper (about 8 MB) too; it loads again on return.
+                wallpaper.release()
             }
         })
         // Home is the start page; Live TV is one press away on the rail.
@@ -192,6 +196,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onStart()
         // Back from a film (or a while away): the snapshot shows at once while the page fills again.
         filmMode.onStart(root)
+        wallpaper.restore()
+        launchedAt = Long.MIN_VALUE / 2
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
@@ -271,6 +277,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
      * starts with the request (a token in the Intent, never a link).
      */
     override fun play(request: PlayRequest) {
+        // One launch at a time: a second OK while the player is on its way (snapshot, activity switch) is ignored.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - launchedAt < LAUNCH_GUARD_MS) return
+        launchedAt = now
         filmMode.beforeFilm {
             if (!isFinishing && !isDestroyed) startActivity(PlayHandoff.intent(this, VodLaunch.withFilmMode(request)))
         }
@@ -895,6 +905,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+        /** A second play this soon after one is a repeated OK while the player opens, not a new play. */
+        private const val LAUNCH_GUARD_MS = 3_000L
         /** The remote's (and Alexa's) media buttons. */
         private val MEDIA_KEYS = setOf(
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,

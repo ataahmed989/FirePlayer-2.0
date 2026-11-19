@@ -204,6 +204,8 @@ data class Offer(
     val bingeGroup: String? = null,
     /** The add-on's play link: memory only, opened only at Play (stage 2). */
     val link: SecretUrl,
+    /** The file this offer opens (a merged row's offers can be different re-uploads); null: the row's [PlaybackSource.release]. */
+    val release: ReleaseKey? = null,
 )
 
 /**
@@ -551,6 +553,12 @@ interface SourceSession {
 
     /** Stage 3's limit for [source]: [firstLoadLimitMs] by its data rate. */
     fun firstLoadLimitMs(source: PlaybackSource): Long = firstLoadLimitMs(source.facts.avgMbps)
+
+    /**
+     * [source]'s link expired: [addon] is asked again for the title and the same file's new link is checked, once. Not
+     * an automatic switch. Default: the same source opened again.
+     */
+    fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel = open(source, OpenWhy.FAILED, onOpened)
 
     /** The first frame of [source]: records it as the last release used and resets the stall watch. */
     fun started(source: PlaybackSource, offer: Offer)

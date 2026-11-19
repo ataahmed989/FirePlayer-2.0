@@ -35,6 +35,8 @@ object AddonsSettings {
                 activity, "${a.label} link", "",
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
                 hint = if (set) SAVED_HINT else hintFor(a),
+                // The link carries the Real-Debrid key: kept only encrypted, never in the keyboard's memory.
+                unlearned = true,
             ) { typed ->
                 if (typed.isBlank()) return@prompt
                 val result = addons.save(a, typed)

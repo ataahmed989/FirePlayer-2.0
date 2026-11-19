@@ -87,25 +87,37 @@ class ThisTvReader(private val app: Context, private val prefs: SharedPreference
 
     override fun capabilities(): TvCapabilities? = caps
 
+    /** The plan may have changed (a new reading, the user's own plan, back to Automatic): lists in memory rank again. */
+    var onChanged: (() -> Unit)? = null
+
     override fun checkAgain(onDone: (TvCapabilities) -> Unit) {
+        val read = readNow()
+        onDone(read)
+        onChanged?.invoke()
+    }
+
+    private fun readNow(): TvCapabilities {
         val read = read()
         caps = read
         prefs.edit().putString(CAPS, TvPlans.writeCaps(read)).apply()
-        onDone(read)
+        return read
     }
 
     override fun plan(): TvPlan {
         TvPlans.readPlan(prefs.getString(PLAN, null))?.let { return it }
-        if (caps == null) runCatching { checkAgain { } }
+        // The first reading, while ranking: nothing to rank again for.
+        if (caps == null) runCatching { readNow() }
         return TvPlans.automatic(caps)
     }
 
     override fun setPlan(plan: TvPlan) {
         prefs.edit().putString(PLAN, TvPlans.writePlan(plan.copy(automatic = false))).apply()
+        onChanged?.invoke()
     }
 
     override fun useAutomatic() {
         prefs.edit().remove(PLAN).apply()
+        onChanged?.invoke()
     }
 
     private fun read(): TvCapabilities {

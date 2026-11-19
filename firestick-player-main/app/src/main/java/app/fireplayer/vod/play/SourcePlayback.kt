@@ -48,8 +48,8 @@ class SourcePlayback(
          */
         fun startSource(ready: Opened.Ready, startMs: Long, switching: Boolean)
 
-        /** A question with its answers ("Keep waiting" / "Try next source"). */
-        fun ask(question: String, choices: List<Pair<String, () -> Unit>>)
+        /** A question with its answers ("Keep waiting" / "Try next source"); [onDismiss] when Back closes it unanswered. */
+        fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit)
 
         /** Nothing more to try: say [message], and Back returns to the page (on its Sources button). */
         fun stopWith(message: String)
@@ -90,6 +90,12 @@ class SourcePlayback(
     private var closed = false
     /** The play stopped with a message (nothing more is tried until a new source is ready). */
     private var stopped = false
+    /** The player is loading while the source plays (a stall under way). */
+    private var stalled = false
+    /** A switch for stalls is being opened: the stall watch waits for its answer. */
+    private var stallSwitching = false
+    /** When the last switch for stalls was tried (it may have found nothing to switch to). */
+    private var stallTryAt = Long.MIN_VALUE / 2
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -129,8 +135,15 @@ class SourcePlayback(
         opening = session.open(source, why) { onOpened(it, why) }
     }
 
+    private fun refresh(s: PlaybackSource) {
+        if (closed) return
+        opening?.cancel()
+        opening = session.refresh(s, offer?.addon) { onOpened(it, OpenWhy.FAILED) }
+    }
+
     private fun onOpened(o: Opened, why: OpenWhy) {
         if (closed) return
+        if (o !is Opened.Looking && o !is Opened.Checking) stallSwitching = false
         when (o) {
             is Opened.Looking -> if (!playing) host.showProgress(lookingText(o.list))
             is Opened.Checking -> if (!playing) host.showProgress(checkingText(o.source))
@@ -159,6 +172,7 @@ class SourcePlayback(
         current = o.source
         offer = o.offer
         playing = false
+        stalled = false
         loadTimer?.cancel()
         host.startSource(o, start, switching)
         if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
@@ -175,6 +189,8 @@ class SourcePlayback(
                 },
                 "Not now" to { end(NOT_FETCHED) },
             ),
+            // Back is "Not now": the question isn't left hanging over a spinner.
+            onDismiss = { end(NOT_FETCHED) },
         )
     }
 
@@ -201,6 +217,8 @@ class SourcePlayback(
     /** Back on screen: a source still loading gets its limit afresh (the player loads it again from here). */
     fun resume() {
         val s = current ?: return
+        // The player loads again from here: its first wait is the resume's, not a stall.
+        if (playing) session.stalls.jumped(ticker.now())
         if (!playing && !closed && !stopped && loadTimer == null) armLoad(s)
     }
 
@@ -208,12 +226,15 @@ class SourcePlayback(
         loadTimer?.cancel()
         loadTimer = ticker.after(session.firstLoadLimitMs(s)) {
             if (closed || playing || current?.key != s.key) return@after
+            val keepWaiting = { if (!closed && !stopped && !playing && current?.key == s.key) armLoad(s) }
             host.ask(
                 "This source is slow to start.",
                 listOf(
-                    "Keep waiting" to { if (!playing && current?.key == s.key) armLoad(s) },
+                    "Keep waiting" to keepWaiting,
                     "Try next source" to { if (!playing && current?.key == s.key) act(session.failed(s, Failure(FailureKind.SLOW, offer?.addon))) },
                 ),
+                // Back is Keep waiting: asked again at the limit.
+                onDismiss = keepWaiting,
             )
         }
     }
@@ -224,6 +245,8 @@ class SourcePlayback(
         if (playing) return
         playing = true
         everPlayed = true
+        stalled = false
+        stallTryAt = Long.MIN_VALUE / 2
         loadTimer?.cancel()
         loadTimer = null
         PlayOutcomes.clear(request.target)
@@ -239,19 +262,29 @@ class SourcePlayback(
     fun buffering(on: Boolean) {
         if (!playing) return
         val now = ticker.now()
+        stalled = on
         session.stalls.buffering(now, on)
         if (!on) session.stalls.playing(now)
         checkStalls(now)
     }
 
-    /** A seek or a resume: stalls right after it don't count. */
+    /** Called as it plays (a few times a second): a stall that goes on is judged while it lasts, not only once it ends. */
+    fun tick() {
+        if (playing && stalled && !closed) checkStalls(ticker.now())
+    }
+
+    /** A seek, a resume or a rebuilt player: stalls right after it don't count. */
     fun jumped() {
         session.stalls.jumped(ticker.now())
     }
 
     private fun checkStalls(now: Long) {
-        if (!session.stalls.shouldSwitch(now)) return
+        if (stallSwitching || !session.stalls.shouldSwitch(now)) return
         if (session.maySwitch(now)) {
+            // A try that found nothing to switch to is not repeated at once.
+            if (now - stallTryAt < STALL_RETRY_MS) return
+            stallTryAt = now
+            stallSwitching = true
             open(null, OpenWhy.STALLS)
         } else if (!limitNoted) {
             limitNoted = true
@@ -273,7 +306,8 @@ class SourcePlayback(
         when (step) {
             Step.TryNext -> open(null, OpenWhy.FAILED)
             is Step.Retry -> host.retryAfter(step.afterMs)
-            Step.Refresh -> open(current, OpenWhy.FAILED)
+            // The add-on is asked again for the same file's link (not a switch, and not the old link again).
+            Step.Refresh -> current?.let { s -> refresh(s) } ?: open(null, OpenWhy.FAILED)
             Step.DecodeOnDevice -> host.decodeOnDevice()
             is Step.Stop -> end(step.message)
         }
@@ -338,6 +372,8 @@ class SourcePlayback(
         const val LIMIT_NOTE = "Playback keeps pausing · Next source in Picture & sound tries another"
         const val NOT_FETCHED = "Nothing played · Sources lists every file"
         const val GENERIC_STOP = "This title couldn't play · Sources lists every file"
+        /** A switch for stalls that found nothing is tried again after this long, ms. */
+        const val STALL_RETRY_MS = 120_000L
     }
 }
 

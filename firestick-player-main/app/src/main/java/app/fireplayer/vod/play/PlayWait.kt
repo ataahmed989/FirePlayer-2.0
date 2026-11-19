@@ -57,12 +57,14 @@ class PlayWait(private val repo: SourcesRepository, private val ticker: Ticker, 
         val now = target
         if (now != null && now.key == what.key) {
             val l = list
-            if (l != null && PlayRules.playable(l)) finish(l) else listener.onWaiting(label(), fraction(), l?.let { PlayRules.strip(it, ticker.now()) })
+            // The best so far: only a source that plays by itself; none yet, the wait goes on.
+            if (l != null && l.best != null) finish(l) else listener.onWaiting(label(), fraction(), l?.let { PlayRules.strip(it, ticker.now()) })
             return true
         }
         if (now != null) stop()
         repo.cached(what)?.takeIf { it.complete }?.let { done ->
-            listener.onPlay(what, done)
+            // As after a wait: nothing to play is said on the page, without film mode or the player.
+            if (PlayRules.playable(done)) listener.onPlay(what, done) else listener.onEnded(PlayRules.sourceLine(done) ?: NOTHING)
             return false
         }
         val mine = ++run

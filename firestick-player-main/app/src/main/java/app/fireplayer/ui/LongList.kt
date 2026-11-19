@@ -536,10 +536,10 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
             addView(rows.text(e.note.orEmpty()).apply {
                 isSingleLine = false
                 maxLines = 2
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                alpha = 0.72f
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, Rows.NOTE_SP)
+                alpha = Rows.NOTE_ALPHA
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = rows.dp(2) }
+                    .apply { topMargin = rows.dp(Rows.NOTE_GAP_DP) }
             })
         }
         row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -548,10 +548,10 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
                 isSingleLine = false
                 maxLines = 2
                 gravity = Gravity.END
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                alpha = 0.85f
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, Rows.NOTE_SP)
+                alpha = Rows.VALUE_ALPHA
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { marginStart = rows.dp(10) }
+                    .apply { marginStart = rows.dp(Rows.VALUE_GAP_DP) }
             })
         }
         return label

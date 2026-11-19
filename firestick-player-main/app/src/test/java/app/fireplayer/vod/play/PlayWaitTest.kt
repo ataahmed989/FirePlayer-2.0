@@ -72,6 +72,28 @@ class PlayWaitTest {
     }
 
     @Test
+    fun aCompleteListWithNothingSaysSoWithoutThePlayer() {
+        repo.kept[target.key] = Fixtures.list(target, emptyList())
+        wait.press(target)
+        assertTrue(played.isEmpty())
+        assertEquals(listOf<String?>("No sources found"), ended)
+        assertFalse(wait.isWaiting)
+    }
+
+    @Test
+    fun okAgainWithOnlySourcesNotOnRealDebridKeepsWaiting() {
+        wait.press(target)
+        val nr = Fixtures.source(1, readiness = app.fireplayer.vod.Readiness.NOT_READY, group = app.fireplayer.vod.SourceGroup.NOT_ON_RD)
+        repo.answer(Fixtures.list(target, listOf(nr), states = mapOf(
+            Addon.TORRENTIO to AddonState.Answered(1),
+            Addon.MEDIAFUSION to AddonState.Asking(ticker.time, ticker.time + Addon.MEDIAFUSION.answerLimitMs),
+        )))
+        assertTrue(wait.press(target))
+        assertTrue(played.isEmpty())
+        assertTrue(wait.isWaiting)
+    }
+
+    @Test
     fun okAgainWithNothingYetKeepsWaiting() {
         wait.press(target)
         assertTrue(wait.press(target))

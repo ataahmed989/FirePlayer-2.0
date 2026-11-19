@@ -3,6 +3,7 @@ package app.fireplayer.ui
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.os.Build
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -148,13 +149,17 @@ object FireDialog {
         password: Boolean = false,
         inputType: Int = InputType.TYPE_CLASS_TEXT,
         hint: String? = null,
+        /** The keyboard neither suggests nor learns what is typed (a link carrying a key, kept only encrypted). */
+        unlearned: Boolean = false,
         onDone: (String) -> Unit,
     ) {
         if (gone(activity)) return
         val rows = Rows(activity)
         val dialog = newDialog(activity)
         val box = box(activity, title)
-        val keyboard = if (password) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else inputType
+        val keyboard = (if (password) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else inputType) or
+            (if (unlearned) InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS else 0)
+        val noLearning = if (unlearned && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0
         val input = EditText(activity).apply {
             setText(initial)
             setSelection(initial.length)
@@ -166,7 +171,7 @@ object FireDialog {
             setHintTextColor(ContextCompat.getColor(activity, R.color.text_muted))
             typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            imeOptions = EditorInfo.IME_ACTION_DONE
+            imeOptions = EditorInfo.IME_ACTION_DONE or noLearning
             this.inputType = keyboard
         }
         box.addView(input, rows.listParams(top = 2, bottom = 8))

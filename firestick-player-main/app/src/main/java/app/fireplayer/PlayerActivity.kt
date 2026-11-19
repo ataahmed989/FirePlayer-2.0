@@ -1115,6 +1115,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (frozeOut) freezeWatch.reset()
         frozeOut = false
         freezeWatch.jumped()
+        // A rebuilt player's first load (back from Home, sound decoded here) isn't a stage-4 stall either.
+        source?.jumped()
         cannotOpen = false
         previewCutOffs = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
@@ -2382,7 +2384,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updateSkip()
             updatePostPlay()
             noteWhilePlaying()
-            source?.let { s -> player?.takeIf { it.duration != C.TIME_UNSET }?.let { s.nearEnd(it.currentPosition, it.duration) } }
+            source?.let { s ->
+                player?.takeIf { it.duration != C.TIME_UNSET }?.let { s.nearEnd(it.currentPosition, it.duration) }
+                // Stage 4: a stall that goes on is judged while it lasts.
+                s.tick()
+            }
             checkFreeze()
             tellDamageSkip()
             // The pods' data rates firm up as the film loads.
@@ -5305,7 +5311,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** What a source's video is kept by: the film or episode and its release, never the link. */
     private fun vodKey(r: PlayRequest, ready: Opened.Ready): String {
-        val rel = ready.source.release
+        val rel = ready.offer.release ?: ready.source.release
         return "vod|${r.target.streamId}|" + (rel?.let { "${it.infoHash}|${it.fileIdx ?: -1}" } ?: ready.offer.addon.name.lowercase(Locale.ROOT))
     }
 
@@ -5322,7 +5328,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (isFinishing || isDestroyed) return
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily).
-            ready.source.release?.let { copyKeys[uri.toString()] = it.storeKey }
+            (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.storeKey }
             errorBox.visibility = View.GONE
             cannotOpen = false
             bufferingInfo.visibility = View.GONE
@@ -5342,10 +5348,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer()
         }
 
-        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>) {
+        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
             if (isFinishing) return
             if (panel.isOpen) panel.close()
-            FireDialog.ask(this@PlayerActivity, question, choices)
+            FireDialog.ask(this@PlayerActivity, question, choices, onDismiss = onDismiss)
         }
 
         override fun stopWith(message: String) {

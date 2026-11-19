@@ -423,6 +423,82 @@ class EngineTest {
     }
 
     @Test
+    fun aFailureWhileTheOtherAddonsSourcesAreRankedDoesntMakeAnEmptyCompleteList() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, name = "Film.1080p.WEB-DL.x264-B")) }
+        answers[Addon.MEDIAFUSION] = { throw IOException("down") }
+        val got = lists(why = LookupWhy.PLAY)
+        loop.advance()
+        assertTrue(got.none { it.complete && it.sources.isEmpty() })
+        assertTrue(got.last().complete)
+        assertEquals(2, got.last().sources.size)
+    }
+
+    @Test
+    fun aReadyRowsOfferNotOnRealDebridIsNeverOpenedByItself() {
+        // The same file: ready on Torrentio, "⏳" on MediaFusion. Torrentio is down: MediaFusion's link isn't tried.
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H1, ready = false)) }
+        hops[H1] = LinkCheck.Answer(502, null, null)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val got = open(session)
+        assertEquals(listOf(H1), checked)
+        assertFalse(got.last() is Opened.Ready)
+    }
+
+    @Test
+    fun aMergedRowRecordsTheFileThatPlayedAndResumesOnIt() {
+        // Two uploads of one release (same name and size): the row is H1's, but only H2 is on Real-Debrid.
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1, ready = false), torrentio(H2)) }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(ReleaseKey(H1, 0), ready.source.release)
+        assertEquals(ReleaseKey(H2, 0), ready.offer.release)
+        assertEquals(listOf(H2), checked)
+        session.started(ready.source, ready.offer)
+        assertEquals(ReleaseKey(H2, 0), recorded.single().release)
+        // Continue: the same file, from where it was.
+        val again = engine.session(
+            PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.CONTINUE_CARD, preferred = recorded.single()),
+        )
+        val resumed = open(again).last() as Opened.Ready
+        assertEquals(ReleaseKey(H2, 0), resumed.offer.release)
+        assertEquals(600_000L, resumed.startMs)
+        assertFalse(resumed.resumedNear)
+    }
+
+    @Test
+    fun aResumeWhoseFileLeftRealDebridPlaysTheClosestReadyOneWithoutAsking() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1, ready = false), torrentio(H2, quality = "1080p", name = "Film.1080p.WEB-DL.x264-B", size = "8 GB")) }
+        links.remove(Addon.MEDIAFUSION)
+        val preferred = LastRelease(Addon.TORRENTIO, ReleaseKey(H1, 0), 1L)
+        val session = engine.session(
+            PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.CONTINUE_CARD, preferred = preferred),
+        )
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(ReleaseKey(H2, 0), ready.source.release)
+        assertTrue(ready.resumedNear)
+        assertEquals(595_000L, ready.startMs)
+    }
+
+    @Test
+    fun anExpiredLinkIsAskedForAgainWithoutUsingASwitch() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, name = "Film.1080p.WEB-DL.x264-B")) }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val ready = open(session).last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        assertEquals(Step.Refresh, session.failed(ready.source, session.failureOf(2004, 403)))
+        val asks = asked.size
+        val got = ArrayList<Opened>()
+        session.refresh(ready.source, Addon.TORRENTIO) { got += it }
+        loop.advance()
+        assertEquals(asks + 1, asked.size)
+        assertEquals(ready.source.key, (got.last() as Opened.Ready).source.key)
+        assertTrue(session.maySwitch(loop.now))
+    }
+
+    @Test
     fun noAddonsSaysWhere() {
         links.clear()
         val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))

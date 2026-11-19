@@ -122,7 +122,7 @@ class IntegratedPlayTest {
             readies += ready
             starts += Triple(ready.source.release, startMs, switching)
         }
-        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>) = Unit
+        override fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) = Unit
         override fun stopWith(message: String) {
             stops += message
         }

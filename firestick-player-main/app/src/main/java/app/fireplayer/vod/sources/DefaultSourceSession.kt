@@ -76,6 +76,8 @@ internal class DefaultSourceSession(
     private val decoded = HashSet<String>()
     private val visited = LinkedHashSet<String>()
     private val fetchAgreed = HashSet<String>()
+    /** The offer last tried for each source (by key): its own file is the one skipped when it fails. */
+    private val triedOffer = HashMap<String, Offer>()
     private val unknownBy = EnumMap<Addon, MutableSet<String>>(Addon::class.java)
     private val ops = ArrayList<Op>()
 
@@ -145,6 +147,21 @@ internal class DefaultSourceSession(
         return op
     }
 
+    override fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel {
+        val op = Op(onOpened)
+        ops += op
+        val from = addon ?: triedOffer[source.key]?.addon ?: source.offers.firstOrNull()?.addon
+        when {
+            closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
+            from == null -> {
+                skip(source, hash = false)
+                pick(op, OpenWhy.FAILED)
+            }
+            else -> refresh(op, source, from, OpenWhy.FAILED, near = startedOnce)
+        }
+        return op
+    }
+
     override fun started(source: PlaybackSource, offer: Offer) {
         startedOnce = true
         firstPick = false
@@ -152,7 +169,8 @@ internal class DefaultSourceSession(
         playingOffer = offer
         visited += source.key
         tries += Attempt(source, repo.wall(), currentWhy, null)
-        source.release?.let { release ->
+        // The file that played: a merged row's offer can be another re-upload than the row's first.
+        releaseOf(source, offer)?.let { release ->
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
         }
         val now = repo.elapsed()
@@ -214,7 +232,7 @@ internal class DefaultSourceSession(
         }
         FailureKind.ADDON_DOWN, FailureKind.CONFIG -> {
             downAddons += f.addon ?: source.offers.firstOrNull()?.addon ?: Addon.MEDIAFUSION
-            if (source.offers.none { it.addon !in downAddons }) skip(source, hash = false)
+            if (source.offers.none { openable(source, it) }) skip(source, hash = false)
             Step.TryNext
         }
         FailureKind.JUST_ADDED -> if (retried.add("j|${source.key}")) Step.Retry(JUST_ADDED_WAIT_MS) else {
@@ -245,8 +263,15 @@ internal class DefaultSourceSession(
 
     private fun skip(source: PlaybackSource, hash: Boolean) {
         skipped += source.key
-        if (hash) source.release?.let { skippedHashes += it.infoHash }
+        if (hash) (triedOffer[source.key]?.let { releaseOf(source, it) } ?: source.release)?.let { skippedHashes += it.infoHash }
     }
+
+    /** The file [o] opens: its own, else its row's. */
+    private fun releaseOf(s: PlaybackSource, o: Offer) = o.release ?: s.release
+
+    /** [o] may be opened: its add-on isn't down, and it's on Real-Debrid unless the user agreed to fetch [s] (§6.5). */
+    private fun openable(s: PlaybackSource, o: Offer): Boolean =
+        o.addon !in downAddons && (o.readiness != Readiness.NOT_READY || s.key in fetchAgreed)
 
     private fun formatKey(s: PlaybackSource) = "${s.facts.codec}|${Hdr.DOLBY_VISION in s.facts.hdr}"
 
@@ -309,17 +334,18 @@ internal class DefaultSourceSession(
 
     private fun blankList() = SourceList(target, Addon.entries.associateWith { AddonState.NotAsked }, emptyList(), null)
 
+    /** The row holding the release played last, while it plays without asking (on Real-Debrid, not skipped). */
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
         val row = repo.rowKeyOf(target, p.release)
-        return l?.sources?.firstOrNull { (it.release == p.release || it.key == row) && usable(it) }
+        return l?.sources?.firstOrNull { (it.release == p.release || it.key == row) && it.automatic && usable(it) }
     }
 
     // ---- Picking ----
 
     private fun usable(s: PlaybackSource): Boolean =
         s.key !in skipped && (s.release?.infoHash?.let { it !in skippedHashes } ?: true) &&
-            s.offers.any { it.addon !in downAddons } && formatKey(s) !in badFormats
+            s.offers.any { openable(s, it) } && formatKey(s) !in badFormats
 
     private fun pick(op: Op, why: OpenWhy) {
         if (!op.live) return
@@ -364,9 +390,16 @@ internal class DefaultSourceSession(
                 if (usable(fresh)) return fresh to false
             }
             request.preferred?.let { p ->
-                findPreferred(l)?.let { return preferAddon(it, p.addon) to false }
-                // Gone: the closest match, "Resumed near …".
                 val near = request.start is StartAt.At
+                findPreferred(l)?.let { row ->
+                    // The same file first, then its add-on; another re-upload in the row is only "near".
+                    val ordered = row.copy(offers = row.offers.sortedWith(
+                        compareBy({ if (releaseOf(row, it) == p.release) 0 else 1 }, { if (it.addon == p.addon) 0 else 1 }),
+                    ))
+                    val same = ordered.offers.firstOrNull { openable(ordered, it) }?.let { releaseOf(ordered, it) == p.release } == true
+                    return ordered to (near && !same)
+                }
+                // Gone, or no longer on Real-Debrid: the closest ready match, "Resumed near …".
                 val sameAddon = auto.firstOrNull { p.addon in it.addons }
                 return (sameAddon ?: auto.firstOrNull()) to near
             }
@@ -414,14 +447,16 @@ internal class DefaultSourceSession(
             return
         }
         if (countTry) {
-            if (startedOnce && (why == OpenWhy.STALLS || why == OpenWhy.FAILED)) {
+            // A switch is another file; the same one again (a refreshed link) isn't.
+            if (startedOnce && (why == OpenWhy.STALLS || why == OpenWhy.FAILED) && source.key != playing?.key) {
                 switches++
                 lastSwitchAt = repo.elapsed()
             }
             if (!startedOnce && why != OpenWhy.USER) startTries++
         }
         currentWhy = why
-        val offers = source.offers.filter { it.addon !in downAddons }
+        // An offer not on Real-Debrid is never opened without asking, even in a row that is ready (§6.5).
+        val offers = source.offers.filter { openable(source, it) }
         if (offers.isEmpty()) {
             skip(source, hash = false)
             pick(op, OpenWhy.FAILED)
@@ -433,6 +468,7 @@ internal class DefaultSourceSession(
 
     private fun tryOffer(op: Op, source: PlaybackSource, offers: List<Offer>, i: Int, why: OpenWhy, near: Boolean) {
         val offer = offers[i]
+        triedOffer[source.key] = offer
         val handle = CallHandle()
         op.handle = handle
         val confirmed = source.measured?.spec != null

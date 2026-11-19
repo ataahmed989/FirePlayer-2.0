@@ -67,9 +67,10 @@ object SourceMerge {
 
     private fun build(row: Row, runtimeMin: Int?): PlaybackSource {
         val items = row.items
-        // One offer per add-on: the first one marked ready, else the first.
+        // One offer per add-on: the first one marked ready, else the first; it carries its own file (×N re-uploads).
         val offers = items.groupBy { it.offer.addon }.map { (_, list) ->
-            (list.firstOrNull { it.offer.readiness == Readiness.PROBABLY_READY } ?: list.first()).offer
+            val item = list.firstOrNull { it.offer.readiness == Readiness.PROBABLY_READY } ?: list.first()
+            item.offer.copy(release = item.release ?: item.offer.release)
         }.sortedWith(compareBy<Offer>({ readyOrder(it.readiness) }, { it.addon.ordinal }))
         val readiness = when {
             items.any { it.offer.readiness == Readiness.PROBABLY_READY } -> Readiness.PROBABLY_READY

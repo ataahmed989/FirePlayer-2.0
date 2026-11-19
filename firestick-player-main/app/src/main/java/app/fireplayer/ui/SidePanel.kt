@@ -731,12 +731,12 @@ class SidePanel(private val activity: Activity) {
             if (notes.isNotEmpty()) addView(FactsText(activity, notes.split(" · ")).apply {
                 typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
                 setTextColor(rows.textColors)
-                alpha = 0.72f
+                alpha = Rows.NOTE_ALPHA
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, Rows.NOTE_SP)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = rows.dp(2) }
+                    .apply { topMargin = rows.dp(Rows.NOTE_GAP_DP) }
             })
         }
         row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1082,8 +1082,10 @@ class SidePanel(private val activity: Activity) {
             password: Boolean = false,
             inputType: Int = InputType.TYPE_CLASS_TEXT,
             hint: String? = null,
+            /** A secret typed in the open (an add-on link with a key): the keyboard neither suggests nor learns it. */
+            unlearned: Boolean = false,
             onDone: (String) -> Unit,
-        ) = FireDialog.prompt(activity, title, initial, password, inputType, hint, onDone)
+        ) = FireDialog.prompt(activity, title, initial, password, inputType, hint, unlearned, onDone)
     }
 }
 

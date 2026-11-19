@@ -103,13 +103,40 @@ class WallpaperView(context: Context) : View(context) {
         if (w > 0 && h > 0 && picture == null) load(w, h)
     }
 
-    private fun load(w: Int, h: Int) {
+    /** Film mode (design-brief §6.6): the screen-sized picture leaves memory while the screen is covered; [restore]. */
+    fun release() {
+        // A load under way doesn't bring it back.
+        loadSerial++
+        loading = false
+        picture = null
+    }
+
+    /**
+     * Back on screen: the picture loads again, unless a load is under way. The glass made from it is still in use, so
+     * it is made again only when a load that would have made it was dropped.
+     */
+    fun restore() {
+        if (picture == null && !loading && width > 0 && height > 0) load(width, height, glassToo = glassOwed)
+    }
+
+    /** A load under way (its answer not in yet). */
+    private var loading = false
+    /** A load that was to make the glass didn't deliver it (dropped by [release]). */
+    private var glassOwed = false
+
+    private fun load(w: Int, h: Int, glassToo: Boolean = true) {
         val res = resources
         val density = res.displayMetrics.density
         val glassLook = glassLook
         val serial = ++loadSerial
+        loading = true
+        if (glassToo) glassOwed = true
         worker.execute {
-            val decoded = BitmapFactory.decodeResource(res, if (glassLook) R.drawable.wallpaper_glass else R.drawable.wallpaper_classic) ?: return@execute
+            val decoded = BitmapFactory.decodeResource(res, if (glassLook) R.drawable.wallpaper_glass else R.drawable.wallpaper_classic)
+            if (decoded == null) {
+                main.post { if (serial == loadSerial) loading = false }
+                return@execute
+            }
             // Centre-cropped to the screen once, so drawing is a plain copy.
             val scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val sx = w.toFloat() / decoded.width
@@ -120,9 +147,11 @@ class WallpaperView(context: Context) : View(context) {
             Canvas(scaled).drawBitmap(decoded, null, RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), Paint(Paint.FILTER_BITMAP_FLAG))
             decoded.recycle()
             // Only the glass look shows blurred wallpaper.
-            val glass = if (glassLook) StillGlass.from(scaled, w, h, density) else null
+            val glass = if (glassLook && glassToo) StillGlass.from(scaled, w, h, density) else null
             main.post {
                 if (serial != loadSerial) return@post
+                loading = false
+                if (glassToo) glassOwed = false
                 picture = scaled
                 invalidate()
                 glass?.let { onReady?.invoke(it) }

@@ -164,6 +164,14 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
         return Cancel { if (pending === onOpened) pending = null }
     }
 
+    val refreshed = ArrayList<PlaybackSource>()
+
+    override fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel {
+        refreshed += source
+        pending = onOpened
+        return Cancel { if (pending === onOpened) pending = null }
+    }
+
     /** The last open's answer. */
     fun answer(o: Opened) = pending?.invoke(o)
 
