@@ -36,7 +36,8 @@ object Buttons {
 
     /**
      * A pill's sizes, dp, and its words' style. [primary]: the page's main action (Play on a title's page), which reads
-     * as the main one before it has focus too ([ActionPill.primary]).
+     * as the main one before it has focus too ([ActionPill.primary]). [progressSide]: how far the progress line stays
+     * from the pill's ends (a pill with round ends keeps it in its straight part); unset, the pill's padding.
      */
     class PillSpec(
         val height: Float,
@@ -47,6 +48,7 @@ object Buttons {
         val progressH: Float = 0f,
         val progressBottom: Float = 0f,
         val primary: Boolean = false,
+        val progressSide: Float = -1f,
     )
 
     // The main action's pill in the glass look, while it isn't focused: the same glass with a faint light inside it and
@@ -192,10 +194,13 @@ object Buttons {
             super.dispatchDraw(canvas)
             val p = progress ?: return
             if (spec.progressH <= 0f) return
-            val side = paddingLeft.toFloat()
+            val set = spec.progressSide >= 0f
+            val left = if (set) t.dpf(spec.progressSide) else paddingLeft.toFloat()
+            val right = width - if (set) t.dpf(spec.progressSide) else paddingRight.toFloat()
+            if (right <= left) return
             val h = t.dpf(spec.progressH)
             val bottom = height - t.dpf(spec.progressBottom)
-            line.set(side, bottom - h, width - paddingRight.toFloat(), bottom)
+            line.set(left, bottom - h, right, bottom)
             val r = h / 2f
             trackPaint.color = if (isFocused) t.buttonTrackFocused else t.buttonTrack
             canvas.drawRoundRect(line, r, r, trackPaint)

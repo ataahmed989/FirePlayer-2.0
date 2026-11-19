@@ -54,6 +54,7 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
         progressH = VodSizes.PILL_PROGRESS_H,
         progressBottom = VodSizes.PILL_PROGRESS_BOTTOM,
         primary = primary,
+        progressSide = VodSizes.PILL_PROGRESS_SIDE,
     )
 
     val play = pill(primary = true)

@@ -157,12 +157,14 @@ class VodSizesTitleTest {
         // them; both inside the column.
         assertTrue(2 * VodSizes.BUTTON_H + VodSizes.BUTTON_GAP <= VodSizes.ACTIONS_W)
         assertTrue(VodSizes.CIRCLE_ICON < VodSizes.BUTTON_H && VodSizes.BUTTON_ICON < VodSizes.BUTTON.lineSp)
-        // A resuming pill's progress line sits inside the pill's round ends (at its height the pill is [cut] narrower
-        // at each end than at its middle) and clear of the words above it (a 13 sp line centred in the pill).
+        // A resuming pill's progress line runs along the pill's straight part (its ends are round, half its height in
+        // radius), well inside the curve at its height (the pill is [cut] narrower there at each end than at its
+        // middle), and clear of the words above it (a 13 sp line centred in the pill).
         val r = VodSizes.BUTTON_H / 2f
         val below = r - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H / 2f
         val cut = r - kotlin.math.sqrt(r * r - below * below)
-        assertTrue(cut + 4f < VodSizes.ACTIONS_PAD)
+        assertTrue(VodSizes.PILL_PROGRESS_SIDE >= r && cut + 12f < VodSizes.PILL_PROGRESS_SIDE)
+        assertTrue(VodSizes.ACTIONS_W - 2 * VodSizes.PILL_PROGRESS_SIDE >= 0.75f * VodSizes.ACTIONS_W)
         assertTrue(r + VodSizes.BUTTON.lineSp / 2f + 2f <= VodSizes.BUTTON_H - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H)
     }
 
