@@ -55,6 +55,14 @@ internal object PatchMath {
 
     /** The whole pixel nearest [v]: a patch's edges sit on pixels, so its hairline is one crisp pixel. */
     fun snap(v: Float): Int = Math.round(v)
+
+    /**
+     * The pixel height of a patch asked to be [size] px tall when one [baked] px tall is already drawn (0: none): the
+     * drawn one while it's within half a pixel, so a size that sits right on a half pixel (and wobbles either side of
+     * it as the rows move) never has the patch drawn again frame after frame.
+     */
+    fun height(size: Float, baked: Int): Int =
+        if (baked > 0 && Math.abs(size - baked) <= 0.51f) baked else snap(size)
 }
 
 /**
@@ -87,10 +95,11 @@ internal class GlassPatch(
         val x1 = PatchMath.snap(r)
         val y0 = PatchMath.snap(t)
         // The height from the size, not from both edges: it stays the same pixel count while the patch moves.
-        val h = PatchMath.snap(b - t)
+        val baked = bitmap
+        val h = PatchMath.height(b - t, baked?.height ?: 0)
         val w = x1 - x0
         if (w <= 0 || h <= 0) return
-        val bmp = bitmap?.takeIf { it.height == h } ?: bake(h)
+        val bmp = if (baked != null && baked.height == h) baked else bake(h)
         if (!PatchMath.fits(w, cap)) {
             // A sliver (a programme of a few minutes): no room for the ends, so the fill alone.
             box.set(x0.toFloat(), y0.toFloat(), x1.toFloat(), (y0 + h).toFloat())

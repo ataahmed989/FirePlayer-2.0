@@ -42,6 +42,18 @@ class GlassPatchTest {
         assertEquals(58, PatchMath.snap(57.6f))
     }
 
+    @Test fun aPatchIsNotDrawnAgainForAHeightThatWobblesAboutHalfAPixel() {
+        // Nothing drawn yet: the nearest pixel.
+        assertEquals(58, PatchMath.height(57.6f, 0))
+        // 57.5 px (a 3 dp gap at 1.5 px per dp) comes out a hair either side as the rows move: the drawn one stays.
+        assertEquals(58, PatchMath.height(57.49999f, 58))
+        assertEquals(58, PatchMath.height(57.50001f, 58))
+        assertEquals(57, PatchMath.height(57.50001f, 57))
+        // A real change of size (the rows laid out again) is drawn again.
+        assertEquals(64, PatchMath.height(64f, 58))
+        assertEquals(57, PatchMath.height(56.9f, 58))
+    }
+
     @Test fun cellsAreTheSharedRowGlassWithTheSharedHairline() {
         assertEquals(GlassStyle.ROW_FILL, PatchLook.CELL.fill)
         assertEquals(1, PatchLook.CELL.coats)

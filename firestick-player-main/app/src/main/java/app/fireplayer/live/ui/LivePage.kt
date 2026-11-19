@@ -419,6 +419,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         Glass.background(emptyButton, Glass.Kind.PILL)
         popup.applyLook()
         guide.glass = Glass.on
+        // Its tile is the look's (glass tile or classic plate): drawn again.
+        detailLogo.invalidate()
         if (film) host.setFilmGlass(true)
         controls.applyLook()
         if (placeholder == true) { placeholder = null; showSlotPlaceholder(true) }
