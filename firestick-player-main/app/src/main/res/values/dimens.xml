@@ -12,7 +12,7 @@
          TV's full-screen controls (LogoBadge; the rest of its look is in Tokens). -->
     <dimen name="player_main_button">51dp</dimen>
     <dimen name="player_main_button_pad">13dp</dimen>
-    <dimen name="player_pill_min_width">98dp</dimen>
+    <dimen name="player_pill_min_width">94dp</dimen>
     <dimen name="logo_badge_height">46dp</dimen>
 
     <!-- The classic look's corners (res/drawable/bg_*.xml), also read by Glass.cornerRadius for a picture drawn to

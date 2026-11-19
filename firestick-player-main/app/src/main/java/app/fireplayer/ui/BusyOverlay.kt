@@ -101,6 +101,9 @@ class BusyOverlay(context: Context, t: Tokens) : FrameLayout(context) {
     }
     private var placed = false
     private var busy = false
+    private var cx = 0f
+    private var cy = 0f
+    private var fullness = 0f
 
     init {
         isFocusable = false
@@ -124,13 +127,20 @@ class BusyOverlay(context: Context, t: Tokens) : FrameLayout(context) {
      * picture is (0 a miniature, 1 full screen, between while it moves).
      */
     fun place(cx: Float, cy: Float, fullness: Float) {
+        this.cx = cx
+        this.cy = cy
+        this.fullness = fullness
+        // While it's hidden (nearly always) a moving picture costs it nothing: it's put in place as it shows.
+        if (!placed) { placed = true; apply() } else if (visibility == VISIBLE) move()
+    }
+
+    private fun move() {
         translationX = cx - boxW / 2f
         translationY = cy - boxH / 2f
         val s = Tokens.SPINNER_MINI_SCALE + (1f - Tokens.SPINNER_MINI_SCALE) * fullness.coerceIn(0f, 1f)
         spinner.scaleX = s
         spinner.scaleY = s
         label.translationY = -(1f - s) * spinnerHalf
-        if (!placed) { placed = true; apply() }
     }
 
     /** There's no picture to be over. */
@@ -150,6 +160,7 @@ class BusyOverlay(context: Context, t: Tokens) : FrameLayout(context) {
 
     private fun apply() {
         val on = placed && busy
+        if (on) move()
         visibility = if (on) VISIBLE else GONE
         spinner.spinning = on
     }
