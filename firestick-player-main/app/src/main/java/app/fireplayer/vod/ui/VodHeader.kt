@@ -73,6 +73,15 @@ class VodHeader(
     private val art = HeaderArt(context, HeaderArt.ArtSpec.BANNER).apply { if (!whole) leftFade = VodSizes.BANNER_FADE_LEFT_TO }
     private val shade = Shade(context)
 
+    /**
+     * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade]):
+     * the see-through panel there would meet that colour in a faint line where the box begins. It reaches two corners'
+     * width under the box, so it's whole behind the picture's own rounded corners.
+     */
+    private val backing = RectF()
+    private val backingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = GlassStyle.WINDOW_SOLID }
+    private var backingRadius = 0f
+
     /** Fades as one without an offscreen layer: its texts don't overlap. */
     private val words = object : LinearLayout(context) {
         override fun hasOverlappingRendering() = false
@@ -106,6 +115,7 @@ class VodHeader(
 
     init {
         clipChildren = true
+        setWillNotDraw(false)
         addView(art)
         addView(shade)
         val shadow = t.dpf(VodSizes.HEADER_TEXT_SHADOW)
@@ -155,10 +165,20 @@ class VodHeader(
         art.radius = r
         shade.radius = r
         val h = t.dp(heightDp) - 2 * inset
-        place(art, t.dp(VodSizes.backdropW(cardW)) - (if (whole) 2 else 1) * inset, h, inset)
+        val artW = t.dp(VodSizes.backdropW(cardW)) - (if (whole) 2 else 1) * inset
+        place(art, artW, h, inset)
         place(shade, t.dp(cardW) - 2 * inset, h, inset)
+        backingRadius = r
+        if (whole) backing.setEmpty()
+        else backing.set(inset.toFloat(), inset.toFloat(), t.dp(cardW) - inset - artW + 2 * r, (inset + h).toFloat())
+        invalidate()
         watch.applyLook()
         details.applyLook()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (!backing.isEmpty) canvas.drawRoundRect(backing, backingRadius, backingRadius, backingPaint)
     }
 
     /** [v] at the card's right, [inset] inside its top and right edges; laid out again only when that changes. */
@@ -415,7 +435,7 @@ class VodHeader(
 
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             box.set(0f, 0f, w.toFloat(), h.toFloat())
-            val rgb = GlassStyle.WINDOW_TINT and 0x00FFFFFF
+            val rgb = GlassStyle.WINDOW_SOLID and 0x00FFFFFF
             across.shader = LinearGradient(
                 0f, 0f, w.toFloat(), 0f,
                 IntArray(VodSizes.HEADER_SHADE_ALPHAS.size) { (VodSizes.HEADER_SHADE_ALPHAS[it] shl 24) or rgb }, null, Shader.TileMode.CLAMP,
