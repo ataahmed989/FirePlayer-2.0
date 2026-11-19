@@ -1,5 +1,6 @@
 package app.fireplayer.shell
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -99,10 +100,11 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     /** The rail's width collapsed: what the pages beside it leave free ([WIDTH_DP]). */
     val collapsedWidth = t.dp(WIDTH_DP)
     /**
-     * The view's own width, always: the widened rail's. Collapsed, the part right of the icons is empty and lets the
-     * page show (and a touch through).
+     * The view's own width, always: the widened rail's, and room for its window's shadow beside it. So everything the
+     * rail draws lies inside its view, and a frame of its motion redraws that part of the screen and no more.
+     * Collapsed, the part right of the icons is empty and lets the page show (and a touch through).
      */
-    val viewWidth = t.dp(EXPANDED_DP)
+    val viewWidth = t.dp(EXPANDED_DP) + GlassBakes.pad(Glass.Kind.POPUP, false, t.density, calm = true)
     private val tabWidth = collapsedWidth - 2 * t.dp(SIDE_DP)
 
     // ---- The two motions (0 to 1 each), stepped once a frame while either runs --------------------------------------
@@ -154,8 +156,9 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
-        // Laid out once, as the widened strip's tabs lie: SIDE_DP from the view's edges. Every other state is drawn.
-        setPadding(t.dp(SIDE_DP), t.dp(22), t.dp(SIDE_DP), t.dp(22))
+        // Laid out once, as the widened strip's tabs lie: SIDE_DP from the widened rail's edges. Every other state is
+        // drawn.
+        setPadding(t.dp(SIDE_DP), t.dp(22), viewWidth - t.dp(EXPANDED_DP) + t.dp(SIDE_DP), t.dp(22))
 
         val brand = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -334,15 +337,18 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     /**
      * Something is to move (a motion was aimed, focus moved between tabs): frames are stepped until all of it has
      * arrived. The first step is taken in the next frame, the one the change that started it is drawn in, so the rail
-     * moves in step with the page changing. Out of sight nothing moves: it is all simply there.
+     * moves in step with the page changing. Out of sight nothing moves: it is all simply there (as it is with the
+     * TV's animations switched off).
      */
     private fun wake() {
         if (ticking) return
-        if (!isLaidOut || !isShown) return settle()
+        if (!isLaidOut || !isShown || !motionOn()) return settle()
         ticking = true
         firstFrame = true
         Choreographer.getInstance().postFrameCallback(frame)
     }
+
+    private fun motionOn() = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled()
 
     private fun onFrame(nanos: Long) {
         // Time is taken a frame at a time and never more than two frames at once ([RailShape.stepMs]): after a slow
@@ -521,7 +527,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
         private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
         private var lineAlpha = 0
-        private val rule = Paint()
+        private val rule = Paint(Paint.ANTI_ALIAS_FLAG)
         private var ruleAlpha = 0
         private val ruleWidth = t.dpf(1f)
 
@@ -534,8 +540,8 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         private var shade: Bitmap? = null
         private var shadePad = 0
         private var shadeCorner = 0
-        private val from = Rect()
-        private val to = RectF()
+        private val src = Rect()
+        private val dst = RectF()
 
         // The blurred page behind the widened rail. The page's picture is PageGlass's, which works for glass it knows
         // ([watcher], never drawn): this draws its picture at the rail's shape of the moment.
@@ -778,9 +784,9 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         }
 
         private fun piece(canvas: Canvas, bitmap: Bitmap, sl: Int, st: Int, sr: Int, sb: Int, dl: Float, dt: Float, dr: Float, db: Float) {
-            from.set(sl, st, sr, sb)
-            to.set(dl, dt, dr, db)
-            canvas.drawBitmap(bitmap, from, to, shadePaint)
+            src.set(sl, st, sr, sb)
+            dst.set(dl, dt, dr, db)
+            canvas.drawBitmap(bitmap, src, dst, shadePaint)
         }
 
         /**
