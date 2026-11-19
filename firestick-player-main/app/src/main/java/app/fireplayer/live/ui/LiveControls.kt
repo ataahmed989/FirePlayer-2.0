@@ -30,6 +30,7 @@ import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -38,7 +39,7 @@ import kotlin.math.roundToInt
  * players read as one: the same top block, pods (and the same Settings › Look › Info pods choices), time line, round
  * buttons and pills, and names that appear under a button only while it's selected.
  *
- * Left: TV Guide and Channel History. While the channel is paused or behind live, Play/Pause and Go live come first
+ * Left: TV Guide and Channel History, main controls the size of the VOD player's Play. While the channel is paused or behind live, Play/Pause and Go live come first
  * and push them along. Right: Captions and Favorite. Down swaps them for the extra row under the chevron, as the VOD
  * player's icon row: Multiview and External PiP (dimmed: not built yet), Audio, Audio delay, Display size, Screen
  * dimmer, Sleep timer and Settings, each with its value under it. Up brings the buttons back.
@@ -69,8 +70,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     private val bottom: View = findViewById(R.id.live_bottom)
     private val scrimTop: View = findViewById(R.id.live_scrim_top)
     private val scrimBottom: View = findViewById(R.id.live_scrim_bottom)
-    private val logo: LogoView = findViewById(R.id.live_logo)
-    private val logoDivider: View = findViewById(R.id.live_logo_divider)
+    private val logo: LogoBadge = findViewById(R.id.live_logo)
     private val channelName: TextView = findViewById(R.id.live_channel)
     private val title: TextView = findViewById(R.id.live_title)
     private val schedule: TextView = findViewById(R.id.live_schedule)
@@ -84,7 +84,6 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     private val chipSource: TextView = findViewById(R.id.live_chip_source)
     private val startTime: TextView = findViewById(R.id.live_start)
     private val endTime: TextView = findViewById(R.id.live_end)
-    private val noGuide: TextView = findViewById(R.id.live_no_guide)
     private val line: ProgrammeLine = findViewById(R.id.live_line)
 
     private val btnPlay: ImageButton = findViewById(R.id.live_btn_play)
@@ -119,6 +118,9 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
 
     private var playlistName = ""
     private var programme: Programme? = null
+    /** With no programme on: the stretch of time the line stands for ([ProgrammeSlot]), and the next programme's start. */
+    private var slot: ProgrammeSlot.Span? = null
+    private var nextStart: Long? = null
 
     init {
         isFocusable = false
@@ -201,10 +203,9 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     fun setChannel(channel: Channel, now: Programme?, nextUp: Programme?, playlistName: String, channelLogo: Logo?, clockNow: Long) {
         val tf = DateFormat.getTimeFormat(context)
         channelName.text = channel.name
-        // On its plate, as in the guide (a dark logo shows on the dark picture's scrim too).
+        // Large, on a plate of its own beside the channel's lines (a dark logo shows over a dark picture too).
         logo.set(channelLogo)
         logo.visibility = if (channelLogo != null) VISIBLE else GONE
-        logoDivider.visibility = logo.visibility
         title.text = now?.title?.takeIf { it.isNotBlank() } ?: channel.name
         schedule.text = if (now != null) "${tf.format(Date(now.start))} – ${tf.format(Date(now.stop))}" else ""
         schedule.visibility = if (now != null) VISIBLE else GONE
@@ -214,21 +215,33 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         val favText = if (channel.favorite) "Remove from Favorites" else "Add to Favorites"
         btnFavorite.contentDescription = favText
         this.playlistName = playlistName
-        setProgramme(now, clockNow)
+        setProgramme(now, nextUp?.start, clockNow)
         tick(clockNow)
     }
 
-    private fun setProgramme(p: Programme?, now: Long) {
+    /**
+     * The line: [p]'s progress, or with no programme on the whole line dulled, standing for the half hour the clock
+     * is in (or up to [nextStart] when the next programme starts sooner), and saying so beside it.
+     */
+    private fun setProgramme(p: Programme?, nextStart: Long?, now: Long) {
         programme = p
-        val has = p != null
-        startTime.visibility = if (has) VISIBLE else GONE
-        endTime.visibility = if (has) VISIBLE else GONE
-        line.visibility = if (has) VISIBLE else GONE
-        noGuide.visibility = if (has) GONE else VISIBLE
+        this.nextStart = nextStart
+        line.dulled = p == null
         if (p != null) {
+            slot = null
             startTime.text = DateFormat.getTimeFormat(context).format(Date(p.start))
             updateEnd(p, now)
+        } else {
+            showSlot(now)
         }
+    }
+
+    private fun showSlot(now: Long) {
+        val s = ProgrammeSlot.of(now, nextStart, TimeZone.getDefault().getOffset(now))
+        slot = s
+        val tf = DateFormat.getTimeFormat(context)
+        startTime.text = tf.format(Date(s.start))
+        endTime.text = tf.format(Date(s.end)) + " · " + NO_PROGRAMME
     }
 
     private fun updateEnd(p: Programme, now: Long) {
@@ -237,10 +250,21 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         line.fraction = ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f)
     }
 
-    /** Clock and tracker, every few seconds while shown. */
-    fun tick(now: Long) {
+    /**
+     * Clock and tracker, every few seconds while shown. True when what the line stands for is over (the programme
+     * ended, or the half hour with none did): the page then looks up what's on now.
+     */
+    fun tick(now: Long): Boolean {
         clock.text = DateFormat.format("EEE, MMM d", now).toString() + " · " + DateFormat.getTimeFormat(context).format(Date(now))
-        programme?.let { updateEnd(it, now) }
+        val p = programme
+        if (p != null) {
+            updateEnd(p, now)
+            return now >= p.stop
+        }
+        val s = slot ?: return false
+        if (now < s.end) return false
+        showSlot(now)
+        return true
     }
 
     /** Pods as the VOD player writes them, each hidden when turned off in Settings › Look › Info pods. */
@@ -415,6 +439,8 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         private const val MORE_GROW = 1.06f
         /** A button that can't be used yet, as a disabled settings row. */
         private const val DIMMED = 0.38f
+        /** Beside the line while the channel has no programme on. */
+        const val NO_PROGRAMME = "No programme information"
 
         // The extra row's buttons, in order.
         const val MULTIVIEW = "multiview"
@@ -428,10 +454,15 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     }
 }
 
-/** The thin blue programme progress line (VOD time line's 4dp track): drawn only, never focused or seekable. */
+/**
+ * The thin blue programme progress line (VOD time line's 4dp track): drawn only, never focused or seekable. With no
+ * programme to show the progress of it's [dulled]: the same blue the whole way, at [Tokens.NO_PROGRAMME_LINE_ALPHA].
+ */
 class ProgrammeLine @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
     var fraction = 0f
-        set(v) { field = v; invalidate() }
+        set(v) { if (field == v) return; field = v; invalidate() }
+    var dulled = false
+        set(v) { if (field == v) return; field = v; invalidate() }
     private val density = resources.displayMetrics.density
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val r = RectF()
@@ -446,6 +477,12 @@ class ProgrammeLine @JvmOverloads constructor(context: Context, attrs: Attribute
         val h = 4f * density
         val cy = height / 2f
         r.set(0f, cy - h / 2, width.toFloat(), cy + h / 2)
+        if (dulled) {
+            p.color = accent
+            p.alpha = (255 * Tokens.NO_PROGRAMME_LINE_ALPHA).toInt()
+            canvas.drawRoundRect(r, h, h, p)
+            return
+        }
         p.color = 0x4DFFFFFF
         canvas.drawRoundRect(r, h, h, p)
         r.right = width * fraction

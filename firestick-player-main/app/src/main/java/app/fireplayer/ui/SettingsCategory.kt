@@ -14,7 +14,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         "Playlists & EPG",
         R.drawable.ic_playlist_add,
         listOf(
-            "Manage playlists", "Add playlist", "Reorder playlists", "Update playlists",
+            "Playlists", "Manage playlists", "Add playlist", "Reorder playlists", "Update playlists",
             "EPG sources", "Manage EPG sources", "Days to keep EPG", "EPG update interval", "Update EPG", "Clear EPG",
         ),
     ),

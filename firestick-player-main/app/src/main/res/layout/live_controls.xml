@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Full-screen Live TV controls. Sizes, styles and spacing are the VOD player's (activity_player.xml): 42dp margins,
-    the 21sp title and 15sp clock, Chip pods, the 4dp time line, 51dp play and 39dp round buttons 9dp apart, 39dp pills,
-    and names that show under a button only while it's selected (ButtonLabel). Play/Pause and Go live appear at the
+    the 21sp title and 15sp clock, Chip pods, the 4dp time line, 51dp main and 39dp round buttons 9dp apart, 39dp pills,
+    and names that show under a button only while it's selected (ButtonLabel). TV Guide and Channel History are main
+    controls, the size of the VOD player's Play (@dimen/player_main_button); Captions is never narrower than the VOD
+    player's Subtitles showing a language (@dimen/player_pill_min_width). Play/Pause and Go live appear at the
     start of the row only while the channel is paused or behind live; TV Guide and Channel History move along.
     Down swaps the buttons for the extra row under the chevron (the VOD player's icon row); Up brings them back.
 -->
@@ -40,45 +42,38 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:orientation="vertical">
+            android:orientation="horizontal">
+
+            <!-- The channel's logo, large, on a plate sized to it (LogoBadge); gone when the channel has none. -->
+            <app.fireplayer.live.ui.LogoBadge
+                android:id="@+id/live_logo"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/logo_badge_height"
+                android:layout_marginTop="1dp"
+                android:layout_marginEnd="13dp" />
 
             <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/live_channel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <!-- The channel's logo on its plate (LogoPlate), as in the guide and the details beside the miniature. -->
-                <app.fireplayer.live.ui.LogoView
-                    android:id="@+id/live_logo"
-                    android:layout_width="42dp"
-                    android:layout_height="24dp" />
-
-                <View
-                    android:id="@+id/live_logo_divider"
-                    android:layout_width="1dp"
-                    android:layout_height="16dp"
-                    android:layout_marginStart="9dp"
-                    android:layout_marginEnd="9dp"
-                    android:background="#80FFFFFF" />
-
-                <TextView
-                    android:id="@+id/live_channel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:ellipsize="end"
-                    android:fontFamily="@font/figtree_600"
-                    android:singleLine="true"
-                    android:textColor="@color/text"
-                    android:textSize="15sp"
-                    tools:text="Metro 24" />
-            </LinearLayout>
+                android:ellipsize="end"
+                android:fontFamily="@font/figtree_600"
+                android:singleLine="true"
+                android:textColor="@color/text"
+                android:textSize="15sp"
+                tools:text="Metro 24" />
 
             <TextView
                 android:id="@+id/live_title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="3dp"
                 android:ellipsize="end"
                 android:fontFamily="@font/figtree_700"
                 android:maxLines="2"
@@ -108,6 +103,7 @@
                 android:textColor="@color/text_muted"
                 android:textSize="13sp"
                 tools:text="Next: Morning Briefing · 6:00 PM" />
+            </LinearLayout>
         </LinearLayout>
 
         <TextView
@@ -210,16 +206,6 @@
                 android:textColor="@color/text_muted"
                 android:textSize="13sp"
                 tools:text="6:00 PM · 12 min left" />
-
-            <TextView
-                android:id="@+id/live_no_guide"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:fontFamily="@font/figtree_600"
-                android:text="No programme information"
-                android:textColor="@color/text_muted"
-                android:textSize="13sp"
-                android:visibility="gone" />
         </LinearLayout>
 
         <FrameLayout
@@ -282,18 +268,17 @@
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
                     android:clipChildren="false"
                     android:gravity="center_horizontal"
                     android:orientation="vertical">
 
                     <ImageButton
                         android:id="@+id/live_btn_guide"
-                        android:layout_width="39dp"
-                        android:layout_height="39dp"
+                        android:layout_width="@dimen/player_main_button"
+                        android:layout_height="@dimen/player_main_button"
                         android:background="@drawable/bg_circle"
                         android:contentDescription="TV Guide"
-                        android:padding="9dp"
+                        android:padding="@dimen/player_main_button_pad"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_guide"
                         android:tint="@color/sel_live_button" />
@@ -308,18 +293,17 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="9dp"
-                    android:layout_marginTop="6dp"
                     android:clipChildren="false"
                     android:gravity="center_horizontal"
                     android:orientation="vertical">
 
                     <ImageButton
                         android:id="@+id/live_btn_history"
-                        android:layout_width="39dp"
-                        android:layout_height="39dp"
+                        android:layout_width="@dimen/player_main_button"
+                        android:layout_height="@dimen/player_main_button"
                         android:background="@drawable/bg_circle"
                         android:contentDescription="Channel History"
-                        android:padding="9dp"
+                        android:padding="@dimen/player_main_button_pad"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_history"
                         android:tint="@color/sel_live_button" />
@@ -350,7 +334,8 @@
                         android:background="@drawable/bg_pill"
                         android:contentDescription="Captions"
                         android:focusable="true"
-                        android:gravity="center_vertical"
+                        android:gravity="center"
+                        android:minWidth="@dimen/player_pill_min_width"
                         android:orientation="horizontal"
                         android:paddingStart="13dp"
                         android:paddingEnd="14dp">

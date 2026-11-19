@@ -7,6 +7,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import app.fireplayer.R
+import app.fireplayer.shell.Tokens
 
 /** A channel logo as decoded, with the plate it's drawn on (chosen once, as it loads: [LogoPlate.light]). */
 class Logo(val bitmap: Bitmap, val light: Boolean)
@@ -32,6 +34,28 @@ object LogoPlate {
     const val OWN_BACKGROUND = 0.9f
 
     fun color(light: Boolean): Int = if (light) LIGHT else SOFT
+
+    /**
+     * How wide a [LogoBadge] of [height] is for a logo of [logoW] x [logoH] pixels: the logo fills the height left
+     * inside [padY] and the plate is as wide as that needs with [padX] each side, never narrower than [minWidth]
+     * (a tall or square logo sits in the middle) nor wider than [maxWidth] (a very wide one is fitted to the width
+     * instead, and is then less tall). With no logo, [minWidth].
+     */
+    fun badgeWidth(logoW: Int, logoH: Int, height: Int, padX: Float, padY: Float, minWidth: Int, maxWidth: Int): Int {
+        val inner = height - 2 * padY
+        if (logoW <= 0 || logoH <= 0 || inner <= 0f) return minWidth
+        val wide = Math.ceil((logoW * (inner / logoH) + 2 * padX).toDouble()).toInt()
+        return wide.coerceIn(minWidth, maxOf(minWidth, maxWidth))
+    }
+
+    /**
+     * How much a logo of [logoW] x [logoH] is scaled to sit inside a box of [boxW] x [boxH] whole, its shape kept
+     * (never stretched): the smaller of the two fits. 0 when either has no size.
+     */
+    fun fitScale(logoW: Int, logoH: Int, boxW: Float, boxH: Float): Float {
+        if (logoW <= 0 || logoH <= 0 || boxW <= 0f || boxH <= 0f) return 0f
+        return minOf(boxW / logoW, boxH / logoH)
+    }
 
     /**
      * Whether a logo needs [LIGHT]: from its first [count] pixels ([argb], unpremultiplied, as Bitmap.getPixels gives
@@ -120,5 +144,69 @@ class LogoView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     override fun onDraw(canvas: Canvas) {
         if (!plate) return
         drawer.draw(canvas, logo, 0f, 0f, width.toFloat(), height.toFloat())
+    }
+}
+
+/**
+ * A channel's logo shown large, on a plate of its own that's sized to it (full screen's channel line; the guide can
+ * use it too): a neutral dark plate with a fine rim, on which white and coloured logos stay bright over any picture,
+ * or a light one for dark ink ([Logo.light]). The logo is fitted inside with room around it and keeps its shape. Its
+ * height is the layout's (res/values/dimens.xml logo_badge_height); its width follows the logo
+ * ([LogoPlate.badgeWidth]); the rest of its look is in [Tokens] (LOGO_BADGE_*). A new logo of the same shape only
+ * redraws it.
+ */
+class LogoBadge @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    private val density = resources.displayMetrics.density
+    private val padX = Tokens.LOGO_BADGE_PAD_X_DP * density
+    private val padY = Tokens.LOGO_BADGE_PAD_Y_DP * density
+    private val minW = (Tokens.LOGO_BADGE_MIN_WIDTH_DP * density + 0.5f).toInt()
+    private val maxW = (Tokens.LOGO_BADGE_MAX_WIDTH_DP * density + 0.5f).toInt()
+    private val radius = Tokens.LOGO_BADGE_RADIUS_DP * density
+    private val defaultH = resources.getDimensionPixelSize(R.dimen.logo_badge_height)
+    private val plate = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = density; color = Tokens.LOGO_BADGE_RIM
+    }
+    private val image = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val box = RectF()
+    private val fit = RectF()
+    private var logo: Logo? = null
+
+    init {
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    fun set(logo: Logo?) {
+        if (logo === this.logo) return
+        val before = widthFor(this.logo, height)
+        this.logo = logo
+        // Laid out again only when the plate's width changes (another channel's logo of another shape).
+        if (height == 0 || widthFor(logo, height) != before) requestLayout()
+        invalidate()
+    }
+
+    private fun widthFor(logo: Logo?, h: Int): Int =
+        LogoPlate.badgeWidth(logo?.bitmap?.width ?: 0, logo?.bitmap?.height ?: 0, h, padX, padY, minW, maxW)
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val h = resolveSize(defaultH, heightMeasureSpec)
+        setMeasuredDimension(resolveSize(widthFor(logo, h), widthMeasureSpec), h)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val l = logo ?: return
+        val half = rim.strokeWidth / 2
+        box.set(half, half, width - half, height - half)
+        plate.color = if (l.light) Tokens.LOGO_BADGE_PLATE_LIGHT else Tokens.LOGO_BADGE_PLATE
+        canvas.drawRoundRect(box, radius, radius, plate)
+        if (!l.light) canvas.drawRoundRect(box, radius, radius, rim)
+        val bmp = l.bitmap
+        val s = LogoPlate.fitScale(bmp.width, bmp.height, width - 2 * padX, height - 2 * padY)
+        if (s <= 0f) return
+        val bw = bmp.width * s
+        val bh = bmp.height * s
+        fit.set((width - bw) / 2, (height - bh) / 2, (width + bw) / 2, (height + bh) / 2)
+        canvas.drawBitmap(bmp, null, fit, image)
     }
 }
