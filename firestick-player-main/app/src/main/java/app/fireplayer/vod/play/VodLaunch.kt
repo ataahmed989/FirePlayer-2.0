@@ -72,6 +72,9 @@ object VodLaunch {
     /** Film mode applies to plays started from Home, Movies or TV Shows (every page play does). */
     fun withFilmMode(request: PlayRequest): PlayRequest = request.copy(filmMode = true)
 
+    /** [request] with when OK was pressed for it ([now], elapsedRealtime ms), for the start's timing in the log. */
+    fun pressedAt(request: PlayRequest, now: Long): PlayRequest = request.copy(pressedAt = now)
+
     /** A title's target: the film, or [episode] of the show. */
     fun target(title: Title, episode: EpisodeRef?): SourceTarget = SourceTarget(title, if (title.kind == Kind.SERIES) episode else null)
 }

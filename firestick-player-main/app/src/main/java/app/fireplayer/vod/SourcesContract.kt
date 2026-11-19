@@ -373,7 +373,11 @@ data class PlayRequest(
     val target: SourceTarget,
     val start: StartAt,
     val origin: PlayOrigin,
-    /** What stage 1 found before the player opened (the title page waited); null: the player looks it up. */
+    /**
+     * What stage 1 found before the player opened (the title page waited); null: the player looks it up. Not yet
+     * [SourceList.complete] when OK was pressed again while it waited: the player then plays the best in it without
+     * waiting for the add-on still looking.
+     */
     val list: SourceList? = null,
     /** A row chosen in Sources, or "OK again plays the best so far"; null: the session picks. */
     val chosen: PlaybackSource? = null,
@@ -385,6 +389,8 @@ data class PlayRequest(
     val next: EpisodeRef? = null,
     /** Room was made before the film started (film mode, §6.6): the page restores its snapshot on return. */
     val filmMode: Boolean = false,
+    /** When OK was pressed for this play (elapsedRealtime ms; 0: not known), for the start's timing in the log. */
+    val pressedAt: Long = 0L,
 ) {
     val imdbId: String get() = target.title.id
     val tmdbId: Int? get() = target.title.tmdbId
@@ -405,12 +411,17 @@ object PlayHandoff {
     const val KEEP = 4
 
     private val waiting = LinkedHashMap<String, PlayRequest>()
+    private val early = HashMap<String, EarlyOpen>()
 
     @Synchronized
     fun put(request: PlayRequest): String {
         val token = UUID.randomUUID().toString()
         waiting[token] = request
-        while (waiting.size > KEEP) waiting.remove(waiting.keys.first())
+        while (waiting.size > KEEP) {
+            val old = waiting.keys.first()
+            waiting.remove(old)
+            early.remove(old)?.drop()
+        }
         return token
     }
 
@@ -419,19 +430,79 @@ object PlayHandoff {
 
     @Synchronized
     fun done(token: String?) {
-        if (token != null) waiting.remove(token)
+        if (token != null) {
+            waiting.remove(token)
+            early.remove(token)?.drop()
+        }
     }
+
+    /**
+     * Starts [request]'s play now, before the player's screen exists: its session picks the source and checks its
+     * link (stage 2) while the page makes room and the player comes up, which is half a second or so on a Fire TV
+     * Stick. The player takes it over with [takeEarly]. Not for a row chosen in Sources that isn't on Real-Debrid
+     * (that one is fetched, which the player starts itself). Main thread.
+     */
+    fun startEarly(token: String, request: PlayRequest, sources: SourcesRepository, now: Long) {
+        val chosen = request.chosen
+        if (chosen != null && chosen.readiness == Readiness.NOT_READY && request.origin == PlayOrigin.SOURCES_PANEL) return
+        val open = runCatching { EarlyOpen(sources.session(request), chosen, now) }.getOrNull() ?: return
+        synchronized(this) {
+            if (waiting.containsKey(token)) early[token] = open else open.drop()
+        }
+    }
+
+    /** The play begun by [startEarly] for [token], once; null when there's none (or it was taken before). */
+    @Synchronized
+    fun takeEarly(token: String?): EarlyOpen? = token?.let { early.remove(it) }
 
     /** The token of an Intent made by [intent]; null for any other. */
     fun tokenOf(intent: Intent?): String? =
         intent?.takeIf { it.action == ACTION }?.getStringExtra(EXTRA_TOKEN)
 
-    /** Starts nothing: the Intent for PlayerActivity, explicit, in FirePlayer's own task. */
-    fun intent(context: Context, request: PlayRequest): Intent {
+    /**
+     * The Intent for PlayerActivity, explicit, in FirePlayer's own task. With [sources], the play's link check starts
+     * now ([startEarly]) rather than when the player's screen is up; [now] is elapsedRealtime.
+     */
+    fun intent(context: Context, request: PlayRequest, sources: SourcesRepository? = null, now: Long = 0L): Intent {
         val token = put(request)
+        if (sources != null) startEarly(token, request, sources, now)
         return Intent(ACTION, Uri.parse("$SCHEME:$token"), context, PlayerActivity::class.java)
             .putExtra(EXTRA_TOKEN, token)
             .putExtra("title", request.target.title.name)
+    }
+}
+
+/**
+ * A play's first open, begun at OK ([PlayHandoff.startEarly]) so the link is checked while the player's screen comes
+ * up. What the session answers before the player is there is kept and handed over, in order, when it [attach]es; after
+ * that the answers go straight to it. [drop] ends it when no player takes it. Main thread.
+ */
+class EarlyOpen(val session: SourceSession, chosen: PlaybackSource?, val startedAt: Long) {
+    private val kept = ArrayList<Opened>()
+    private var sink: ((Opened) -> Unit)? = null
+    private var dropped = false
+
+    /** Cancels the open (the player's own "opening"). */
+    val cancel: Cancel = session.open(chosen, OpenWhy.START) { o ->
+        val s = sink
+        if (s != null) s(o) else kept += o
+    }
+
+    /** The player takes over: what was answered so far, then the rest as it comes. */
+    fun attach(onOpened: (Opened) -> Unit) {
+        if (dropped) return
+        sink = onOpened
+        val so = kept.toList()
+        kept.clear()
+        so.forEach(onOpened)
+    }
+
+    /** Nobody took it (the player never came up): the open and its session end. */
+    fun drop() {
+        if (dropped) return
+        dropped = true
+        cancel.cancel()
+        if (sink == null) session.close()
     }
 }
 

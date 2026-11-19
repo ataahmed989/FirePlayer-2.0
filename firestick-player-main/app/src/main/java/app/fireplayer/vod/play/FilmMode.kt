@@ -44,11 +44,16 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private var released = false
     private val backgroundRelease = Runnable { releaseNow() }
 
-    /** A film starts from a page: the snapshot first, then Live TV's decoder freed, then [go] (the player starts). */
+    /**
+     * A film starts from a page: Live TV's decoder is freed, the snapshot is asked for, and [go] runs at once (the
+     * player starts). The snapshot is a copy of this window's own picture, which the player's screen coming up over
+     * it doesn't change, so the start no longer waits for it (up to [CAPTURE_WAIT_MS] before).
+     */
     fun beforeFilm(go: () -> Unit) {
         filmStarting = true
         hooks.stopLive()
-        capture { go() }
+        capture(null)
+        go()
     }
 
     /** The shell paused: a snapshot for coming back, unless a film's start already took one. */

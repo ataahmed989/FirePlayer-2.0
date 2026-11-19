@@ -283,7 +283,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (now - launchedAt < LAUNCH_GUARD_MS) return
         launchedAt = now
         filmMode.beforeFilm {
-            if (!isFinishing && !isDestroyed) startActivity(PlayHandoff.intent(this, VodLaunch.withFilmMode(request)))
+            // The link check starts here, at OK, while this screen makes room and the player's comes up.
+            if (!isFinishing && !isDestroyed) startActivity(
+                PlayHandoff.intent(this, VodLaunch.pressedAt(VodLaunch.withFilmMode(request), now), app.fireplayer.vod.Sources.get(this), now),
+            )
         }
     }
 

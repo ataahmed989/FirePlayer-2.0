@@ -298,6 +298,13 @@ internal class DefaultSourceSession(
             return
         }
         watchList(null)
+        if (request.origin == PlayOrigin.TITLE_PAGE && request.list?.complete == false) {
+            // The title page's wait ended before every add-on answered: OK was pressed again for the best so far (or
+            // an answer was stuck past its limit). What it handed over is played from as it stands, as soon as something
+            // in it plays by itself; the add-on still looking joins the list as it answers (Sources, Next source).
+            waitFor(op, { l -> l.complete || l.sources.any { it.automatic && usable(it) } }) { pick(op, OpenWhy.START) }
+            return
+        }
         waitFor(op, { it.complete }) { pick(op, OpenWhy.START) }
     }
 
@@ -368,8 +375,9 @@ internal class DefaultSourceSession(
         }
         val (choice, near) = choose(l, why)
         if (choice == null) {
-            // Only one add-on was asked (a Continue card): ask the other before giving up.
-            if (listOnly != null) {
+            // Only one add-on was asked (a Continue card), or one is still looking (the best so far was played, and it
+            // failed): the rest is waited for before giving up.
+            if (listOnly != null || !l.complete) {
                 watchList(null)
                 waitFor(op, { it.complete }) { pick(op, why) }
                 return

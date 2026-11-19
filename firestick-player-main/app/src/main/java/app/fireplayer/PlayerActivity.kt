@@ -13,11 +13,14 @@ import androidx.lifecycle.Lifecycle
 import app.fireplayer.vod.Opened
 import app.fireplayer.vod.PlayHandoff
 import app.fireplayer.vod.PlayRequest
+import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
+import app.fireplayer.vod.play.LaunchLog
 import app.fireplayer.vod.play.PlayRules
+import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.SourcePlayback
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -539,6 +542,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var sourceToken: String? = null
     private var sourcesPanel: SourcesPanel? = null
     private var nextLookup: app.fireplayer.vod.Cancel? = null
+    /**
+     * What the title page loaded of a film or show played from Films & Shows (Cinemeta's details, TMDB's where there's
+     * a key): the show's episodes for the Episodes sheet and Next episode, and Film details / Show details without
+     * asking again. Null until read (from the store: at once).
+     */
+    private var vodDetails: TitleDetails? = null
+    /** How long this start takes, step by step, for one "FirePlayerDiag: start …" line at the first picture. */
+    private var launch = LaunchLog(SystemClock.elapsedRealtime())
+    private var launchNote = ""
+
+    private fun launchMark(step: String) = launch.mark(step, SystemClock.elapsedRealtime())
     /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
@@ -1161,6 +1175,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         try {
             p.setMediaItems(items, index, position)
             p.prepare()
+            launchMark(LaunchLog.PLAYER)
         } catch (e: RuntimeException) {
             // A kind of link the player has no module for (rtsp://) fails here instead of as a playback error.
             updateTitle()
@@ -1351,6 +1366,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * and the episode's TMDB numbers and name when the episode is matched), or a film's Fix match. Null for neither.
      */
     private fun matchFor(entry: Entry): WatchHistory.Match? {
+        // From Films & Shows: the ids handed over with the play, never a name match.
+        source?.takeIf { entry.storeKey != null }?.let { vod ->
+            val t = vod.request.target.title
+            val tmdbId = vod.request.tmdbId ?: return null
+            val ref = vod.request.target.episode
+            return WatchHistory.Match(
+                tmdbId = tmdbId, title = t.name, year = PlayerMeta.year(t),
+                season = ref?.season ?: 0, episode = ref?.episode ?: 0, episodeTitle = ref?.name,
+            )
+        }
         val g = guide
         val ep = guideEpisode(entry)
         if (g != null && ep != null && g.tmdbId > 0) {
@@ -1495,6 +1520,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            launchMark(LaunchLog.LOADED)
             pictureText.go()
             noteEpisodeLength()
             if (glassAfterSeek) {
@@ -1718,6 +1744,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onRenderedFirstFrame() {
+        // The start's timing, once: from OK (or this screen's start) to this first picture.
+        if (!launch.done) {
+            launchMark(LaunchLog.FRAME)
+            android.util.Log.i(PlaybackDiag.TAG, launch.line(launchNote))
+        }
         // The first picture of a new player or video, or after a jump: the glass copies it.
         backdrop?.frameChanged()
         // A source from the add-ons started: it's the last release used, and stage 3's limit is over.
@@ -2253,7 +2284,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         btnPlay.setOnClickListener { togglePlay() }
         btnRestart.setOnClickListener { player?.seekTo(0); player?.play() }
-        btnNext.setOnClickListener { lineUpNext(); savePosition(); player?.seekToNextMediaItem(); player?.play() }
+        btnNext.setOnClickListener {
+            val s = source
+            if (s != null) {
+                // From Films & Shows: the next episode starts from its own sources (the same kind as this one's).
+                hidePostPlay()
+                s.ended(playNext = true)
+            } else {
+                lineUpNext(); savePosition(); player?.seekToNextMediaItem(); player?.play()
+            }
+        }
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         btnEpisodes.setOnClickListener { openEpisodes() }
@@ -2522,10 +2562,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val playsToEnd = parts?.afterCredits != null
         // Next episode when there's one to play; else Exit, but only where the credits surely run to the end (a scene
         // after them, or not knowing, means no Exit).
-        val nextOk = next?.nextEpisode == true && prefs.playNextEpisode
+        // From Films & Shows the next episode isn't a video lined up after this one: it starts from its own sources.
+        val vod = source
+        val vodNext = vod?.next
+        val nextOk = (next?.nextEpisode == true || vodNext != null) && prefs.playNextEpisode
         // An episode whose next one is still being looked for (or not looked for yet) may have one: no Exit meanwhile.
         val current = entries.getOrNull(index)
-        val nextUnknown = current != null && prefs.playNextEpisode && findsNextEpisode &&
+        val nextUnknown = if (vod != null) vod.isEpisode && !vod.nextKnown else current != null && prefs.playNextEpisode && findsNextEpisode &&
             (current.info.episode != null || NextEpisode.isEpisodeLink(current.uri)) &&
             (lookupInFlight || nextLookedUpFor != current.key)
         // Exit is for a film, or a show's very last episode (its final season's finale, by TMDB); any other episode
@@ -2533,7 +2576,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Without credits info the card comes the countdown's seconds before the end (20 s for "Until the end").
         val leadMs = if (prefs.autoCountdownSec > 0) prefs.autoCountdownSec * 1000L else POST_PLAY_LEAD_MS
         val fallbackAt = if (known) (duration - leadMs).coerceAtLeast(duration / 2) else null
-        val exitAt = if (!nextOk && next == null && !nextUnknown && current != null &&
+        val exitAt = if (!nextOk && next == null && vodNext == null && !nextUnknown && current != null &&
             (!isEpisode(current) || isSeriesFinale(current) == true))
             (if (prefs.skipIntro) inCredits(parts?.exitAt) else null) ?: fallbackAt.takeIf { parts?.exitAt == null } else null
         val exit = !nextOk && exitAt != null
@@ -2546,7 +2589,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             duration > 3 * POST_PLAY_LEAD_MS && !p.isCurrentMediaItemLive && position >= showAt &&
             (exit || !playsToEnd) && postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen &&
             !episodesSheet.isOpen && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
-        if (!due || p == null || (!exit && next == null)) {
+        if (!due || p == null || (!exit && next == null && vodNext == null)) {
             if (postPlay.visibility == View.VISIBLE) hidePostPlay()
             return
         }
@@ -2561,8 +2604,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 postPlayGo.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, null)
             } else {
                 postPlayNext.visibility = View.VISIBLE
-                postPlayNext.text = "Next · " + (guideEpisode(next!!)?.let { e -> e.label + if (e.name.isNotEmpty()) " · ${e.name}" else "" }
-                    ?: next.info.subtitle ?: next.info.title)
+                postPlayNext.text = "Next · " + if (next == null && vodNext != null) {
+                    // The next episode's numbers and name as the show's guide (or the page) has them.
+                    val e = guide?.episode(PlayerMeta.episodeId(vodNext))
+                    val name = e?.name ?: vodNext.name?.takeIf { !it.startsWith("Episode ") && it != "TBA" }.orEmpty()
+                    "S${vodNext.season} E${vodNext.episode}" + if (name.isNotEmpty()) " · $name" else ""
+                } else {
+                    guideEpisode(next!!)?.let { e -> e.label + if (e.name.isNotEmpty()) " · ${e.name}" else "" }
+                        ?: next.info.subtitle ?: next.info.title
+                }
                 postPlayCredits.text = "Watch credits"
                 postPlayGo.setCompoundDrawablesRelativeWithIntrinsicBounds(postPlayIcon, null, null, null)
                 postPlayGo.text = "Next episode"
@@ -2630,6 +2680,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         hidePostPlay()
         completed = true
+        // From Films & Shows: the library marks it watched (the credits ran).
+        source?.let { s -> p.duration.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) } }
         entries.getOrNull(p.currentMediaItemIndex)?.let {
             prefs.savePosition(it.key, 0L)
             noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
@@ -2911,6 +2963,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun playNextEpisode() {
         val p = player ?: return
+        val s = source
+        if (s != null) {
+            // From Films & Shows: this one counts as watched (the credits began), and the next starts from its own
+            // sources, the same kind as this one's.
+            hidePostPlay()
+            p.duration.takeIf { it > 0 }?.let { d -> s.record(maxOf(p.currentPosition, segments?.creditsAt ?: 0L), d, segments?.creditsAt) }
+            s.ended(playNext = true)
+            return
+        }
         hidePostPlay(keepPreload = true)
         // This one was watched to the credits: next time it starts from the top.
         entries.getOrNull(p.currentMediaItemIndex)?.let {
@@ -2945,8 +3006,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val entry = entries.getOrNull(player?.currentMediaItemIndex ?: startIndex) ?: return
         val ep = guideEpisode(entry)
         val info = entry.info
+        // From Films & Shows: the title and episode handed over, exactly; nothing is read out of a name.
+        val vod = source?.takeIf { entry.storeKey != null }
+        val vodEp = vod?.request?.target?.episode
         val line: CharSequence? = when {
             ep != null -> episodeLine(ep.label, ep.name)
+            vodEp != null -> episodeLine("S${vodEp.season} E${vodEp.episode}", vodEp.name?.takeIf { !it.startsWith("Episode ") && it != "TBA" }.orEmpty())
             info.subtitle != null -> {
                 // The provider's own name for the episode, until TMDB's English one is known (it may be in another
                 // language): straight away without a TMDB key, or for links whose show can't be looked up.
@@ -2957,14 +3022,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             else -> null
         }
-        titleView.text = ep?.let { guide?.show } ?: filmFix(entry) ?: info.title
+        titleView.text = vod?.let { PlayerMeta.shownName(it.request.target.title) } ?: ep?.let { guide?.show } ?: filmFix(entry) ?: info.title
         subtitleView.text = line
         subtitleView.visibility = if (line != null) View.VISIBLE else View.GONE
-        // Episodes: for a show's episode handed over on its own, whose provider can be asked for the rest.
-        val episodes = findsNextEpisode && NextEpisode.canFind(entry.uri)
+        // Episodes: for a show's episode handed over on its own, whose provider can be asked for the rest; or an
+        // episode from Films & Shows, whose show's episodes the title page stored.
+        val episodes = if (vod != null) vod.isEpisode else findsNextEpisode && NextEpisode.canFind(entry.uri)
         if (!episodes && btnEpisodes.hasFocus()) btnPlay.requestFocus()
         episodesGroup.visibility = if (episodes) View.VISIBLE else View.GONE
-        val hasNext = player?.hasNextMediaItem() == true
+        val hasNext = if (vod != null) vod.next != null else player?.hasNextMediaItem() == true
         // Hiding the focused Next button would send focus to the time bar; keep it on the buttons.
         if (!hasNext && btnNext.hasFocus()) btnPlay.requestFocus()
         nextGroup.visibility = if (hasNext) View.VISIBLE else View.GONE
@@ -2978,6 +3044,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * listed, by TiviMate or by the next-episode look-up.
      */
     private fun lookUpEnglishName(entry: Entry) {
+        // From Films & Shows the title came with its ids: its name is never looked up.
+        if (entry.storeKey != null) return
         if (entry.englishAsked || entry.english != null) return
         val server = TitleProxy.serverIn(entry.uri)
         // A film on a playlist that doesn't go through the title server: TMDB is asked about its name here, as the
@@ -4610,6 +4678,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** This episode in the show's guide, when the guide is this show's. */
     private fun guideEpisode(entry: Entry): ShowGuide.Ep? {
         val g = guide ?: return null
+        // From Films & Shows: the episode handed over, by its season and number (never by a name or a link).
+        if (entry.storeKey != null) return source?.let { PlayerMeta.episode(g, it.request) }
         if (NextEpisode.portal(entry.uri) != g.portal) return null
         return g.episode(NextEpisode.episodeId(entry.uri))
     }
@@ -4709,6 +4779,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             showGuideInSheet()
             return
         }
+        if (entry.storeKey != null) {
+            // From Films & Shows: the show's episodes come with its details (onVodDetails shows them as they arrive).
+            val d = vodDetails
+            if (d != null && d.episodes.isEmpty()) episodesSheet.fail("This show's episodes couldn't be read just now.")
+            else if (d != null) episodesSheet.fail("This episode isn't in the show's list yet.")
+            return
+        }
         // Not known yet: asked for now, without waiting for the film to be well ahead.
         lookupWantedAt = 0L
         if (!lookupInFlight) {
@@ -4724,23 +4801,46 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val g = guide ?: return
         if (!episodesSheet.isOpen) return
         val entry = currentEntry() ?: return
-        if (guideEpisode(entry) == null) return
-        episodesSheet.show(g, NextEpisode.episodeId(entry.uri)) { ep -> watchedShare(entry, ep) }
+        val here = guideEpisode(entry) ?: return
+        val playing = if (entry.storeKey != null) here.id else NextEpisode.episodeId(entry.uri)
+        episodesSheet.show(g, playing) { ep -> watchedShare(entry, ep) }
     }
 
     /** How far an episode was watched (0 to 1): the one playing by the player, the others by their resume points. */
     private fun watchedShare(current: Entry, ep: ShowGuide.Ep): Float {
-        if (ep.id == NextEpisode.episodeId(current.uri)) {
+        val vod = source?.takeIf { current.storeKey != null }
+        if (ep.id == (if (vod != null) PlayerMeta.episodeId(vod.request) else NextEpisode.episodeId(current.uri))) {
             val p = player ?: return 0f
             return if (p.duration > 0) p.currentPosition.toFloat() / p.duration else 0f
+        }
+        if (vod != null) {
+            // From Films & Shows: the library's watched marks and resume points, by the show's id and the numbers.
+            val repo = VodRepositories.get(this)
+            val episode = vodEpisode(vod, ep)
+            return if (repo.isEpisodeWatched(episode)) 1f else PlayerMeta.watchedShare(repo.positionOf(episode))
         }
         val pos = prefs.savedPosition(NextEpisode.episodeUri(current.uri, ep.id, ep.extension).toString())
         val length = ep.runtimeMin * 60_000L
         return if (pos > 0 && length > 0) pos.toFloat() / length else 0f
     }
 
+    /** [ep] of the show playing from Films & Shows, as the library keeps it ("tt…:2:5"). */
+    private fun vodEpisode(vod: SourcePlayback, ep: ShowGuide.Ep): app.fireplayer.vod.Episode =
+        app.fireplayer.vod.Episode(app.fireplayer.vod.Episode.idOf(vod.request.target.title.id, ep.season, ep.number), ep.season, ep.number, ep.name)
+
     /** Plays another episode of the show, chosen in Episodes: from where it was left, or the start. */
     private fun playEpisode(ep: ShowGuide.Ep) {
+        val vod = source
+        if (vod != null) {
+            // From Films & Shows: a new play of that episode from its own sources, from where it stopped.
+            episodesSheet.close()
+            if (ep.id == PlayerMeta.episodeId(vod.request)) return
+            hideControls()
+            hidePostPlay()
+            val start = PlayRules.startAt(VodRepositories.get(this).positionOf(vodEpisode(vod, ep)), fromBeginning = false)
+            vod.playEpisode(PlayerMeta.refOf(ep), start)
+            return
+        }
         val p = player ?: return
         val index = p.currentMediaItemIndex
         val current = entries.getOrNull(index) ?: return
@@ -4775,6 +4875,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (thisTitleSession != session) {
             thisTitleSession = session
             thisTitleOpen = false
+        }
+        val vod = source?.takeIf { entry.storeKey != null }
+        if (vod != null) {
+            // From Films & Shows: the film or episode came with its IMDb id (and season and number), so it is matched;
+            // there is nothing to look up by name and nothing to fix.
+            val t = vod.request.target.title
+            val ref = vod.request.target.episode
+            val ep = guideEpisode(entry)
+            header(if (ref != null) "This episode" else "This film")
+            val name = if (ref != null) "${t.name} · S${ref.season} E${ref.episode}" else PlayerMeta.shownName(t)
+            dropdownRow(name, "Matched", Rows.Badge.ACTIVE, thisTitleOpen) {
+                thisTitleOpen = !thisTitleOpen
+                refresh()
+            }
+            if (!thisTitleOpen) return
+            row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
+            row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
+            row("Source", vod.addon?.label ?: PlayerMeta.PORTAL) {}.asSubRow()
+            message(
+                if (ref != null) "Matched by the show's IMDb id from ${PlayerMeta.PORTAL}" +
+                    (ep?.name?.takeIf { it.isNotEmpty() }?.let { n -> ": ${ep.label} · $n." } ?: ".")
+                else "Matched by its IMDb id from ${PlayerMeta.PORTAL}.",
+            )
+            return
         }
         val portal = NextEpisode.portal(entry.uri)
         val episode = findsNextEpisode && NextEpisode.canFind(entry.uri)
@@ -4844,7 +4968,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun openDetails(show: Boolean) {
         val entry = currentEntry() ?: return
-        if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
+        if (entry.storeKey != null && source != null) {
+            // From Films & Shows: what the title page loaded, at once (onVodDetails fills it in if it's still coming).
+            aboutFor = entry.key
+            about = vodDetails?.let { PlayerMeta.about(it) }
+            aboutStatus = if (about == null) LOADING else null
+        } else if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
             aboutFor = entry.key
             about = null
             aboutStatus = LOADING
@@ -4854,7 +4983,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.openSub(if (show) "Show details" else "Film details") {
             val a = about
             if (a == null) message(aboutStatus ?: LOADING)
-            else details(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri))
+            else details(a, if (show) guideEpisode(entry) else null,
+                if (entry.storeKey != null) source?.addon?.label ?: PlayerMeta.PORTAL else NextEpisode.portal(entry.uri))
         }
     }
 
@@ -5445,26 +5575,86 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Starts [request]: the loading screen while the sources are found and the link is checked, then the film. */
     private fun startSourcePlay(request: PlayRequest) {
         val repo = Sources.get(this)
-        val s = SourcePlayback(request, repo.session(request), repo.library, MainTicker, sourceHost)
+        val now = SystemClock.elapsedRealtime()
+        // Timed from OK on the page when that's known (this screen's start otherwise).
+        launch = LaunchLog(request.pressedAt.takeIf { it in 1..now } ?: now)
+        launchMark(LaunchLog.SCREEN)
+        // The link check begun at OK, while this screen came up; none after a restart of the screen (a fresh one then).
+        val early = PlayHandoff.takeEarly(sourceToken)
+        launchNote = if (early != null) "link check began ${now - early.startedAt} ms before the screen" else ""
+        val s = SourcePlayback(request, early?.session ?: repo.session(request), repo.library, MainTicker, sourceHost, early)
         source = s
         buffering.visibility = View.VISIBLE
         bufferingInfo.visibility = View.GONE
+        warmDecoders()
+        launchMark(LaunchLog.SOURCES)
         s.start()
-        val ep = request.target.episode
-        if (ep != null && s.next == null) {
-            // The episode after this one, from the show's stored details, for the next episode's play.
-            nextLookup = VodRepositories.get(this).details(request.target.title) { d, _ ->
-                if (s.next == null) s.next = PlayRules.nextEpisode(d.episodes, ep, System.currentTimeMillis())?.ref
-            }
+        // Skip intro's times are asked for now, while the sources are found: ready when the film starts (SkipTimes.warm).
+        warmSkipTimes(request.imdbId, request.season, request.episode, lastDurationOf(request))
+        // What the title page loaded (stored: it comes at once, then again if a fresher copy arrives): the show's
+        // episodes for the Episodes sheet and Next episode, and Film details / Show details.
+        nextLookup = VodRepositories.get(this).details(request.target.title) { d, _ ->
+            if (!isFinishing && source === s) onVodDetails(s, d)
         }
     }
 
-    /** How the player names a film or episode from the add-ons, as a video's title is read ("Show S02E05"). */
-    private fun vodRawTitle(r: PlayRequest): String {
-        val t = r.target.title
-        val ep = r.target.episode ?: return listOfNotNull(t.name, t.year?.take(4)?.let { "($it)" }).joinToString(" ")
-        return String.format(Locale.ROOT, "%s S%02dE%02d", t.name, ep.season, ep.episode)
+    /**
+     * Has Media3's list of the TV's decoders read on a background thread while the link is checked (about a tenth of a
+     * second the first time, which the film's start then doesn't spend on the player's own thread).
+     */
+    private fun warmDecoders() {
+        if (decodersWarmed) return
+        decodersWarmed = true
+        thread(name = "FirePlayerWarm", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            for (mime in WARM_MIMES) runCatching { androidx.media3.exoplayer.mediacodec.MediaCodecUtil.warmDecoderInfoCache(mime, false, false) }
+        }
     }
+
+    /** The title's details arrived for a play from Films & Shows (see [vodDetails]). */
+    private fun onVodDetails(s: SourcePlayback, d: TitleDetails) {
+        vodDetails = d
+        val ep = s.request.target.episode
+        if (ep != null && d.episodes.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            // The episode after this one, for Next episode and the end card.
+            if (s.next == null) s.next = PlayRules.nextEpisode(d.episodes, ep, now)?.ref
+            s.nextKnown = true
+            PlayerMeta.guide(d, now)?.let { g ->
+                guide = g
+                showGuideInSheet()
+            }
+        }
+        updateTitle()
+        // Film details / Show details open on "Loading…" until this.
+        if (aboutFor == currentEntry()?.key && about == null) {
+            about = PlayerMeta.about(d)
+            aboutStatus = null
+        }
+        if (panel.isOpen) panel.refresh()
+    }
+
+    /** The length the film or episode had when it last played here (the library's), 0 when it never did. */
+    private fun lastDurationOf(r: PlayRequest): Long {
+        val repo = VodRepositories.get(this)
+        val ep = r.target.episode
+        return runCatching {
+            if (ep == null) repo.lastPlayed(r.target.title)?.position?.durationMs
+            else repo.positionOf(app.fireplayer.vod.Episode(app.fireplayer.vod.Episode.idOf(r.target.title.id, ep.season, ep.episode), ep.season, ep.episode, ep.name ?: ""))?.durationMs
+        }.getOrNull() ?: 0L
+    }
+
+    /**
+     * Has Skip intro's databases asked about a film or episode before its length is known, so the answer is on disk when
+     * the film starts ([SkipTimes.warm]): on the segment worker, never the main thread.
+     */
+    private fun warmSkipTimes(imdbId: String, season: Int?, episode: Int?, durationMs: Long) {
+        if (!prefs.skipIntro || segmentWorker.isShutdown) return
+        val app = applicationContext
+        runCatching { segmentWorker.execute { SkipTimes.warm(app, imdbId, season, episode, durationMs) } }
+    }
+
+    /** How the player names a film or episode from the add-ons, as a video's title is read ("Show S02E05"). */
+    private fun vodRawTitle(r: PlayRequest): String = PlayerMeta.rawTitle(r)
 
     /** What a source's video is kept by: the film or episode and its release, never the link. */
     private fun vodKey(r: PlayRequest, ready: Opened.Ready): String {
@@ -5483,6 +5673,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         override fun startSource(ready: Opened.Ready, startMs: Long, switching: Boolean) {
             val request = source?.request ?: return
             if (isFinishing || isDestroyed) return
+            launchMark(LaunchLog.LINK)
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily).
             (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.storeKey }
@@ -5544,7 +5735,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         override fun playNext(next: PlayRequest) {
             savePosition()
-            startActivity(PlayHandoff.intent(this@PlayerActivity, next))
+            // Its link check starts now, while the next player's screen comes up.
+            val now = SystemClock.elapsedRealtime()
+            startActivity(PlayHandoff.intent(this@PlayerActivity, next.copy(pressedAt = now), Sources.get(this@PlayerActivity), now))
             finish()
             @Suppress("DEPRECATION")
             overridePendingTransition(0, 0)
@@ -5612,6 +5805,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * confirms its name (never its nearest guess, which could bring another film's copies). 0 for none. Blocks.
      */
     private fun sureFilmTmdb(entry: Entry): Int {
+        if (entry.storeKey != null) return source?.request?.tmdbId ?: 0
         matchFor(entry)?.tmdbId?.takeIf { it > 0 }?.let { return it }
         val server = TitleProxy.serverIn(entry.uri)
         val id = entry.uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
@@ -5629,6 +5823,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** Blocks; on [io]. A film's TMDB id: as the title server matched it, else as TMDB finds its name. 0 for none. */
     private fun filmTmdbId(entry: Entry): Int {
+        // From Films & Shows: the id handed over, or none; its name is never searched for.
+        if (entry.storeKey != null) return source?.request?.tmdbId ?: 0
         val server = TitleProxy.serverIn(entry.uri)
         val id = entry.uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
         if (server != null && id != null) {
@@ -5689,7 +5885,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         facts(listOfNotNull(
             rated?.let { "Rated" to it },
-            a.rating.takeIf { it > 0 }?.let { "TMDB" to fact(String.format(Locale.ROOT, "★ %.1f", it)) },
+            a.rating.takeIf { it > 0 }?.let { a.ratingFrom to fact(String.format(Locale.ROOT, "★ %.1f", it)) },
             source?.let { "Source" to fact(it) },
         ))
         // Kept to what fits the window: it has nothing to move focus to, so it isn't scrolled.
@@ -6406,6 +6602,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_COUNT_TICKS = 5
         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
         const val MEMORY_CHECK_TICKS = 50
+        /** The decoders' kinds looked up ahead of the film (see warmDecoders). */
+        private val WARM_MIMES = listOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_H264, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_AV1,
+            MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_AAC)
+        @Volatile private var decodersWarmed = false
         /** The drawing cache is trimmed at most this often while a film plays (see GraphicsTrim). */
         const val GRAPHICS_TRIM_GAP_MS = 30_000L
         /** A wait to load this soon after a jump is the jump's. */

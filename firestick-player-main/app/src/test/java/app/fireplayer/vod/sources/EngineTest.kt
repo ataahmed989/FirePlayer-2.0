@@ -289,6 +289,65 @@ class EngineTest {
         assertEquals(n, asked.count { it.first == Addon.MEDIAFUSION })
     }
 
+    @Test
+    fun okAgainOnThePagePlaysTheBestSoFarWithoutWaitingForTheOtherAddon() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        // MediaFusion's answer is held back: the page's list has Torrentio's source only.
+        val held = ArrayList<Runnable>()
+        val slowEngine = engineWith(Executor { r -> if (held.isEmpty() && asked.isNotEmpty()) held += r else r.run() })
+        val got = ArrayList<SourceList>()
+        slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
+        loop.advance()
+        val soFar = got.last()
+        assertFalse(soFar.complete)
+        assertEquals(ReleaseKey(H1, 0), soFar.best?.release)
+
+        // OK again: the page hands over the list as it stands, and the player checks its best at once.
+        val session = slowEngine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = soFar))
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        val ready = opened.last() as Opened.Ready
+        assertEquals(ReleaseKey(H1, 0), ready.source.release)
+        assertEquals(1, held.size)
+        session.started(ready.source, ready.offer)
+
+        // The other add-on's answer still joins the list: Next source goes on to it.
+        held.removeAt(0).run()
+        loop.advance()
+        assertEquals(2, session.list?.sources?.size)
+        val next = ArrayList<Opened>()
+        session.open(null, OpenWhy.USER) { next += it }
+        loop.advance()
+        assertEquals(ReleaseKey(H2, 0), (next.last() as Opened.Ready).source.release)
+    }
+
+    @Test
+    fun theBestSoFarFailingWaitsForTheAddonStillLooking() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val held = ArrayList<Runnable>()
+        val slowEngine = engineWith(Executor { r -> if (held.isEmpty() && asked.isNotEmpty()) held += r else r.run() })
+        val got = ArrayList<SourceList>()
+        slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
+        loop.advance()
+        val session = slowEngine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = got.last()))
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        val first = opened.last() as Opened.Ready
+        // Its file turns out dead before it plays: nothing else is ready yet, so the other add-on is waited for.
+        assertEquals(Step.TryNext, session.failed(first.source, Failure(FailureKind.FILE, Addon.TORRENTIO)))
+        val after = ArrayList<Opened>()
+        session.open(null, OpenWhy.FAILED) { after += it }
+        loop.advance()
+        assertTrue(after.last() is Opened.Looking)
+        held.removeAt(0).run()
+        loop.advance()
+        assertEquals(ReleaseKey(H2, 0), (after.last() as Opened.Ready).source.release)
+    }
+
     // ---- Sessions ----
 
     private fun open(session: app.fireplayer.vod.SourceSession, why: OpenWhy = OpenWhy.START): MutableList<Opened> {

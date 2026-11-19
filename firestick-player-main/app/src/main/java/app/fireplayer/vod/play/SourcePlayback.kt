@@ -36,6 +36,8 @@ class SourcePlayback(
     private val library: PlaybackLibrary,
     private val ticker: Ticker,
     private val host: Host,
+    /** The first open, begun when OK was pressed ([app.fireplayer.vod.PlayHandoff.startEarly]); null: [start] opens it. */
+    private val early: app.fireplayer.vod.EarlyOpen? = null,
 ) {
 
     interface Host {
@@ -100,6 +102,12 @@ class SourcePlayback(
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
 
+    /**
+     * Whether [next] is settled: the page said which episode is next, or the show's episodes have been read (null then
+     * means this is the last one aired). Until then the player shows no "Exit" for an episode.
+     */
+    var nextKnown: Boolean = request.next != null
+
     /** Whether [request] is for an episode. */
     val isEpisode: Boolean get() = request.target.episode != null
 
@@ -109,6 +117,10 @@ class SourcePlayback(
         val agreed = chosen != null && chosen.readiness == Readiness.NOT_READY && request.origin == PlayOrigin.SOURCES_PANEL
         if (agreed && chosen != null) {
             opening = session.fetch(chosen) { onOpened(it, OpenWhy.USER) }
+        } else if (early != null && early.session === session) {
+            // Begun at OK: what it has answered so far comes now, the rest as it comes.
+            opening = early.cancel
+            early.attach { onOpened(it, OpenWhy.START) }
         } else {
             open(chosen, OpenWhy.START)
         }
@@ -343,6 +355,26 @@ class SourcePlayback(
         start = StartAt.Beginning,
         origin = PlayOrigin.NEXT_EPISODE,
         list = nextList?.takeIf { it.complete && it.target.episode == n },
+        like = current,
+        filmMode = request.filmMode,
+    )
+
+    /**
+     * Another episode of the show, chosen in the player's Episodes sheet: a new play in place of this one, from [start]
+     * (where it stopped, or its beginning). The same file as last time when it resumes, else the same kind of source as
+     * the one playing (§6.5's next-episode rule).
+     */
+    fun playEpisode(episode: EpisodeRef, start: StartAt) {
+        if (closed) return
+        host.playNext(episodeRequest(episode, start))
+    }
+
+    /** The play of [episode] from [start], for [playEpisode]. */
+    fun episodeRequest(episode: EpisodeRef, start: StartAt): PlayRequest = PlayRequest(
+        target = SourceTarget(request.target.title, episode),
+        start = start,
+        origin = PlayOrigin.NEXT_EPISODE,
+        preferred = if (start is StartAt.At) library.lastRelease(request.target.title, episode) else null,
         like = current,
         filmMode = request.filmMode,
     )
