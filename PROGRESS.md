@@ -220,6 +220,9 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
 
 - [ ] **In-depth playback pass with Fable.** Start from the eight fixes saved in `player-fixes-wip/` (written, not merged,
       reviewed or tested), the two playback checks (design-brief.md §6.6) and the film-mode memory plan.
+- [x] **Look redesign, first pass** (2026-11-19): the user's brief in `Design-References/redesign-2026-11-19/BRIEF.md`,
+      built in four parts (glass + rail + borders, browse pages, title page, Live TV), merged, 1,015 tests pass, on the
+      Max. Tuning rounds with the user follow; then Search (both modes) and automatic picture-in-picture in this look.
 - [ ] **In-depth app pass with Fable**, to plan and then make:
   - better appearance: the glass look's windows, small windows included, and the colours used; a larger FirePlayer 2.0
     logo in the rail's tab window; better-looking and larger logos (channels);

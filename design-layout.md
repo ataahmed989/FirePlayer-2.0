@@ -545,3 +545,14 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   - For now the channel stops while searching. Wanted after the redesign: automatic picture-in-picture, the live
     channel keeps playing in the top-right mini player when going from a playing channel to Home or Search (its size
     and position are decided with the redesigned pages first).
+- 2026-11-19 · User: look redesign, from their brief and five concept images (Design-References/redesign-2026-11-19/).
+  Built and on the Max test build: true dark translucent glass on the browse pages (one shared style in
+  `ui/GlassStyle.kt`; windows over a page show that page blurred from one shared downsampled copy, `ui/PageGlass.kt`,
+  refreshed only when a window appears or the page under it changes); the rail as a floating rounded window on every
+  tab but Live TV (edge strip there), widening over the page with a larger logo; hairline borders and soft shadows;
+  a taller banner with Watch now and Details; larger cards (Continue Watching about 3.3 across, posters about 4.8);
+  Recent channels as a list of logo tiles the banner's height; the title page with a stacked action column, a season
+  dropdown, the Episodes heading and large episode pods (no Episodes button); Live TV's larger details logo, glass
+  logo tiles and cleaner programme cells. Replaces the sizes of 2026-11-18. Tuned after the first look on the TV:
+  window tint 72% to 58%, dark logos on the light tile again, the title's logo drawn by its visible part.
+  Open: a faint vertical line where the banner's artwork begins; the user's own tuning notes.
