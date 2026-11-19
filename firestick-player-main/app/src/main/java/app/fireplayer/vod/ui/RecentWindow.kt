@@ -162,7 +162,7 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
             rightMargin = t.dp(VodSizes.RECENT_ROW_PAD)
         })
         // The list's box clips: three rows show, the others wait above and below.
-        body.addView(list, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        body.addView(list, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0))
         body.addView(emptyText, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             leftMargin = t.dp(VodSizes.RECENT_ROW_PAD)
             rightMargin = t.dp(VodSizes.RECENT_ROW_PAD)
@@ -286,6 +286,13 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
             val line = Line(context)
             list.addView(line, LayoutParams(LayoutParams.MATCH_PARENT, rowH))
             lines += line
+        }
+        // As tall as its rows (taller than its box, which clips): laid out again only when their number changes.
+        val lp = list.layoutParams
+        val listH = channels.size * rowH
+        if (lp.height != listH) {
+            lp.height = listH
+            list.layoutParams = lp
         }
         val now = System.currentTimeMillis()
         val time = DateFormat.getTimeFormat(context)

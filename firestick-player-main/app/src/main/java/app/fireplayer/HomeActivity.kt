@@ -330,6 +330,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         showTab(NavRail.Tab.LIVE)
         // And in place of a channel still playing from before.
         live.openChannel(key)
+        // As when Live TV is entered from the rail: focus on its tab (Home's row is gone), then into the page, at once
+        // or when its channels have loaded.
+        rail.focusSelected()
         focusPage()
     }
 

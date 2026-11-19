@@ -197,27 +197,24 @@ internal object VodSizes {
     const val HOLD_INSET = 12f
     const val LIST_CLOSE_MS = 450L
 
-    // Cards: text inside a wide card, the progress bar, badges.
+    // Cards: an episode still's progress bar ([CARD_TEXT_SIDE] from its sides, [BAR_BOTTOM] up), the slim bar, badges.
     const val CARD_TEXT_SIDE = 8f
-    const val CARD_BOTTOM = 9f
-    const val CARD_BOTTOM_BAR = 15f
-    const val CARD_LINE_GAP = 2f
     const val BAR_BOTTOM = 6f
     const val BAR_H = 3f
     const val BAR_RADIUS = 1.5f
-    const val SCRIM_FROM = 0.35f
     /**
-     * A Continue Watching card: its name, caption line and slim progress bar stand on a gradient over its bottom, the
-     * picture above it left clear. The gradient: clear at [WIDE_SCRIM_STOPS]' first share of the height, easing to
-     * its darkest at the bottom ([WIDE_SCRIM_ALPHAS], black).
+     * A Continue Watching card: its name ([CARD_NAME]), caption line ([CARD_CAPTION]) and slim progress bar stand on a
+     * gradient over its bottom, the picture above it left clear. The words [WIDE_TEXT_SIDE] from its sides, their
+     * bottom [CARD_BOTTOM] up ([CARD_BOTTOM_BAR] above a bar, itself [WIDE_BAR_BOTTOM] up). The gradient: black, clear
+     * at [WIDE_SCRIM_STOPS]' first share of the height, easing to [SCRIM_BOTTOM] at the bottom.
      */
     const val WIDE_TEXT_SIDE = 12f
-    const val WIDE_BOTTOM = 12f
-    const val WIDE_BOTTOM_BAR = 20f
-    const val WIDE_LINE_GAP = 2f
+    const val CARD_BOTTOM = 12f
+    const val CARD_BOTTOM_BAR = 20f
+    const val CARD_LINE_GAP = 2f
     const val WIDE_BAR_BOTTOM = 10f
     val WIDE_SCRIM_STOPS = floatArrayOf(0.42f, 0.62f, 0.82f, 1f)
-    val WIDE_SCRIM_ALPHAS = intArrayOf(0x00, 0x4D, 0xA6, 0xD9)
+    val WIDE_SCRIM_ALPHAS = intArrayOf(0x00, 0x45, 0x99, 0xC7)
     const val BADGE_PAD_X = 7f
     const val BADGE_PAD_Y = 2f
     const val BADGE_INSET = 6f
@@ -313,14 +310,12 @@ internal object VodSizes {
     val NOTE = TextStyle(15f, Weight.REGULAR, Ink.MUTED)
     val TRY_AGAIN = TextStyle(15f, Weight.SEMIBOLD)
     val NOTICE = TextStyle(15f, Weight.REGULAR)
-    val CARD_NAME = TextStyle(12.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
-    val CARD_CAPTION = TextStyle(10.5f, Weight.SEMIBOLD, Ink.OWN, 0xFFD6DEE8.toInt())
+    /** A Continue Watching card's name and caption line. */
+    val CARD_NAME = TextStyle(15.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
+    val CARD_CAPTION = TextStyle(12f, Weight.SEMIBOLD, Ink.OWN, 0xFFD6DEE8.toInt())
     val CARD_HOLDER = TextStyle(12.5f, Weight.SEMIBOLD, Ink.MUTED)
     val SEE_ALL_STYLE = TextStyle(14f, Weight.SEMIBOLD)
     val BADGE = TextStyle(10f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
-    /** A Continue Watching card's name and caption line. */
-    val WIDE_NAME = TextStyle(15.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
-    val WIDE_CAPTION = TextStyle(12f, Weight.SEMIBOLD, Ink.OWN, 0xFFD6DEE8.toInt())
     val RECENT_HEAD = TextStyle(14f, Weight.SEMIBOLD)
     val RECENT_NAME = TextStyle(15f, Weight.SEMIBOLD)
     val RECENT_NOW = TextStyle(12f, Weight.REGULAR, Ink.MUTED)

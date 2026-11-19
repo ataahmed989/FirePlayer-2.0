@@ -203,6 +203,12 @@ class VodSizesTest {
         for (i in 1 until below.size) assertTrue(below[i] > below[i - 1])
         // A wide card's gradient the same way: clear at its start, darkest at the bottom.
         assertEquals(0, VodSizes.WIDE_SCRIM_ALPHAS.first())
+        assertEquals(VodSizes.SCRIM_BOTTOM ushr 24, VodSizes.WIDE_SCRIM_ALPHAS.last())
+        // Its words: the name, the smaller caption line 2 dp under it, above the slim bar.
+        assertTrue(VodSizes.CARD_CAPTION.sp < VodSizes.CARD_NAME.sp)
+        assertTrue(VodSizes.CARD_BOTTOM_BAR >= VodSizes.WIDE_BAR_BOTTOM + VodSizes.BAR_H + 6f)
+        val words = VodSizes.CARD_BOTTOM_BAR + VodSizes.CARD_CAPTION.lineSp + VodSizes.CARD_LINE_GAP + VodSizes.CARD_NAME.lineSp
+        assertTrue(words < VodSizes.BROWSE_WIDE_H * (1f - VodSizes.WIDE_SCRIM_STOPS.first()))
         assertEquals(VodSizes.WIDE_SCRIM_STOPS.size, VodSizes.WIDE_SCRIM_ALPHAS.size)
         assertEquals(1f, VodSizes.WIDE_SCRIM_STOPS.last())
         // The picture above the words is clear: the gradient starts two fifths of the way down, or lower.

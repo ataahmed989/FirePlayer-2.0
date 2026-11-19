@@ -85,8 +85,8 @@ class CardView(
     private val edgeAlpha = app.fireplayer.ui.GlassStyle.CARD_EDGE ushr 24
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = t.dpf(VodSizes.FLAT_RIM) }
-    private val namePaint = textPaint(VodSizes.WIDE_NAME)
-    private val captionPaint = textPaint(VodSizes.WIDE_CAPTION)
+    private val namePaint = textPaint(VodSizes.CARD_NAME)
+    private val captionPaint = textPaint(VodSizes.CARD_CAPTION)
     private val holderTextPaint = textPaint(VodSizes.CARD_HOLDER)
     private val seeAllPaint = textPaint(VodSizes.SEE_ALL_STYLE).apply { textAlign = Paint.Align.CENTER }
     private val badgePaint = textPaint(VodSizes.BADGE)
@@ -291,12 +291,12 @@ class CardView(
         canvas.drawRoundRect(box, radius, radius, scrimPaint)
         val side = t.dpf(VodSizes.WIDE_TEXT_SIDE)
         val progress = c.progress
-        val bottom = height - if (progress != null) t.dpf(VodSizes.WIDE_BOTTOM_BAR) else t.dpf(VodSizes.WIDE_BOTTOM)
+        val bottom = height - if (progress != null) t.dpf(VodSizes.CARD_BOTTOM_BAR) else t.dpf(VodSizes.CARD_BOTTOM)
         val nameBaseline = if (captionLine.isNotEmpty()) {
             val captionBaseline = bottom - captionPaint.descent()
             canvas.drawText(captionLine, 0, captionLine.length, side, captionBaseline, captionPaint)
             // The name just above, 2 dp clear of the caption's tallest letters.
-            captionBaseline + captionPaint.ascent() - t.dpf(VodSizes.WIDE_LINE_GAP) - namePaint.descent()
+            captionBaseline + captionPaint.ascent() - t.dpf(VodSizes.CARD_LINE_GAP) - namePaint.descent()
         } else {
             bottom - namePaint.descent()
         }

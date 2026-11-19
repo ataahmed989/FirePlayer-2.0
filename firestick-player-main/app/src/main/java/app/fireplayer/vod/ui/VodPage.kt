@@ -49,7 +49,9 @@ import kotlin.math.abs
  *
  * Moving: Left/Right go card by card along a row, which glides like the Episodes sheet ([TitleRow]); Up/Down go row by
  * row, the page gliding with a Spring: below the first row the header slides away and the chosen row sits just under
- * the name line; back on the first row the header returns. Left from a row's first card goes to the rail. OK on a
+ * the name line; back on the first row the header returns. Up from the first row goes to the banner's Watch now and
+ * Details buttons ([VodHeader.Listener]); on Home, Right from Details goes into Recent channels ([RecentWindow]).
+ * Left from a row's first card goes to the rail. OK on a
  * poster opens its title page ([TitleStack], over the page; Back returns to the poster), on a Continue card says
  * playback comes next (a later step), on See all or a genre opens [SeeAllPage]; OK held on a title opens the small
  * window ([HoldWindow]): + Add to list (or − Remove from list), Mark watched, and on Continue cards Remove.
@@ -611,6 +613,10 @@ class VodPage(
         // the title page Details opened, which comes back to the button).
         if (!titles.isOpen && focusedRow?.spec?.continueRow != true) header.unfollow()
         updateHeaderPause()
+    }
+
+    override fun onHeaderEmptied() {
+        if (firstRowWithItems()?.focusChosen() != true) focusFallback()
     }
 
     /**

@@ -54,6 +54,8 @@ class VodHeader(
         /** Focus came to the banner's buttons, or left them altogether. */
         fun onHeaderFocus(has: Boolean)
         fun onHeaderKey(button: Button, keyCode: Int, event: KeyEvent): Boolean
+        /** The banner has no title left to show while one of its buttons holds focus: focus must move on first. */
+        fun onHeaderEmptied()
     }
 
     var listener: Listener? = null
@@ -330,8 +332,12 @@ class VodHeader(
         this.title.set(title?.name.orEmpty())
         facts.text = title?.let { RowRules.facts(it, caption) }.orEmpty()
         story.text = title?.description.orEmpty()
-        // No title, no buttons (and nothing for focus to land on).
-        if (actions) buttons.visibility = if (title == null) INVISIBLE else VISIBLE
+        // No title, no buttons (and nothing for focus to land on); focus on one moves on before they hide (a hidden
+        // view holding focus would hand it anywhere).
+        if (actions) {
+            if (title == null && hasButtonFocus) listener?.onHeaderEmptied()
+            buttons.visibility = if (title == null) INVISIBLE else VISIBLE
+        }
     }
 
     private fun now() = SystemClock.uptimeMillis()
