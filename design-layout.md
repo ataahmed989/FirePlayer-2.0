@@ -555,4 +555,6 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   dropdown, the Episodes heading and large episode pods (no Episodes button); Live TV's larger details logo, glass
   logo tiles and cleaner programme cells. Replaces the sizes of 2026-11-18. Tuned after the first look on the TV:
   window tint 72% to 58%, dark logos on the light tile again, the title's logo drawn by its visible part.
-  Open: a faint vertical line where the banner's artwork begins; the user's own tuning notes.
+  The faint vertical line where the banner's artwork begins is fixed (the card left of the picture's box is backed by
+  the same solid colour the picture is eased into); dark logo tiles and the title's logo size checked on the TV.
+  Open: the user's own tuning notes.
