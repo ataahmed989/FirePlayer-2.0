@@ -18,8 +18,9 @@ import app.fireplayer.vod.VodRepository
  * pictures let go); older ones are made again from the repository's stored details when Back returns to them, focus
  * where it was. A tab switch closes them all.
  *
- * Back here (VodPage passes it on after its small window): with focus in a row of the page, back to its buttons; from
- * the buttons, the page closes. A held Back acts once, on its release.
+ * Back here (VodPage passes it on after its small window): a show's season list closes; a wait for the add-ons ends;
+ * with focus in a row of the page (or on its season dropdown), back to its buttons; from the buttons, the page closes.
+ * A held Back acts once, on its release.
  */
 class TitleStack(private val ctx: Context, private val t: Tokens, private val host: Host, private val container: FrameLayout) {
 
@@ -121,7 +122,8 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
             KeyEvent.ACTION_UP -> if (backDown) {
                 backDown = false
                 val page = trail.top?.page
-                if (page != null && page.cancelWait()) Unit
+                if (page != null && page.closeSeasonList()) Unit
+                else if (page != null && page.cancelWait()) Unit
                 else if (page != null && page.focusInRows()) page.backToButtons() else pop()
             }
         }

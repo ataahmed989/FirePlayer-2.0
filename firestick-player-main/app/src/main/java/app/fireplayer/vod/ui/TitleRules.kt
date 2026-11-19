@@ -18,9 +18,10 @@ import app.fireplayer.vod.data.Captions
 import kotlin.math.roundToInt
 
 /**
- * What the title page says (pure, unit-tested; design-brief.md §6.4, layout A): its facts line and the one callout
- * beside it, the cast line, the Play button's words for a film or a show, the season pills, an episode card's two lines
- * and the facts line while an episode card is chosen, Details' facts, and where the D-pad goes between its parts.
+ * What the title page says (pure, unit-tested; design-brief.md §6.4 and Design-References/redesign-2026-11-19): its
+ * facts line and the one callout beside it, the short cast line, the Play button's words for a film or a
+ * show, the season dropdown's seasons, an episode's two lines and the facts line while an episode is chosen, Details'
+ * facts, and where the D-pad goes inside the action column and between the page's parts.
  * Dates are the [Day]s the data gives (an episode's US air date); [thisYear] decides whether a date says its year.
  */
 internal object TitleRules {
@@ -71,7 +72,11 @@ internal object TitleRules {
         return parts.filterNotNull().joinToString(" · ")
     }
 
-    /** "Starring A, B, C · Director D" (a film) or "· Created by …" (a show); the parts that exist. */
+    /**
+     * "Starring A, B, C · Director D" (a film) or "· Created by …" (a show); the parts that exist. The page no longer
+     * shows this line (all the cast and crew are in ⋯ › Details); it stays as the short form, checked against the
+     * research's fixtures.
+     */
     fun castLine(d: TitleDetails): String {
         val cast = d.cast?.value.orEmpty().filter { it.isNotBlank() }.take(CAST_SHOWN)
         val starring = cast.takeIf { it.isNotEmpty() }?.let { "Starring ${it.joinToString(", ")}" }
@@ -166,12 +171,12 @@ internal object TitleRules {
     /** "Season 2", "Specials". */
     fun seasonLabel(number: Int): String = if (number == 0) "Specials" else "Season $number"
 
-    /** The pills in order: the regular seasons, then Specials last (as the data gives them, sorted again to be sure). */
+    /** The dropdown's seasons in order: the regular ones, then Specials last (sorted again to be sure). */
     fun seasonOrder(seasons: List<Season>): List<Season> =
         seasons.sortedWith(compareBy({ it.number == 0 }, { it.number }))
 
-    /** Pills show only when there's more than one to choose (a season plus Specials is two). */
-    fun showsPills(seasons: List<Season>): Boolean = seasons.size > 1
+    /** The season dropdown shows only when there's more than one to choose (a season plus Specials is two). */
+    fun showsSeasonPicker(seasons: List<Season>): Boolean = seasons.size > 1
 
     /** "S2 E5"; a special "Special 3". */
     fun episodeCode(ref: EpisodeRef): String = if (ref.season == 0) "Special ${ref.episode}" else "S${ref.season} E${ref.episode}"
@@ -274,32 +279,86 @@ internal object TitleRules {
 
     // ---- Where the D-pad goes ----
 
-    /** The page's parts, top to bottom. */
-    enum class Part { BUTTONS, PILLS, EPISODES, MORE }
+    enum class Dir { UP, DOWN, LEFT, RIGHT }
 
-    /** Which parts a page has now. */
-    data class Parts(val pills: Boolean, val episodes: Boolean, val more: Boolean)
+    /** The action column's rows, top to bottom: the pills one under another, then the two circles side by side. */
+    private val COLUMN: List<List<TitleButtons.Which>> = listOf(
+        listOf(TitleButtons.Which.PLAY),
+        listOf(TitleButtons.Which.RESTART),
+        listOf(TitleButtons.Which.SOURCES),
+        listOf(TitleButtons.Which.MY_LIST, TitleButtons.Which.MORE),
+    )
 
     /**
-     * Down from [from]: the buttons go straight to the episode cards (a show; the pills are reached going Up) or More
-     * Like This (a film); pills to cards; cards to More Like This. Null: nowhere (consumed).
+     * The button a D-pad press leads to inside the action column, from [from]: Up and Down to the nearest row above or
+     * below with a button that [can] take focus (its first one), Left and Right along the circles' row. Buttons a title
+     * doesn't have, and Play while it can't play, are passed by. Null: the press leaves the column (the page says where
+     * to: [next], [toRail]).
      */
-    fun down(from: Part, has: Parts): Part? = when (from) {
-        Part.BUTTONS -> if (has.episodes) Part.EPISODES else if (has.more) Part.MORE else null
-        Part.PILLS -> if (has.episodes) Part.EPISODES else if (has.more) Part.MORE else null
-        Part.EPISODES -> if (has.more) Part.MORE else null
-        Part.MORE -> null
+    fun buttonStep(from: TitleButtons.Which, dir: Dir, can: (TitleButtons.Which) -> Boolean): TitleButtons.Which? {
+        val row = COLUMN.indexOfFirst { from in it }
+        if (row < 0) return null
+        val at = COLUMN[row].indexOf(from)
+        return when (dir) {
+            Dir.LEFT -> COLUMN[row].take(at).lastOrNull(can)
+            Dir.RIGHT -> COLUMN[row].drop(at + 1).firstOrNull(can)
+            Dir.UP -> (row - 1 downTo 0).firstNotNullOfOrNull { r -> COLUMN[r].firstOrNull(can) }
+            Dir.DOWN -> (row + 1 until COLUMN.size).firstNotNullOfOrNull { r -> COLUMN[r].firstOrNull(can) }
+        }
     }
 
-    /** Up from [from]: More Like This to the cards (or the buttons), cards to the pills (or the buttons), pills to the buttons. */
-    fun up(from: Part, has: Parts): Part? = when (from) {
-        Part.BUTTONS -> null
-        Part.PILLS -> Part.BUTTONS
-        Part.EPISODES -> if (has.pills) Part.PILLS else Part.BUTTONS
-        Part.MORE -> if (has.episodes) Part.EPISODES else Part.BUTTONS
+    /**
+     * The page's parts: the action column on the left; right of it a show's season dropdown above its episode pods, or
+     * a film's More Like This; a show's More Like This under them all.
+     */
+    enum class Part { BUTTONS, SEASON, EPISODES, MORE }
+
+    /** Which parts a page has now. */
+    data class Parts(val season: Boolean, val episodes: Boolean, val more: Boolean)
+
+    /**
+     * Where a D-pad press leads from the edge of [from] (out of the column; Up or Down from a row; Left from a row's
+     * first card), as the page is laid out. Null: nowhere (the press is used up), or the rail ([toRail]).
+     * - The column: Right to the episodes (a show; the dropdown if it has no pods yet) or More Like This (a film);
+     *   Down to a show's More Like This.
+     * - The dropdown: Down to the episodes, Left to the column.
+     * - The episodes: Up to the dropdown, Down to More Like This, Left to the column.
+     * - More Like This: a show's goes Up to the episodes (or the column); a film's goes Left to the column.
+     */
+    fun next(from: Part, dir: Dir, has: Parts, isShow: Boolean): Part? = when (from) {
+        Part.BUTTONS -> when (dir) {
+            Dir.RIGHT -> when {
+                !isShow -> if (has.more) Part.MORE else null
+                has.episodes -> Part.EPISODES
+                has.season -> Part.SEASON
+                else -> null
+            }
+            Dir.DOWN -> if (isShow && has.more) Part.MORE else null
+            else -> null
+        }
+        Part.SEASON -> when (dir) {
+            Dir.DOWN -> if (has.episodes) Part.EPISODES else if (has.more) Part.MORE else null
+            Dir.LEFT -> Part.BUTTONS
+            else -> null
+        }
+        Part.EPISODES -> when (dir) {
+            Dir.UP -> if (has.season) Part.SEASON else null
+            Dir.DOWN -> if (has.more) Part.MORE else null
+            Dir.LEFT -> Part.BUTTONS
+            Dir.RIGHT -> null
+        }
+        Part.MORE -> when {
+            isShow && dir == Dir.UP -> if (has.episodes) Part.EPISODES else Part.BUTTONS
+            !isShow && dir == Dir.LEFT -> Part.BUTTONS
+            else -> null
+        }
     }
 
-    /** What Back does with focus in [at]: from a row, back to the buttons; from the buttons, leave the page. */
+    /** Whether [dir] from the edge of [from] goes to the tab rail: Left from the column, and from a show's More Like This. */
+    fun toRail(from: Part, dir: Dir, isShow: Boolean): Boolean =
+        dir == Dir.LEFT && (from == Part.BUTTONS || (from == Part.MORE && isShow))
+
+    /** What Back does with focus in [at]: from anywhere else, back to the buttons; from the buttons, leave the page. */
     fun backLeaves(at: Part): Boolean = at == Part.BUTTONS
 
     /** Whether a show's page is glided up with focus in [at] (only More Like This needs it). */
