@@ -32,9 +32,14 @@ import java.util.concurrent.FutureTask
  * on this TV ([VodLibrary]). Answers come from the cache on disk at once and are refreshed in the background (Cinemeta
  * pages about 4 h, the manifest and metas a day, Top 10 6 h).
  *
+ * The title page (step 2): a title's details from Cinemeta's meta (kept about 4 h) and, with a usable key, one TMDB
+ * details call (kept about 24 h) whose appended lists also make More Like This; without a key More Like This comes from
+ * Cinemeta (a film's director, the main genre). Stored answers come first, fresh ones after.
+ *
  * Threads: [io] (one thread) reads the cache and the database and writes the database; [net] fetches; [lookups] runs
- * TMDB's id lookups and Cinemeta metas for a Top 10 side by side; every callback goes through [main] and is dropped once
- * its [Cancel] is called. The same page or list asked for by several rows at once is fetched once.
+ * TMDB's id lookups and Cinemeta metas for a Top 10 side by side, and a title page's TMDB details beside its meta; every
+ * callback goes through [main] and is dropped once its [Cancel] is called. The same page, list, meta or details asked
+ * for by several at once is fetched once.
  *
  * Privacy: no address is logged (TMDB's carries the key), only what kind of failure it was.
  */
@@ -62,6 +67,8 @@ class DefaultVodRepository(
     private val byId = Lru<String, Title>(TITLES_KEPT)
     private val byTmdb = Lru<String, Title>(TITLES_KEPT)
     private val top10 = ConcurrentHashMap<Kind, Stored<List<Card>>>()
+    private val metas = Lru<String, Stored<CinemetaDetails.Meta>>(DETAILS_KEPT)
+    private val tmdbDetails = Lru<String, Stored<TmdbDetails.Extras?>>(DETAILS_KEPT)
     private val running = ConcurrentHashMap<String, FutureTask<*>>()
     @Volatile private var manifest: Stored<Cinemeta.Manifest>? = null
     @Volatile private var refusedKey: String? = null
@@ -149,48 +156,384 @@ class DefaultVodRepository(
     }
 
     // ---- Title page (step 2) ----
-    // STUB FOR THE DATA ENGINEER (step 2): compiles and answers safely so the page can be built against it. details()
-    // gives only what the title already says (no meta, no TMDB, no episodes), moreLikeThis() nothing, resolve() only
-    // titles that already have their IMDb id; episode marks and positions aren't kept yet. Replace each with the real
-    // work (Cinemeta meta, TMDB details, More Like This, the per-episode library), following the contract's KDoc in
-    // VodContract.kt.
 
     override fun details(title: Title, onDetails: (details: TitleDetails, fresh: Boolean) -> Unit): Cancel {
         val req = Req()
-        post(req) { onDetails(TitleDetails.of(title), true) } // STUB (data engineer)
+        io.execute {
+            if (req.cancelled) return@execute
+            val kind = title.kind
+            val meta = storedMeta(kind, title.id)
+            val key = usableKey()
+            val knownTmdb = title.tmdbId ?: meta?.value?.title?.tmdbId ?: if (key) tmdbIdOf(kind, title.id, fetch = false) else null
+            val extras = if (key && knownTmdb != null) storedExtras(kind, knownTmdb) else null
+            // Chosen once for the visit, so the backdrop never changes: TMDB's (smaller) when its details are stored.
+            val background = extras?.value?.backdrop?.let(VodArt::tmdbBackdrop) ?: title.background
+                ?: meta?.value?.title?.background ?: VodArt.background(title.id)
+            val now = clock()
+            // A More Like This stand-in has no meta to ask for (the page resolves it first; TMDB's id still works).
+            val metaFresh = !title.hasImdbId || (meta != null && meta.isFresh(now))
+            val tmdbSettled = !key || now < tmdbPausedUntil || (extras != null && extras.isFresh(now))
+            val job = DetailsJob(title, background, req, onDetails)
+            job.start(meta?.value, extras?.value, metaPending = !metaFresh, tmdbPending = !tmdbSettled)
+            if (!metaFresh) {
+                net.execute {
+                    val got = if (req.cancelled) null else fetchMeta(kind, title.id)
+                    job.meta(got?.value)
+                    if (!tmdbSettled && knownTmdb == null) {
+                        // TMDB waited for the meta's TMDB id (or, without one, TMDB's find).
+                        val id = if (req.cancelled) null else (got ?: meta)?.value?.title?.tmdbId ?: tmdbIdOf(kind, title.id, fetch = true)
+                        job.tmdb(id?.let { tmdbFor(kind, it, req) })
+                    }
+                }
+            } else if (!tmdbSettled && knownTmdb == null) {
+                lookups.execute {
+                    val id = if (req.cancelled) null else tmdbIdOf(kind, title.id, fetch = true)
+                    job.tmdb(id?.let { tmdbFor(kind, it, req) })
+                }
+            }
+            if (!tmdbSettled && knownTmdb != null) lookups.execute { job.tmdb(tmdbFor(kind, knownTmdb, req)) }
+        }
         return req
+    }
+
+    /**
+     * One [details] request: the parts known so far, passed on (merged) each time one arrives; the last call fresh once
+     * nothing is pending. A part that couldn't be fetched (null) keeps what was there.
+     */
+    private inner class DetailsJob(
+        private val asked: Title,
+        private val background: String,
+        private val req: Req,
+        private val onDetails: (TitleDetails, Boolean) -> Unit,
+    ) {
+        private var meta: CinemetaDetails.Meta? = null
+        private var extras: TmdbDetails.Extras? = null
+        private var metaPending = false
+        private var tmdbPending = false
+        private var sent: TitleDetails? = null
+        private var done = false
+
+        @Synchronized
+        fun start(meta: CinemetaDetails.Meta?, extras: TmdbDetails.Extras?, metaPending: Boolean, tmdbPending: Boolean) {
+            this.meta = meta
+            this.extras = extras
+            this.metaPending = metaPending
+            this.tmdbPending = tmdbPending
+            update()
+        }
+
+        @Synchronized
+        fun meta(got: CinemetaDetails.Meta?) {
+            metaPending = false
+            if (got != null) meta = got
+            update()
+        }
+
+        @Synchronized
+        fun tmdb(got: TmdbDetails.Extras?) {
+            tmdbPending = false
+            if (got != null) extras = got
+            update()
+        }
+
+        private fun update() {
+            if (done || req.cancelled) return
+            val fresh = !metaPending && !tmdbPending
+            // Nothing stored: wait for the first part (with nothing at all, the one call is the title alone).
+            if (!fresh && meta == null && extras == null) return
+            val details = DetailsMerge.compose(asked, meta, extras, background, top10Rank(asked.kind, asked.id))
+            if (!fresh && details == sent) return
+            sent = details
+            if (fresh) done = true
+            post(req) { onDetails(details, fresh) }
+        }
     }
 
     override fun moreLikeThis(title: Title, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
         val req = Req()
-        post(req) { onCards(emptyList(), true) } // STUB (data engineer)
+        io.execute {
+            if (req.cancelled) return@execute
+            val stored = Parts(fetch = false, req)
+            val first = similarCards(title, stored)
+            if (stored.allFresh) {
+                post(req) { onCards(first, true) }
+                return@execute
+            }
+            if (first.isNotEmpty()) post(req) { onCards(first, false) }
+            net.execute {
+                if (req.cancelled) return@execute
+                val cards = similarCards(title, Parts(fetch = true, req))
+                post(req) { onCards(cards, true) }
+            }
+        }
         return req
+    }
+
+    /** More Like This from the parts [parts] gives (stored only, or fetched when old or missing). */
+    private fun similarCards(title: Title, parts: Parts): List<Card> {
+        val kind = title.kind
+        var metaAsked = false
+        var meta: CinemetaDetails.Meta? = null
+        val metaOf = {
+            if (!metaAsked) {
+                metaAsked = true
+                if (title.hasImdbId) meta = parts.get(storedMeta(kind, title.id)) { fetchMeta(kind, title.id) }
+            }
+            meta
+        }
+        var tmdbCards = emptyList<Card>()
+        if (usableKey()) {
+            val tmdbId = title.tmdbId ?: metaOf()?.title?.tmdbId
+                ?: if (title.hasImdbId) tmdbIdOf(kind, title.id, parts.fetch) else null
+            val extras = tmdbId?.let { id -> parts.get(storedExtras(kind, id)) { fetchExtras(kind, id) } }
+            if (extras != null) {
+                tmdbCards = MoreLikeThis.fromTmdb(extras, title.id, Dates.isoDay(clock()), ::knownImdb)
+                    .map { pick -> MoreLikeThis.card(pick, pick.imdb?.let { byId["${pick.item.kind.type}|$it"] }) }
+            }
+        }
+        if (tmdbCards.size >= MoreLikeThis.FEW || parts.cancelled) return MoreLikeThis.join(title, tmdbCards, emptyList())
+        return MoreLikeThis.join(title, tmdbCards, cinemetaSimilar(title, metaOf(), tmdbCards, parts))
+    }
+
+    /**
+     * Cinemeta's More Like This (no key, TMDB failing or giving few): a film's director's films, then the main
+     * genre's Popular ranked by genres shared.
+     */
+    private fun cinemetaSimilar(title: Title, meta: CinemetaDetails.Meta?, already: List<Card>, parts: Parts): List<Card> {
+        val kind = title.kind
+        val out = ArrayList<Title>()
+        if (kind == Kind.MOVIE) {
+            meta?.directors?.firstOrNull()?.let { director ->
+                val url = Cinemeta.searchUrl(Kind.MOVIE, director)
+                val found = parts.get(storedPage(url, learn = false)) { fetchSearch(url) }?.titles.orEmpty()
+                out += MoreLikeThis.byDirector(found, director, title.id, currentYear())
+            }
+        }
+        val genres = (meta?.title?.genres ?: title.genres).ifEmpty { title.genres }
+        genres.firstOrNull()?.let { genre ->
+            val q = Query(kind, Cinemeta.TOP, genre)
+            val page = parts.get(storedPage(q.url(0))) { fetchPage(q, 0) }
+            val exclude = HashSet<String>().apply {
+                add(title.id)
+                already.forEach { add(it.title.id) }
+                out.forEach { add(it.id) }
+            }
+            out += MoreLikeThis.byGenre(page?.titles.orEmpty(), genres, exclude, MoreLikeThis.MAX - already.size - out.size)
+        }
+        return out.map { Card(it) }
+    }
+
+    /**
+     * What a lookup uses: stored parts, fresh or not ([fetch] false: [allFresh] says whether all were), or fetched when
+     * old or missing ([fetch] true; a failed fetch keeps the stored copy).
+     */
+    private inner class Parts(val fetch: Boolean, private val req: Req) {
+        var allFresh = true
+            private set
+        val cancelled: Boolean get() = req.cancelled
+
+        fun <T> get(stored: Stored<T>?, fetcher: () -> Stored<T>?): T? {
+            if (stored != null && stored.isFresh(clock())) return stored.value
+            if (!fetch || req.cancelled) {
+                allFresh = false
+                return stored?.value
+            }
+            return (fetcher() ?: stored)?.value
+        }
     }
 
     override fun resolve(title: Title, onTitle: (Title?) -> Unit): Cancel {
         val req = Req()
-        post(req) { onTitle(title.takeIf { it.hasImdbId }) } // STUB (data engineer): no TMDB lookup yet
+        if (title.hasImdbId) {
+            post(req) { onTitle(title) }
+            return req
+        }
+        val kind = title.kind
+        val tmdbId = title.tmdbId ?: MoreLikeThis.tmdbIdOfStandIn(title.id)
+        if (tmdbId == null) {
+            post(req) { onTitle(null) }
+            return req
+        }
+        io.execute {
+            if (req.cancelled) return@execute
+            when (val k = knownImdb(kind, tmdbId)) {
+                is TmdbTrending.Known.Hit -> return@execute post(req) { onTitle(resolved(title, k.imdb, tmdbId)) }
+                TmdbTrending.Known.Miss -> return@execute post(req) { onTitle(null) }
+                TmdbTrending.Known.Unknown -> Unit
+            }
+            val stored = storedExtras(kind, tmdbId)
+            stored?.value?.imdbId?.let { tt -> return@execute post(req) { onTitle(resolved(title, tt, tmdbId)) } }
+            // TMDB answered lately and had no IMDb id (or no such title).
+            if (stored != null && stored.isFresh(clock())) return@execute post(req) { onTitle(null) }
+            // The details call the opened page makes anyway: no extra request.
+            net.execute {
+                if (req.cancelled) return@execute
+                val tt = fetchExtras(kind, tmdbId)?.value?.imdbId
+                post(req) { onTitle(tt?.let { resolved(title, it, tmdbId) }) }
+            }
+        }
         return req
     }
 
-    override fun isEpisodeWatched(episode: Episode): Boolean = false // STUB (data engineer)
-
-    override fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean) = Unit // STUB (data engineer)
-
-    override fun markWatchedUpTo(details: TitleDetails, upTo: Episode) = Unit // STUB (data engineer)
-
-    override fun inContinueWatching(id: String): Boolean = library.continueWatching(null).any { it.title.id == id }
-
-    // STUB (data engineer): markedWatched isn't worked out yet.
-    override fun lastPlayed(title: Title): LastPlayed? = library.progressOf(title.kind, title.id)?.let {
-        LastPlayed(it.episode, Position(it.positionMs, it.durationMs, it.at), it.hidden)
+    /**
+     * A More Like This title with its IMDb id found: Cinemeta's when known here, else the card's with metahub's poster
+     * and logo (one poster per IMDb id); the card's backdrop and TMDB id kept.
+     */
+    private fun resolved(card: Title, imdb: String, tmdbId: Int): Title {
+        val base = byId["${card.kind.type}|$imdb"]
+            ?: card.copy(id = imdb, poster = VodArt.poster(imdb), logo = VodArt.logo(imdb))
+        return base.copy(
+            background = card.background ?: base.background ?: VodArt.background(imdb),
+            description = base.description ?: card.description,
+            tmdbId = tmdbId,
+        )
     }
 
-    override fun positionOf(episode: Episode): Position? = null // STUB (data engineer)
+    /** What's known here of a TMDB title's IMDb id: Cinemeta's index, then the id map (which may read the database). */
+    private fun knownImdb(kind: Kind, tmdbId: Int): TmdbTrending.Known =
+        byTmdb["${kind.type}#$tmdbId"]?.let { TmdbTrending.Known.Hit(it.id) } ?: ids.known(kind, tmdbId)
 
-    // STUB (data engineer): only the title's record; no episode position, no watched mark at the end.
+    override fun isEpisodeWatched(episode: Episode): Boolean = library.isEpisodeWatched(episode)
+
+    override fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean) = library.setEpisodesWatched(episodes, watched)
+
+    override fun markWatchedUpTo(details: TitleDetails, upTo: Episode) =
+        library.setEpisodesWatched(EpisodeMarks.upTo(details.episodes, upTo, clock()), true)
+
+    override fun inContinueWatching(id: String): Boolean = library.inContinueWatching(id)
+
+    override fun lastPlayed(title: Title): LastPlayed? = library.lastPlayed(title.kind, title.id)
+
+    override fun positionOf(episode: Episode): Position? = library.positionOf(episode)
+
     override fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) =
         library.recordProgress(title, episode, positionMs, durationMs)
+
+    // ---- Details: Cinemeta's meta and TMDB's details, stored and fetched ----
+
+    private fun storedMeta(kind: Kind, id: String): Stored<CinemetaDetails.Meta>? {
+        val key = CinemetaDetails.key(kind, id)
+        metas[key]?.let { return it }
+        val entry = cache.read(key) ?: return null
+        val meta = CinemetaDetails.read(entry.data) ?: return null
+        return Stored(meta, entry.at, entry.freshMs).also { metas[key] = it }
+    }
+
+    /** A title's meta, fetched (once, however many ask meanwhile), stored trimmed; its ids learnt. Null on failure. */
+    private fun fetchMeta(kind: Kind, id: String): Stored<CinemetaDetails.Meta>? {
+        val key = CinemetaDetails.key(kind, id)
+        return single(key) {
+            try {
+                val meta = CinemetaDetails.parse(http.get(Cinemeta.metaUrl(kind, id)), kind, id)
+                if (meta == null) {
+                    Log.w(TAG, "Cinemeta details: no meta")
+                    return@single null
+                }
+                val now = clock()
+                cache.write(key, CinemetaDetails.write(meta), CinemetaDetails.FRESH_MS, now)
+                index(listOf(meta.title))
+                ids.learn(listOf(meta.title))
+                Stored(meta, now, CinemetaDetails.FRESH_MS).also { metas[key] = it }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Cinemeta details not read: ${t.javaClass.simpleName}")
+                null
+            }
+        }
+    }
+
+    /** TMDB's stored details; a stored null value: TMDB had no such title lately. */
+    private fun storedExtras(kind: Kind, tmdbId: Int): Stored<TmdbDetails.Extras?>? {
+        val key = TmdbDetails.key(kind, tmdbId)
+        tmdbDetails[key]?.let { return it }
+        val entry = cache.read(key) ?: return null
+        val value = if (entry.data.optBoolean(MISSING)) null else TmdbDetails.read(entry.data) ?: return null
+        return Stored(value, entry.at, entry.freshMs).also { tmdbDetails[key] = it }
+    }
+
+    /**
+     * TMDB's details fetched (once, however many ask meanwhile) and stored trimmed; the IMDb id it gives is learnt. A
+     * stored null value: TMDB has no such title. Null: not fetched (no usable key, paused after "too many requests",
+     * or a failure, which [tmdbFailed] handles).
+     */
+    private fun fetchExtras(kind: Kind, tmdbId: Int): Stored<TmdbDetails.Extras?>? {
+        if (!usableKey() || clock() < tmdbPausedUntil) return null
+        val key = TmdbDetails.key(kind, tmdbId)
+        return single(key) {
+            try {
+                val text = tmdb.details(kind, tmdbId)
+                val now = clock()
+                if (text == null) {
+                    cache.write(key, JSONObject().put(MISSING, true), TmdbDetails.MISSING_MS, now)
+                    return@single Stored<TmdbDetails.Extras?>(null, now, TmdbDetails.MISSING_MS).also { tmdbDetails[key] = it }
+                }
+                val got = TmdbDetails.parse(text, kind) ?: return@single null
+                cache.write(key, TmdbDetails.write(got), TmdbDetails.FRESH_MS, now)
+                when {
+                    got.imdbId != null -> ids.found(kind, tmdbId, got.imdbId)
+                    ids.known(kind, tmdbId) == TmdbTrending.Known.Unknown -> ids.missed(kind, tmdbId)
+                }
+                Stored<TmdbDetails.Extras?>(got, now, TmdbDetails.FRESH_MS).also { tmdbDetails[key] = it }
+            } catch (t: Throwable) {
+                tmdbFailed(t)
+                null
+            }
+        }
+    }
+
+    /** TMDB's details for a [details] request: stored when still fresh, else fetched; null when neither. */
+    private fun tmdbFor(kind: Kind, tmdbId: Int, req: Req): TmdbDetails.Extras? {
+        val stored = storedExtras(kind, tmdbId)
+        if (stored != null && stored.isFresh(clock())) return stored.value
+        if (req.cancelled) return null
+        return (fetchExtras(kind, tmdbId) ?: stored)?.value
+    }
+
+    /**
+     * The TMDB id of a title whose meta has none (rare): TMDB's find by IMDb id, kept a month. Without [fetch], only
+     * a stored answer.
+     */
+    private fun tmdbIdOf(kind: Kind, imdb: String, fetch: Boolean): Int? {
+        if (!imdb.startsWith("tt")) return null
+        val key = TmdbDetails.findKey(imdb)
+        val stored = cache.read(key)
+        if (stored != null && (stored.isFresh(clock()) || !fetch)) return stored.data.optInt(kind.type, 0).takeIf { it > 0 }
+        if (!fetch || !usableKey() || clock() < tmdbPausedUntil) return null
+        return single(key) {
+            try {
+                val text = tmdb.find(imdb)
+                val found = Kind.entries.associateWith { TmdbDetails.idFromFind(text, it) }
+                cache.write(key, JSONObject().apply { found.forEach { (k, v) -> put(k.type, v ?: 0) } }, TmdbDetails.FIND_FRESH_MS)
+                found[kind]?.also { ids.found(kind, it, imdb) }
+            } catch (t: Throwable) {
+                tmdbFailed(t)
+                null
+            }
+        }
+    }
+
+    /** A director search (More Like This without a key), fetched once however many ask, kept as Cinemeta says. */
+    private fun fetchSearch(url: String): Stored<Cinemeta.Page>? = single(url) {
+        try {
+            val page = Cinemeta.parseSearch(http.get(url), Kind.MOVIE)
+            val now = clock()
+            cache.write(url, JSONObject().put("titles", TitleJson.writeTitles(page.titles)).put("hasMore", false), page.maxAgeMs, now)
+            Stored(page, now, page.maxAgeMs).also { pages[url] = it }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Cinemeta search not read: ${t.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * This week's Top 10 place of [id] (1..10) from the stored list, kept for a day; null without a usable key or
+     * outside it. Never stored with the details.
+     */
+    private fun top10Rank(kind: Kind, id: String): Int? {
+        if (!usableKey()) return null
+        val stored = storedTop10(kind) ?: return null
+        if (clock() - stored.at !in 0 until RANK_KEPT_MS) return null
+        return stored.value.firstOrNull { it.title.id == id }?.rank
+    }
 
     // ---- Cinemeta catalogs ----
 
@@ -237,8 +580,11 @@ class DefaultVodRepository(
         }
     }
 
-    /** The page as stored in memory or on disk (its titles indexed); null when never fetched. */
-    private fun storedPage(url: String): Stored<Cinemeta.Page>? {
+    /**
+     * The page as stored in memory or on disk (its titles indexed, unless [learn] is false: a name search's titles are
+     * thinner than a catalog's); null when never fetched.
+     */
+    private fun storedPage(url: String, learn: Boolean = true): Stored<Cinemeta.Page>? {
         pages[url]?.let { return it }
         val entry = cache.read(url) ?: return null
         val page = Cinemeta.Page(
@@ -248,7 +594,7 @@ class DefaultVodRepository(
         )
         return Stored(page, entry.at, entry.freshMs).also {
             pages[url] = it
-            index(page.titles)
+            if (learn) index(page.titles)
         }
     }
 
@@ -414,10 +760,13 @@ class DefaultVodRepository(
         }
     }
 
-    /** What a TMDB failure means: a refused key is remembered (no Top 10 until it changes), 429 pauses TMDB. */
+    /**
+     * What a TMDB failure means: a refused key is remembered (no Top 10, age ratings or TMDB More Like This until it
+     * changes), 429 pauses TMDB. Only the code or the kind of failure is logged, never an address.
+     */
     private fun tmdbFailed(t: Throwable): List<Card>? {
         val code = (t as? Tmdb.HttpError)?.code
-        Log.w(TAG, "TMDB trending not read: ${code ?: t.javaClass.simpleName}")
+        Log.w(TAG, "TMDB not read: ${code ?: t.javaClass.simpleName}")
         when (code) {
             401, 403 -> {
                 val hash = keyHash(tmdbKey())
@@ -531,6 +880,12 @@ class DefaultVodRepository(
         const val RETRY_MS = 10 * 60_000L
         const val REFUSED_KEPT_MS = 24 * 3600_000L
         private const val REFUSED = "tmdb|refused"
+        /** Metas and TMDB details kept in memory: the 3-page stack and a few returns. */
+        private const val DETAILS_KEPT = 6
+        /** How long a stored Top 10 still gives a title page its "#4 in Top 10 this week". */
+        const val RANK_KEPT_MS = 24 * 3600_000L
+        /** A stored TMDB answer meaning "no such title". */
+        private const val MISSING = "missing"
 
         private fun top10Key(kind: Kind) = "tmdb|trending|${kind.type}|week"
 
