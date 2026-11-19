@@ -32,12 +32,13 @@ import kotlin.math.sqrt
  * blurred on a background thread, and drawn inside each glass shape by [GlassDrawable].
  *
  * One per player, not shared: a new player opens before the old one closes, and the old one's onStop and
- * onDestroy must not stop the new one's copies. Copies are only taken while glass is drawn, so with the glass
- * look off nothing here runs. Everything happens on the main thread except the copy and the blur, which run on
+ * onDestroy must not stop the new one's copies. Copies are only taken while glass is drawn where it can be seen
+ * ([onGlassDrawn]; glass drawn out of sight asks for none, [onGlassHidden]), so with the glass look off, or the
+ * controls and windows away, nothing here runs: no copies, no probes, no redrawing. Everything happens on the main thread except the copy and the blur, which run on
  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
  * reaches the glass at once instead of at the next refresh.
  *
- * While a 4K HDR film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
+ * While a 4K film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
  * screen for a while, what only copies need is let go ([idleCheck]).
  */
 class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
@@ -68,7 +69,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private val probeMs: Long get() = GlassLoad.probeMs(heavyVideo)
 
     /**
-     * The film playing is 4K HDR on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
+     * The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
      * (fewer if that's the setting) and probes for cuts every half second, as each copy of such a frame weighs on the
      * TV's graphics chip and memory. Told by the player whenever the video's format or size changes; the saved setting
      * stays as it is.
@@ -285,6 +286,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         main.removeMessages(MSG_PROBED)
         main.removeCallbacks(endNavigation)
         main.removeCallbacks(idleCheck)
+        main.removeCallbacks(look)
+        lookPending = false
         idlePending = false
         navigating = false
         ticking = false
@@ -346,6 +349,60 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         if (playing) startTicking(now)
         if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
     }
+
+    /**
+     * A glass shape drew where it can't be seen (faded out, or drawn once at the start of its fade in). Nothing is copied
+     * for it, and it isn't told of new copies' fades. It's looked at again shortly ([look]): once it can be seen it's
+     * drawn again, and that drawing asks for the film as any glass on screen does.
+     */
+    override fun onGlassHidden() {
+        if (!started || !copiesPossible() || lookPending) return
+        looks = 0
+        lookPending = true
+        main.postDelayed(look, LOOK_SOON_MS)
+    }
+
+    private var lookPending = false
+    private var looks = 0
+
+    /**
+     * After [onGlassHidden]: glass that has come into view since it drew is drawn again. While some is still shown but
+     * can't be seen (fading in, or left at no opacity) it's looked at again, a few times quickly and then twice a
+     * second; with none left, nothing more runs. Looking draws nothing and copies nothing.
+     */
+    private val look = object : Runnable {
+        override fun run() {
+            lookPending = false
+            if (!started || drawables.isEmpty()) return
+            var waiting = false
+            visiting.addAll(drawables.keys)
+            for (drawable in visiting) {
+                if (!drawable.drewHidden) continue
+                if (drawable.isOnScreen()) drawable.invalidateSelf() else if (drawable.isShown()) waiting = true
+            }
+            visiting.clear()
+            if (!waiting) return
+            lookPending = true
+            main.postDelayed(this, if (++looks < LOOKS_SOON) LOOK_SOON_MS else LOOK_LATER_MS)
+        }
+    }
+
+    /**
+     * Glass is about to show (the controls come up, a window opens): a copy of the film is asked for now, without
+     * waiting for the glass to be drawn, so it's there as the glass fades in. Nothing else starts: the copies after it
+     * come only while glass can be seen.
+     */
+    fun wake() {
+        if (!started || !copiesPossible()) return
+        val now = SystemClock.uptimeMillis()
+        if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
+    }
+
+    /** Copies of the film and cut probes asked for since the player screen came up: for the log ([copiesAsked]). */
+    var copiesAsked = 0
+        private set
+    var probesAsked = 0
+        private set
 
     // ---- Scheduling (main thread) ---------------------------------------
 
@@ -442,6 +499,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         if (capturePending && captureAt - now < PROBE_LEAD_MS) return
         if (now >= capturedAt + refreshMs - PROBE_LEAD_MS) return
         probeInFlight = true
+        probesAsked++
         main.postDelayed(probeWatchdog, WATCHDOG_MS)
         handler.obtainMessage(MSG_PROBE, generation, 0, ref).sendToTarget()
     }
@@ -585,18 +643,14 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     /**
-     * What goes with no glass on screen. FirePlayer's own share of the graphics memory the glass look brings is small:
-     * the copy and its working pictures (about a megabyte), the blurred film (a few small pictures) and the baked glass
-     * ([GlassBakes], up to 12 MB). The rest (118 MB of graphics memory seen on a Fire TV Stick 4K Max, from when the
-     * glass Settings window opened over a 4K HDR film until after it closed) is most likely the TV's own drawing cache in
-     * FirePlayer's process: the pictures drawn, the layers windows slide in on, and the graphics work of each copy of the
-     * 4K frame. On Android 11 that cache may grow to the screen's size in pixels times 48 bytes, about 400 MB at a 4K
-     * screen mode, so nothing in it is pushed out by size; it's emptied only when Fire OS trims the app (in the
-     * background) or what's in it goes unused for a while. No public call lets an app empty it, but it lets go of a
-     * picture once the app has let go of it. So the app lets go of every picture the glass only needs while it shows,
-     * and copies 4K HDR film less often ([heavyVideo]): the baked glass is made again in a few milliseconds when glass
-     * next needs it, and the next copy brings the film back. A paused film's blurred picture is kept, so glass shown
-     * over it again is right at once.
+     * What goes with no glass on screen: the copy and its working pictures (about a megabyte), the blurred film (a few
+     * small pictures) and the baked glass ([GlassBakes], up to 12 MB), so they and their copies in the TV's drawing cache
+     * can go; the player then has that cache trimmed ([app.fireplayer.player.GraphicsTrim]). Measured on a Fire TV Stick
+     * 4K Max during a 4K film: the TV's drawing cache in FirePlayer was about 53 MB with the glass look on (41 MB of it
+     * working pictures nothing was using), while the 121 to 198 MB of "graphics" memory beside it was the decoder's own
+     * 4K frames, not the glass. The baked glass is made again in a few milliseconds when glass next needs it, and the
+     * next copy brings the film back. A paused film's blurred picture is kept, so glass shown over it again is right at
+     * once.
      */
     private fun releaseIdle() {
         // A fade is over by now (unless held still by the D-pad): what faded out, and the rows the blend worked in,
@@ -612,7 +666,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         }
         worker?.post { releaseBuffers() }
         GlassBakes.trim()
+        onIdle?.invoke()
     }
+
+    /** Called when what the glass holds was let go with none on screen ([releaseIdle]): the player trims graphics memory. */
+    var onIdle: (() -> Unit)? = null
 
     /** On the worker: the copy's working pictures go, unless a copy or probe is under way (they're made again as needed). */
     private fun releaseBuffers() {
@@ -723,6 +781,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private fun requestCapture(cut: Boolean) {
         val job = buildJob(cut) ?: return
         val handler = worker ?: startWorker()
+        copiesAsked++
         inFlight = true
         lastRequestAt = job.at
         main.postDelayed(watchdog, WATCHDOG_MS)
@@ -1193,6 +1252,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
          * film soon after the last window closes.
          */
         const val IDLE_RELEASE_MS = 5_000L
+        /** Glass that drew out of sight is looked at again this soon, [LOOKS_SOON] times (a fade in takes 160 to 250 ms). */
+        const val LOOK_SOON_MS = 40L
+        const val LOOKS_SOON = 8
+        /** And then this often, for as long as it's shown at no opacity. */
+        const val LOOK_LATER_MS = 500L
         /** No probe when a copy is due this soon: that copy shows the cut anyway. */
         const val PROBE_LEAD_MS = 60L
         /**

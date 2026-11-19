@@ -1,7 +1,6 @@
 package app.fireplayer.vod.play
 
 import android.app.Activity
-import android.content.ComponentCallbacks2
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
@@ -12,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
+import app.fireplayer.player.GraphicsTrim
 
 /**
  * Film mode memory and background release (design-brief.md §6.6), for the shell (HomeActivity).
@@ -157,16 +157,11 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
     /**
      * The graphics caches the shell's windows hold (textures, glyphs, layers), flushed as Android does when an app's
-     * screens are hidden. Best effort: the call isn't public, so it's skipped wherever it isn't there.
+     * screens are hidden ([GraphicsTrim]).
      */
     private fun trimGraphics() {
-        try {
-            val global = Class.forName("android.view.WindowManagerGlobal")
-            val instance = global.getMethod("getInstance").invoke(null)
-            global.getMethod("trimMemory", Int::class.javaPrimitiveType).invoke(instance, ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN)
-        } catch (e: Throwable) {
-            Log.i(TAG, "Graphics trim not available: ${e.javaClass.simpleName}")
-        }
+        val trimmed = GraphicsTrim.trim()
+        Log.i(TAG, "Film mode: the pages' pictures and caches let go" + if (trimmed) ", graphics trimmed" else "")
     }
 
     companion object {

@@ -1,0 +1,138 @@
+package app.fireplayer.player
+
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * The film's bytes as they come from the network, counted for [DownloadRate]. Given to the film's HTTP connection
+ * ([PlayerFactory.build]); any thread.
+ */
+@OptIn(UnstableApi::class)
+class ByteMeter : TransferListener {
+    private val total = AtomicLong()
+
+    /** Bytes that have come so far. */
+    val bytes: Long get() = total.get()
+
+    override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+
+    override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+
+    override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+        if (isNetwork) total.addAndGet(bytesTransferred.toLong())
+    }
+
+    override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+}
+
+/**
+ * How fast the film downloads, for the FirePlayerDiag log: to tell on the TV whether Real-Debrid holds one connection
+ * to a speed (which a second connection would get round) before any second connection is built.
+ *
+ * Once the film's buffer is full the download only keeps pace with the film (84 Mb/s for an 84 Mb/s film on any line),
+ * which says nothing about the line. So seconds are kept apart: all of them ([mbps], since the last [take]), and
+ * those in which the film loaded freely, the buffer not yet full ([freeMbps], [freeSeconds]). The fastest stretch of
+ * [BEST_SECONDS] free seconds in a row since the film started is [bestFreeMbps]: what one connection has been seen to
+ * carry. Compared on the TV with the line's own speed, it shows whether the server or the line is the limit.
+ *
+ * Fed once a second on the main thread ([sample]); nothing is made after it's built.
+ */
+class DownloadRate {
+    private var lastBytes = -1L
+    private var lastMs = 0L
+    private var bytes = 0L
+    private var ms = 0L
+    private var freeBytes = 0L
+    private var freeMs = 0L
+    // The latest free seconds in a row, newest last: bytes and ms of each.
+    private val runBytes = LongArray(BEST_SECONDS)
+    private val runMs = LongArray(BEST_SECONDS)
+    private var run = 0
+
+    /** The fastest [BEST_SECONDS] free seconds in a row so far, in Mb/s; 0 before there were any. */
+    var bestFreeMbps = 0.0
+        private set
+
+    /** Seconds loaded freely since the last [take]. */
+    val freeSeconds: Int get() = ((freeMs + 500) / 1000).toInt()
+
+    /** Mb/s over every second since the last [take]; 0 with none. */
+    val mbps: Double get() = rate(bytes, ms)
+
+    /** Mb/s over the seconds loaded freely since the last [take]; 0 with none. */
+    val freeMbps: Double get() = rate(freeBytes, freeMs)
+
+    /**
+     * [bytesSoFar] have come by [nowMs] (any clock in ms that only goes forward). [free]: the film loaded all of this
+     * last second with room left in its buffer, so the line and the server set the speed, not the film's own rate.
+     */
+    fun sample(nowMs: Long, bytesSoFar: Long, free: Boolean) {
+        val before = lastBytes
+        val since = nowMs - lastMs
+        lastBytes = bytesSoFar
+        lastMs = nowMs
+        // The first sample, a new connection's count starting over, or a long gap (the player was away): from here on.
+        if (before < 0L || bytesSoFar < before || since <= 0L || since > MAX_GAP_MS) {
+            run = 0
+            return
+        }
+        val got = bytesSoFar - before
+        bytes += got
+        ms += since
+        if (!free) {
+            run = 0
+            return
+        }
+        freeBytes += got
+        freeMs += since
+        if (run == BEST_SECONDS) {
+            System.arraycopy(runBytes, 1, runBytes, 0, BEST_SECONDS - 1)
+            System.arraycopy(runMs, 1, runMs, 0, BEST_SECONDS - 1)
+            run--
+        }
+        runBytes[run] = got
+        runMs[run] = since
+        run++
+        if (run == BEST_SECONDS) {
+            var b = 0L
+            var t = 0L
+            for (i in 0 until BEST_SECONDS) {
+                b += runBytes[i]
+                t += runMs[i]
+            }
+            val r = rate(b, t)
+            if (r > bestFreeMbps) bestFreeMbps = r
+        }
+    }
+
+    /** Starts the counts since the last log line afresh ([bestFreeMbps] stays). */
+    fun take() {
+        bytes = 0L
+        ms = 0L
+        freeBytes = 0L
+        freeMs = 0L
+    }
+
+    /** A new player or film: everything afresh. */
+    fun reset() {
+        take()
+        lastBytes = -1L
+        run = 0
+        bestFreeMbps = 0.0
+    }
+
+    companion object {
+        /** A stretch of this many free seconds in a row is long enough to call a speed. */
+        const val BEST_SECONDS = 3
+        private const val MAX_GAP_MS = 5_000L
+
+        /** A buffer filled to less than this share of what it fills to still has room: loading isn't held back by it. */
+        const val FREE_BELOW = 0.85
+
+        private fun rate(bytes: Long, ms: Long): Double = if (ms <= 0L) 0.0 else bytes * 8.0 / 1_000.0 / ms
+    }
+}

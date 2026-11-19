@@ -10,7 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The glass's lighter load while a 4K HDR film plays on a TV short of memory. */
+/** The glass's lighter load while a 4K film plays on a TV short of memory. */
 class GlassLoadTest {
 
     private fun video(
@@ -49,8 +49,8 @@ class GlassLoadTest {
     }
 
     @Test fun theRowSaysWhenTheSettingIsLowered() {
-        assertEquals("8 a second · 2 in 4K HDR", GlassLoad.refreshLabel(8, heavy = true))
-        assertEquals("4 a second · 2 in 4K HDR", GlassLoad.refreshLabel(4, heavy = true))
+        assertEquals("8 a second · 2 in 4K", GlassLoad.refreshLabel(8, heavy = true))
+        assertEquals("4 a second · 2 in 4K", GlassLoad.refreshLabel(4, heavy = true))
         // Not lowered: the row shows the setting's own name.
         assertNull(GlassLoad.refreshLabel(2, heavy = true))
         assertNull(GlassLoad.refreshLabel(8, heavy = false))
@@ -80,12 +80,14 @@ class GlassLoadTest {
         assertFalse(GlassLoad.uhdHdr(1920, 1080, Format.NO_VALUE, MimeTypes.VIDEO_DOLBY_VISION, "dvhe.05.06"))
     }
 
-    @Test fun heavyIs4kHdrOnASmallTv() {
+    @Test fun heavyIs4kOnASmallTv() {
         val film = video(3840, 2160, C.COLOR_TRANSFER_ST2084)
         assertTrue(GlassLoad.heavy(film, 0, 0, smallRam = true))
         assertFalse(GlassLoad.heavy(film, 0, 0, smallRam = false))
         assertFalse(GlassLoad.heavy(video(1920, 1080, C.COLOR_TRANSFER_ST2084), 1920, 1080, smallRam = true))
-        assertFalse(GlassLoad.heavy(video(3840, 2160, C.COLOR_TRANSFER_SDR), 3840, 2160, smallRam = true))
+        // 4K without HDR is as big a frame to copy: heavy too.
+        assertTrue(GlassLoad.heavy(video(3840, 2160, C.COLOR_TRANSFER_SDR), 3840, 2160, smallRam = true))
+        assertTrue(GlassLoad.heavy(video(3840, 1600), 0, 0, smallRam = true))
         assertTrue(GlassLoad.heavy(video(3840, 2160, mime = MimeTypes.VIDEO_DOLBY_VISION, codecs = "dvhe.08.06"), 0, 0, true))
         // A track that doesn't give its size: the size shown counts.
         assertTrue(GlassLoad.heavy(video(Format.NO_VALUE, Format.NO_VALUE, C.COLOR_TRANSFER_HLG), 3840, 2160, true))

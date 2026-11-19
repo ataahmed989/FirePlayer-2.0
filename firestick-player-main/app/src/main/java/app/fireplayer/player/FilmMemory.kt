@@ -15,15 +15,20 @@ enum class RamTier(
     val budgetMiB: Int,
     /** How much of the film is kept behind where it plays (ms), so going back a little plays at once. */
     val backBufferMs: Int,
+    /**
+     * The most memory what's kept behind may take (MiB; 0: no limit but [backBufferMs]). In a 4K remux at 84 Mb/s, 6 s
+     * behind are 63 MB of a 128 MiB buffer, which then holds only 6 s ahead (see [BackBuffer]).
+     */
+    val backCapMiB: Int,
 ) {
     /** Fire OS's low-memory devices, and anything under 1.4 GiB. */
-    TINY(64, FilmMemory.LEAST_BACK_BUFFER_MS),
+    TINY(64, FilmMemory.LEAST_BACK_BUFFER_MS, 16),
     /** Under 1.8 GiB, as the Fire TV Stick 4K Max (1.7 GB). */
-    SMALL(128, 6_000),
+    SMALL(128, 6_000, 24),
     /** Under 2.6 GiB: TVs sold as "2 GB". */
-    MEDIUM(176, 10_000),
+    MEDIUM(176, 10_000, 48),
     /** 2.6 GiB and up. */
-    LARGE(256, 15_000),
+    LARGE(256, 15_000, 0),
     ;
 
     /**
@@ -51,8 +56,18 @@ enum class RamTier(
     }
 }
 
-/** What the film's buffer gets on this TV (see [FilmMemory.plan]). */
-data class FilmBufferPlan(val tier: RamTier, val budgetBytes: Int, val backBufferMs: Int)
+/**
+ * What the film's buffer gets on this TV (see [FilmMemory.plan]): [budgetBytes] in all, [backBufferMs] of it behind
+ * where the film plays, held to [backCapBytes] (0: no limit). [byFreeMemory]: the budget is below the tier's because
+ * little memory was free when the film started.
+ */
+data class FilmBufferPlan(
+    val tier: RamTier,
+    val budgetBytes: Int,
+    val backBufferMs: Int,
+    val backCapBytes: Long = 0L,
+    val byFreeMemory: Boolean = false,
+)
 
 /**
  * The film's buffer and the TV's memory: how big the buffer is on this TV, how far it steps down while Fire OS is short
@@ -74,16 +89,37 @@ object FilmMemory {
     const val MIN_AHEAD_US = 5_000_000L
 
     /**
+     * What is left free for everything but the film's buffer when the buffer is sized by the memory free at its start:
+     * the decoder's own frames (5 to 8 frames of 4K 10-bit, 121 to 198 MB measured on a Fire TV Stick 4K Max) and room
+     * for the rest of the TV.
+     */
+    const val RESERVE_BYTES = 260L shl 20
+    /** Sized by free memory, the buffer still gets this much (it steps down further only under pressure, [capFor]). */
+    const val FREE_FLOOR_BYTES = 64 shl 20
+
+    /**
      * The film's buffer on a TV of [tier] whose app heap limit is [maxHeapBytes] (Runtime.maxMemory): the tier's
      * budget, but never more than [HEAP_SHARE] of the heap limit or [CEILING_BYTES], nor less than [FLOOR_BYTES].
      * Held under the tier's budget by a small heap limit, it keeps behind what the tier that budget fits keeps, or
      * the room ahead would shrink to a few seconds in a 4K film.
+     *
+     * [freeBytes] is the memory the TV has free as the film starts (ActivityManager's availMem; 0 or less: not known).
+     * The buffer never takes more of it than leaves [RESERVE_BYTES], down to [FREE_FLOOR_BYTES]: the tier says what the
+     * TV can spare at best, the free memory what it can spare now (seen: a 260 MB buffer and up to 198 MB of decoder
+     * frames on a 1.7 GB Stick, with 76 kB of swap left).
      */
-    fun plan(tier: RamTier, maxHeapBytes: Long): FilmBufferPlan {
-        val budget = minOf(tier.budgetMiB.toLong() shl 20, (maxHeapBytes * HEAP_SHARE).toLong(), CEILING_BYTES.toLong())
-            .coerceAtLeast(FLOOR_BYTES.toLong()).toInt()
+    fun plan(tier: RamTier, maxHeapBytes: Long, freeBytes: Long = 0L): FilmBufferPlan {
+        val byTier = minOf(tier.budgetMiB.toLong() shl 20, (maxHeapBytes * HEAP_SHARE).toLong(), CEILING_BYTES.toLong())
+            .coerceAtLeast(FLOOR_BYTES.toLong())
+        val byFree = if (freeBytes > 0L) (freeBytes - RESERVE_BYTES).coerceAtLeast(minOf(FREE_FLOOR_BYTES.toLong(), byTier)) else byTier
+        val budget = minOf(byTier, byFree).toInt()
         val fits = RamTier.entries.lastOrNull { (it.budgetMiB.toLong() shl 20) <= budget } ?: RamTier.TINY
-        return FilmBufferPlan(tier, budget, minOf(tier.backBufferMs, fits.backBufferMs))
+        return FilmBufferPlan(
+            tier, budget, minOf(tier.backBufferMs, fits.backBufferMs),
+            // What's kept behind is held to the smaller of the two tiers' sizes, as its length is.
+            backCapBytes = listOf(tier.backCapMiB, fits.backCapMiB).filter { it > 0 }.minOrNull()?.let { it.toLong() shl 20 } ?: 0L,
+            byFreeMemory = budget < byTier,
+        )
     }
 
     /**
@@ -117,6 +153,12 @@ object FilmMemory {
         }
         tier = found
         found
+    }
+
+    /** The memory the TV has free right now, in bytes (ActivityManager.MemoryInfo.availMem); 0 when it can't be read. */
+    fun freeNow(context: Context): Long {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return 0L
+        return runCatching { ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }.availMem }.getOrDefault(0L)
     }
 
     /** Whether Fire OS says memory is low right now (ActivityManager.MemoryInfo.lowMemory). */

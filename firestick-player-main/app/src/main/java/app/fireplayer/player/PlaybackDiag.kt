@@ -30,8 +30,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - Events, one line each: the video decoder chosen (and released), the picture's and the sound's format, the film
  *   stopping to load and going on, Media3's batches of dropped frames.
  * - Once every [LOG_EVERY_S] seconds while the film plays, one line: the frames shown and lost in those seconds and over
- *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds, the picture, the TV's refresh and
- *   the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
+ *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds (of what it fills to), how fast the
+ *   film downloads ([DownloadRate]: "down" over all of those seconds, "free" over the ones it loaded with room in the
+ *   buffer, "best" the fastest three such seconds in a row so far), the picture, the glass's copies, the TV's refresh
+ *   and the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
  *
  * Never a link, a title or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats, times
  * and the decoder's name.
@@ -54,6 +56,18 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     /** The memory the film's loaded part holds now, in bytes: set with each new player ([PlayerFactory.Built.filmBytes]). */
     var filmBytes: () -> Long = NO_BYTES
 
+    /** What the film's buffer fills to now, in bytes ([PlayerFactory.Built.fillBytes]). */
+    var fillBytes: () -> Long = NO_BYTES
+
+    /** Given to the film's connection, which counts the bytes that come ([PlayerFactory.build]). */
+    val meter = ByteMeter()
+
+    /** How fast the film downloads, kept from [second] (see [DownloadRate]). */
+    val download = DownloadRate()
+
+    /** More for the line from the player screen (the glass's copies, what's kept behind): short, no links or titles. */
+    var note: () -> String = { "" }
+
     // On the main thread.
     private var counters: DecoderCounters? = null
     private var seconds = 0
@@ -63,6 +77,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var jumpedAt = 0L
     // The video decoder in use, by its name ("OMX.MTK.VIDEO.DECODER.HEVC"). Media3 tells its listeners on the main thread.
     private var decoder = "none"
+    // The second before was one of loading with room in the buffer.
+    private var wasFree = false
 
     private val busy = AtomicBoolean(false)
     private var reader: ExecutorService? = null
@@ -73,11 +89,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         waitingSince = 0L
         counters = null
         decoder = "none"
+        download.reset()
     }
 
     /** The player was let go: nothing of it is held on to here. */
     fun playerGone() {
         filmBytes = NO_BYTES
+        fillBytes = NO_BYTES
     }
 
     /** Once a second: the frames so far into [tally]; every [LOG_EVERY_S] seconds while [player] plays, the line. */
@@ -97,10 +115,17 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
                 counts.neverDecoded)
         }
         for (k in sinceLog.indices) sinceLog[k] += tally.added(k)
+        // Loading freely: the buffer has room, so the server and the line set the speed (see DownloadRate).
+        val held = filmBytes()
+        val fill = fillBytes()
+        val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
+        wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
+        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free)
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying
         if (!playing || !Log.isLoggable(TAG, Log.INFO)) {
             sinceLog.fill(0)
+            download.take()
             return
         }
         val line = StringBuilder(400)
@@ -116,10 +141,15 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             .append(" same=").append(tally.minute(FrameTally.SAME))
             .append(" never=").append(tally.minute(FrameTally.NEVER)).append(']')
             .append(" ahead=").append(player.totalBufferedDuration).append("ms")
-            .append(" buf=").append(mb(filmBytes()))
+            .append(" buf=").append(mb(held)).append('/').append(mb(fill))
+            .append(" down=").append(mbps(download.mbps))
+            .append(" free=").append(mbps(download.freeMbps)).append('/').append(download.freeSeconds).append('s')
+            .append(" best=").append(mbps(download.bestFreeMbps))
             .append(' ').append(video(player.videoFormat))
             .append(" decoder=").append(decoder)
+        note().takeIf { it.isNotEmpty() }?.let { line.append(' ').append(it) }
         sinceLog.fill(0)
+        download.take()
         // The rest is read on its own thread; one at a time, a line left out if the one before hasn't finished.
         if (!busy.compareAndSet(false, true)) return
         val pool = reader ?: Executors.newSingleThreadExecutor { r ->
@@ -271,6 +301,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         private val NO_BYTES: () -> Long = { 0L }
 
         private fun mb(bytes: Long): String = String.format(Locale.US, "%.1fMB", bytes / 1_048_576.0)
+
+        private fun mbps(rate: Double): String = String.format(Locale.US, "%.1fMb/s", rate)
 
         /** The HDR types a TV reports (Display.HdrCapabilities' numbers), "HDR10,HLG"; "none" when it reports none. */
         fun hdrTypes(types: IntArray?): String {

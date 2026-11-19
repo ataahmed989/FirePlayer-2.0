@@ -193,6 +193,11 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             registered = true
             bd.register(this)
         }
+        // Glass that can't be seen (faded out, or drawn once before it fades in) asks for nothing: no copies of the film
+        // and no redrawing through a fade. A view left drawing at no opacity once kept the copies and 20 redraws a
+        // second going all film long, with nothing on screen.
+        val seen = isOnScreen()
+        drewHidden = !seen
         val top = bd.frame(kind)
         val f = bd.fadeFraction()
         val under = if (f < 1f) bd.previous(kind) else null
@@ -206,10 +211,17 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             drawSource(canvas, under, lower)
             drawSource(canvas, top, a * f)
             // Held still while the D-pad moves round (see GlassBackdrop.navigating): drawn again when it carries on.
-            if (!bd.navigating) invalidateSelf()
+            if (seen && !bd.navigating) invalidateSelf()
         }
-        bd.onGlassDrawn()
+        if (seen) bd.onGlassDrawn() else bd.onGlassHidden()
     }
+
+    /** Its last drawing was where it couldn't be seen: what it shows may be out of date once it comes into view. */
+    internal var drewHidden = false
+        private set
+
+    /** Whether its view is shown at all (every parent too), whatever its opacity. */
+    internal fun isShown(): Boolean = hostView()?.isShown == true
 
     /** Film, or the dark fill when [film] is null, at [strength] of its usual opacity. */
     private fun drawSource(canvas: Canvas, film: Bitmap?, strength: Float) {

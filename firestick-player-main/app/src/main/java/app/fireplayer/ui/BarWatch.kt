@@ -14,7 +14,7 @@ import app.fireplayer.player.BlackBars
  * Looks at the film now and then while Fill screen or Stretch is chosen, to find black bars that are part of its file
  * ([BlackBars]). A small copy of the picture about once a second until that's known, then every few seconds in case
  * the film changes shape; none at all in the other display sizes, while paused, or once it's sure there are no bars.
- * Half as often while a 4K HDR film plays on a TV short of memory ([heavyVideo]), as for the glass ([GlassLoad]).
+ * Half as often while a 4K film plays on a TV short of memory ([heavyVideo]), as for the glass ([GlassLoad]).
  * Android 7 and later (PixelCopy); older TVs keep the film's own shape.
  */
 class BarWatch(
@@ -38,7 +38,7 @@ class BarWatch(
     val vertical: Float get() = bars.vertical
     val horizontal: Float get() = bars.horizontal
 
-    /** The film playing is 4K HDR on a TV short of memory ([GlassLoad.heavy]): looks come half as often. */
+    /** The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): looks come half as often. */
     var heavyVideo = false
 
     /** Fill screen or Stretch is chosen and a film is showing. */

@@ -82,6 +82,7 @@ import app.fireplayer.player.FilmMemory
 import app.fireplayer.player.MemoryPressure
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
+import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
@@ -636,7 +637,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         bindViews()
         // Before applyLook: the glass looks for its film here.
-        backdrop = GlassBackdrop(this, surfaceView)
+        backdrop = GlassBackdrop(this, surfaceView).also {
+            // With no glass on screen for a few seconds (the controls hidden, the windows closed) the drawing cache's
+            // unused pictures go too, on a TV short of memory: the film needs it (41 MB measured on the Stick 4K Max).
+            it.onIdle = { if (GlassLoad.smallRam(this) && player?.isPlaying == true) GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS) }
+        }
         // Another display size moves the picture on screen: the glass's copy of it is out of place.
         videoFrame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) backdrop?.frameChanged()
@@ -1086,6 +1091,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             embeddedCues = embeddedCues,
             damageSkips = damageSkips,
             frameCounts = diag.counts,
+            byteMeter = diag.meter,
         )
         vsyncFix = vsync.also { it.start() }
         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
@@ -1107,6 +1113,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addAnalyticsListener(droppedFrames)
         diag.newPlayer()
         diag.filmBytes = built.filmBytes
+        diag.fillBytes = built.fillBytes
+        diag.note = ::diagNote
         p.addAnalyticsListener(diag)
         p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
         fpsMeter.reset()
@@ -1666,7 +1674,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Tells the glass and the black-bar watch whether the video playing is 4K HDR on a TV short of memory
+     * Tells the glass and the black-bar watch whether the video playing is 4K on a TV short of memory
      * ([GlassLoad.heavy]): they copy the film less often then. Asked again whenever the video's format or size changes.
      */
     private fun updateGlassLoad() {
@@ -3350,6 +3358,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun showControls(focus: View? = btnPlay) {
         controlsShown = true
+        // The glass's copy of the film is asked for now, so it's there as the controls fade in.
+        backdrop?.wake()
         // The sink only holds focus while everything is hidden; otherwise D-pad left could land on it.
         focusSink.isFocusable = false
         val target = focus ?: btnPlay
@@ -3809,7 +3819,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val landing = seekPreview.landingFor(seekTarget())
         val target = landing ?: seekTarget()
         // Past what's loaded (ahead, or further back than is kept): the film loads again from there.
-        val reloads = p != null && (target > p.bufferedPosition || target < p.currentPosition - KEPT_BEHIND_MS)
+        val keptMs = builtPlayer?.keptBehindMs?.invoke()?.takeIf { it > 0 }?.coerceAtMost(KEPT_BEHIND_MS) ?: KEPT_BEHIND_MS
+        val reloads = p != null && (target > p.bufferedPosition || target < p.currentPosition - keptMs)
         seekPreview.hide(filmReloads = reloads)
         handler.removeCallbacks(commitSeekRunnable)
         // What was lined up to read past what's loaded is stale.
@@ -4989,6 +5000,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (shown <= 0) return null
         return "Last minute: ${diag.tally.minuteLine()}\n" +
             "In all: ${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames dropped"
+    }
+
+    // The glass's copies and probes when the log line was last written.
+    private var glassCopiesLogged = 0
+    private var glassProbesLogged = 0
+
+    /**
+     * For the FirePlayerDiag line: the glass's copies of the film and cut probes since the last line (0 with the
+     * controls and windows away), and how long a stretch is kept behind where the film plays.
+     */
+    private fun diagNote(): String {
+        val b = backdrop
+        val copies = (b?.copiesAsked ?: 0) - glassCopiesLogged
+        val probes = (b?.probesAsked ?: 0) - glassProbesLogged
+        glassCopiesLogged = b?.copiesAsked ?: 0
+        glassProbesLogged = b?.probesAsked ?: 0
+        return "glass=${if (Glass.on) "on" else "off"} copies=$copies probes=$probes kept=${builtPlayer?.keptBehindMs?.invoke() ?: 0}ms"
     }
 
     /**
@@ -6378,6 +6406,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_COUNT_TICKS = 5
         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
         const val MEMORY_CHECK_TICKS = 50
+        /** The drawing cache is trimmed at most this often while a film plays (see GraphicsTrim). */
+        const val GRAPHICS_TRIM_GAP_MS = 30_000L
         /** A wait to load this soon after a jump is the jump's. */
         const val JUMP_WAIT_MS = 3_000L
         // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
