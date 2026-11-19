@@ -76,6 +76,9 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
+import app.fireplayer.history.LibraryContinue
+import app.fireplayer.history.VodContinue
+import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.history.ShowEpisodes
 import app.fireplayer.history.WatchHistory
 import app.fireplayer.player.AssOverlay
@@ -693,6 +696,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         displayMode = prefs.displayMode
         applyDim()
+
+        // From Glass Home's Continue Watching row, a film or show played from Films & Shows: as OK on its Continue card,
+        // the same file from where it stopped (its add-on asked first), straight away, also when FirePlayer wasn't
+        // running. It becomes a Films & Shows play (below), whose token keeps it across a recreate; Back closes this
+        // task, so Glass Home is what shows again.
+        val rowAction = intent.action == ContinueWatching.ACTION_RESUME || intent.action == ContinueWatching.ACTION_PLAY_EPISODE
+        val rowId = if (rowAction) intent.getStringExtra(ContinueWatching.EXTRA_ID) else null
+        if (LibraryContinue.isLibraryId(rowId)) {
+            val chosen = intent.action == ContinueWatching.ACTION_PLAY_EPISODE
+            val now = SystemClock.elapsedRealtime()
+            val request = try {
+                VodContinue.request(this, rowId, if (chosen) intent.getStringExtra(ContinueWatching.EXTRA_EPISODE_ID) else null)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Couldn't resume from Glass Home: ${e.javaClass.simpleName}")
+                null
+            }
+            if (request == null) {
+                val why = if (chosen) "This episode can't be played just now." else "This title can't be played from where it was left."
+                Toast.makeText(this, why, Toast.LENGTH_LONG).show()
+                finish()
+                return
+            }
+            setIntent(PlayHandoff.intent(this, VodLaunch.pressedAt(request, now), Sources.get(this), now))
+        }
 
         // A film or episode from Films & Shows: the request is handed over in memory, the Intent holds only a token (its
         // "fireplayer-vod:" link is never opened as a video).

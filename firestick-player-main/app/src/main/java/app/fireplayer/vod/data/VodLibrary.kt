@@ -210,6 +210,14 @@ class VodLibrary(
             }
     }
 
+    /**
+     * The same entries as [continueWatching] (films and series, the latest played first), with where each stopped and
+     * when: Glass Home's Continue Watching row (history/VodContinue).
+     */
+    fun continueEntries(): List<Progress> = state {
+        progress.values.filter { !it.hidden && !markedSince(it) }.sortedByDescending { it.at }
+    }
+
     /** Whether [id] is in Continue Watching: played, not taken out and not marked watched since (either kind). */
     fun inContinueWatching(id: String): Boolean = state {
         Kind.entries.any { k -> progress[key(k, id)]?.let { !it.hidden && !markedSince(it) } == true }
