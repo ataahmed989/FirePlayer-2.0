@@ -68,8 +68,12 @@ import app.fireplayer.vod.ui.VodPages
  * back shows a snapshot at once while the posters return from the disk cache. In the background for other reasons the
  * same release waits a while.
  *
- * Both looks share this layout, each over its own background (the user's): glass shows the blurred beach wallpaper,
- * blurred again behind glass shapes ([GlassSource.Host]); classic the original dark surfaces over the dark fog.
+ * Both looks share this layout, each over its own background (the user's): glass, the blurred beach wallpaper, with
+ * every surface the one dark translucent glass of [app.fireplayer.ui.GlassStyle]; classic, the original dark solid
+ * surfaces over the dark fog. A glass surface in the page is the tint over what's behind it; a glass window over the
+ * page (the settings window, a hold window, a dialog, the widened rail) shows the page behind it softly blurred, from
+ * one small shared picture ([pageGlass]) copied when a window appears and when the page under one changes, never while
+ * nothing shows it. Full-screen Live TV's glass shows the live picture, as the film player's does ([glassSource]).
  */
 class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPage.Host {
 
@@ -565,6 +569,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         vodPages.applyLook()
         root.jumpDrawablesToCurrentState()
         clipForLook()
+        // A page that stepped back behind a classic window comes forward if the look is switched to glass meanwhile:
+        // the glass window shows it blurred, never faded as well (stepBack).
+        if (Glass.on && ::settingsPage.isInitialized) {
+            settingsPage.animate().cancel()
+            settingsPage.alpha = 1f
+            live.root.animate().cancel()
+            live.root.alpha = 1f
+        }
     }
 
     /** The glass settings window's shadow falls outside it, which this screen would otherwise cut off. */

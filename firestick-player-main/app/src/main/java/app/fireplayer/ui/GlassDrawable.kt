@@ -41,6 +41,11 @@ import kotlin.math.sqrt
  * Everything but the film is drawn once, in software, into a cached bitmap ([GlassBakes]): the hardware canvas
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
  * (two of each while fading), so moving focus and scrolling cost no more than the classic look.
+ *
+ * That is the film style (the player, full-screen Live TV). On the app's own screens the same shapes are drawn in the
+ * calm style ([GlassStyle]): one dark tint, a hairline, a top highlight and a soft shadow, baked the same way; under
+ * it a window over the page shows the page's blurred picture ([PageGlass]), and a surface in the page shows nothing of
+ * its own (whatever is behind it shows through the tint), so it costs one bitmap a frame.
  */
 class GlassDrawable(
     context: Context,
