@@ -2,6 +2,7 @@ package app.fireplayer.vod.data
 
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastRelease
@@ -61,11 +62,13 @@ class PlaybackRecordingTest {
         recorded.recordPlayback(film, null, 106 * 60_000L, 120 * 60_000L, creditsAtMs = 105 * 60_000L)
         assertTrue(library.isWatched(film.id))
         assertFalse(library.inContinueWatching(film.id))
-        // An episode past 90 %.
+        // An episode past 90 %: watched, and its show goes on in Continue Watching (kept as it was here, where its
+        // episodes aren't known).
         val other = Title("tt0000009", Kind.SERIES, "Other")
         recorded.recordPlayback(other, EpisodeRef(1, 1), 41 * 60_000L, 45 * 60_000L, creditsAtMs = null)
-        assertFalse(library.inContinueWatching(other.id))
-        assertEquals(listOf(other.id), library.followedShows().map { it.first.id })
+        assertTrue(library.isEpisodeWatched(Episode(Episode.idOf(other.id, 1, 1), 1, 1, "")))
+        assertTrue(library.lastPlayed(Kind.SERIES, other.id)!!.finished)
+        assertTrue(library.inContinueWatching(other.id))
     }
 
     private val dir: File = Files.createTempDirectory("vodnext").toFile()
@@ -76,44 +79,62 @@ class PlaybackRecordingTest {
     }
 
     @Test
-    fun nextEpisodesShowsTheNextAiredEpisodeOfShowsWhoseLatestEpisodeIsOver() {
+    fun aFinishedEpisodeGoesOnInContinueWatchingAcrossSeasonsNotInNextEpisodes() {
         val http = FakeHttp()
-        http.answers[Cinemeta.metaUrl(Kind.SERIES, show.id)] = Fixtures.text("cinemeta_meta_show_ended_specials.json")
-        val libStore = MemoryLibraryStore()
+        val metaUrl = Cinemeta.metaUrl(Kind.SERIES, show.id)
+        http.answers[metaUrl] = Fixtures.text("cinemeta_meta_show_ended_specials.json")
         val repo = DefaultVodRepository(
             http = http,
             tmdb = FakeTmdb(),
             tmdbKey = { "" },
             cache = JsonCache(File(dir, "vod")) { now },
             idStore = MemoryIdStore(),
-            libraryStore = libStore,
+            libraryStore = MemoryLibraryStore(),
             main = direct,
             io = direct,
             net = direct,
             lookups = direct,
             clock = { now },
         )
-        val row = RowSpec("next", "Next Episodes", RowStyle.EPISODE, Source.NextEpisodes())
-        fun cards(): List<Card> {
+        var changed = 0
+        repo.addLibraryListener { changed++ }
+        val next = RowSpec("next", "Next Episodes", RowStyle.EPISODE, Source.NextEpisodes())
+        val cont = RowSpec("continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true)
+        fun cards(row: RowSpec): List<Card> {
             var got: List<Card> = emptyList()
             repo.load(row) { c, _ -> got = c }
             return got
         }
-        // The page stored the show's episodes once.
-        repo.details(show) { _, _ -> }
-        assertTrue(cards().isEmpty())
-        // Half way through S1 E1: still Continue Watching, not Next Episodes.
+        fun finish(season: Int, episode: Int) {
+            now += 1000
+            RecordedLibrary(repo.library).recordPlayback(show, EpisodeRef(season, episode), 23 * 60_000L, 24 * 60_000L, null)
+        }
+        // Half way through S1 E1: Continue Watching as it was; nothing asked of Cinemeta.
         repo.recordProgress(show, EpisodeRef(1, 1), 10 * 60_000L, 24 * 60_000L)
-        assertTrue(cards().isEmpty())
-        // Watched to the end: S1 E2 is next.
-        now += 1000
-        RecordedLibrary(repo.library).recordPlayback(show, EpisodeRef(1, 1), 23 * 60_000L, 24 * 60_000L, null)
-        val next = cards().single()
-        assertEquals(show.id, next.title.id)
-        assertEquals(EpisodeRef(1, 2), next.episode?.copy(name = null))
-        assertEquals("S1 E2", next.caption)
-        // Taken out of Continue Watching: no longer followed here.
-        repo.removeFromContinueWatching(show.id)
-        assertTrue(cards().isEmpty())
+        assertEquals("S1 E1 · 14m left", cards(cont).single().caption)
+        assertTrue(cards(next).isEmpty())
+        assertEquals(0, http.count(metaUrl))
+        // The last episode of season 1 (of 4) finished, the show never opened here: kept as it was, its episodes
+        // fetched once, and the rows told; then it goes on with season 2's first.
+        finish(1, 12)
+        val before = changed
+        assertEquals(EpisodeRef(1, 12), cards(cont).single().episode)
+        assertEquals(1, http.count(metaUrl))
+        assertTrue(changed > before)
+        val s2 = cards(cont).single()
+        assertEquals("S2 E1", s2.caption)
+        assertNull(s2.progress)
+        assertEquals(EpisodeRef(2, 1), s2.episode?.copy(name = null))
+        assertTrue(cards(next).isEmpty())
+        // Watch now (a card naming no episode) plays it too.
+        assertEquals(EpisodeRef(2, 1), repo.upNext(show)?.copy(name = null))
+        // The last episode of the last season: done; Specials don't count.
+        finish(4, 13)
+        assertTrue(cards(cont).isEmpty())
+        assertTrue(cards(next).isEmpty())
+        assertFalse(repo.inContinueWatching(show.id))
+        assertNull(repo.upNext(show))
+        // Stored episodes aren't fetched again.
+        assertEquals(1, http.count(metaUrl))
     }
 }
