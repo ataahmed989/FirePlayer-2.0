@@ -3,6 +3,7 @@ package app.fireplayer.ui
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.RectF
 import android.os.Build
 import android.text.InputType
 import android.util.TypedValue
@@ -21,7 +22,6 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
-import android.graphics.RectF
 import app.fireplayer.R
 import app.fireplayer.live.ui.HoldPlace
 import app.fireplayer.live.ui.HoldShape
