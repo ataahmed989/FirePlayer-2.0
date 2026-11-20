@@ -10,7 +10,6 @@ import app.fireplayer.vod.HeaderFeed
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.Page
-import app.fireplayer.vod.PlayAction
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.Source
@@ -18,7 +17,6 @@ import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.hasImdbId
-import app.fireplayer.vod.playTarget
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -62,8 +60,14 @@ class DefaultVodRepository(
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
-    /** The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). */
-    val library = VodLibrary(libraryStore, clock, io) { main.execute { listeners.forEach { it() } } }
+    /** Shows whose meta Continue Watching has asked for while the app runs ([showEpisodes]): once each. */
+    private val metaAsked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /**
+     * The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). A show's
+     * place in Continue Watching follows its stored episodes ([showEpisodes]).
+     */
+    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }) { libraryChanged() }
 
     /** Settings › Rows: each page's rows as the viewer set them (main thread). */
     val rowSettings = RowSettings(rowStore) { newYear(it) }
@@ -422,33 +426,36 @@ class DefaultVodRepository(
 
     override fun lastPlayed(title: Title): LastPlayed? = library.lastPlayed(title.kind, title.id)
 
+    override fun upNext(title: Title): EpisodeRef? = library.upNext(title)
+
     override fun positionOf(episode: Episode): Position? = library.positionOf(episode)
 
     override fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long) =
         library.recordProgress(title, episode, positionMs, durationMs)
 
     /**
-     * Next Episodes (§6.2): for each show followed whose latest episode is over, the next aired episode not watched,
-     * from the show's stored episodes (its title page stored them; nothing is fetched for a row). The latest played
-     * first. On [io].
+     * Next Episodes (§6.2): shows caught up on that have a new episode since ([VodLibrary.nextEpisodes]), from the
+     * shows' stored episodes; the latest played first. On [io].
      */
-    private fun nextEpisodes(): List<Card> {
-        val now = clock()
-        return library.followedShows().mapNotNull { (title, last) ->
-            val meta = storedMeta(Kind.SERIES, title.id)?.value ?: return@mapNotNull null
-            val target = playTarget(meta.episodes, last, now) ?: return@mapNotNull null
-            if (target.action != PlayAction.PLAY) return@mapNotNull null
-            val ep = target.episode
-            val same = last.episode?.let { it.season == ep.season && it.episode == ep.episode } == true
-            if (same || library.isEpisodeWatched(ep)) return@mapNotNull null
-            Card(
-                title = title,
-                caption = "S${ep.season} E${ep.episode}",
-                episode = ep.ref,
-                picture = ep.still,
-            )
-        }
+    private fun nextEpisodes(): List<Card> = library.nextEpisodes().map { (title, ep) ->
+        Card(title = title, caption = "S${ep.season} E${ep.episode}", episode = ep.ref, picture = ep.still)
     }
+
+    /**
+     * A show's episodes for the library's Continue Watching: from its stored meta (in memory, else on disk), as the title
+     * page stored it. None stored (never opened here, or trimmed away): null for now, and the meta is fetched once in
+     * the background (once per show while the app runs), the library's listeners then called so the rows work out where
+     * the show goes on. Any thread.
+     */
+    private fun showEpisodes(title: Title): List<Episode>? {
+        storedMeta(Kind.SERIES, title.id)?.let { return it.value.episodes }
+        if (title.hasImdbId && metaAsked.add(title.id)) {
+            net.execute { if (fetchMeta(Kind.SERIES, title.id) != null) libraryChanged() }
+        }
+        return null
+    }
+
+    private fun libraryChanged() = main.execute { listeners.forEach { it() } }
 
     // ---- Details: Cinemeta's meta and TMDB's details, stored and fetched ----
 

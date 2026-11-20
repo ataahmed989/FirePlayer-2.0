@@ -808,8 +808,9 @@ class VodPage(
     }
 
     /**
-     * Watch now: [card]'s title plays as from a Continue card (a film, or the episode of a series played last, from
-     * where it stopped; a series never played opens its title page, which knows its episodes). Details: its title page.
+     * Watch now: [card]'s title plays as from a Continue card (a film, or the episode its series goes on with: the one
+     * played last, from where it stopped, or the next after it once finished, across seasons; a series never played,
+     * or with nothing left to watch, opens its title page, which knows its episodes). Details: its title page.
      */
     private fun onHeaderPick(button: VodHeader.Button, card: Card) {
         val from = Origin.InHeader(button, card.title.id)

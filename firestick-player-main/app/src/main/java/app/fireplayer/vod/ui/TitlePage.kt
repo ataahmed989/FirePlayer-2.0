@@ -443,7 +443,8 @@ class TitlePage(
         var filmWatched = false
         val out: Boolean
         if (isShow) {
-            target = playTarget(details.episodes, last, now)
+            // The same next episode as the show's Continue card ([app.fireplayer.vod.UpNext]).
+            target = playTarget(details.episodes, last, now) { r?.isEpisodeWatched(it) == true }
             play = TitleRules.showPlay(details, target, year)
             out = details.episodes.isEmpty() || target != null
         } else {

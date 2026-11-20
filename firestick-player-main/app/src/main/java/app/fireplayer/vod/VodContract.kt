@@ -412,35 +412,37 @@ fun standInId(kind: Kind, tmdbId: Int): String = "tmdb:${if (kind == Kind.MOVIE)
 
 /**
  * What Play starts on a show's page (pure). [episodes] are the show's (any order; Specials are never a target), [last]
- * its Continue Watching record ([VodRepository.lastPlayed]), [now] epoch ms.
- * - No record, a record in Specials, or one whose episode isn't listed: the first aired episode of the lowest regular
- *   season ([PlayAction.PLAY], "Play S1 E1").
+ * its Continue Watching record ([VodRepository.lastPlayed]), [now] epoch ms, [watched] whether an episode counts as
+ * watched ([VodRepository.isEpisodeWatched]).
+ * - No record, or an unfinished one in Specials or for an episode no longer listed: the first aired episode of the
+ *   lowest regular season ([PlayAction.PLAY], "Play S1 E1").
  * - The record's episode not finished: it again, resumed when [Position.resumable] ("Resume S2 E5 · 12m left"), else
  *   from the start ("Play S3 E2").
- * - Finished ([LastPlayed.finished]): the next aired regular episode after it, in order, across seasons ("Play S2
- *   E6"; [PlayTarget.newEpisodes] when it aired after the record was saved), passing over any not aired (a future or
- *   missing date) on the way. None aired after it: caught up, so the first aired episode ([PlayAction.WATCH_AGAIN])
- *   with [PlayTarget.upcoming] the next one listed, if any.
+ * - Finished ([LastPlayed.finished]): the episode after it by [UpNext.after], the one Continue Watching goes on with:
+ *   the next aired regular episode not watched, across seasons ("Play S2 E1"; [PlayTarget.newEpisodes] when it aired
+ *   after the record was saved), passing over any not aired (a future or missing date) on the way. Every one aired
+ *   after it watched (a show watched again): the next aired one, in order (not after a special). None aired after it:
+ *   caught up, so the first aired episode ([PlayAction.WATCH_AGAIN]) with [PlayTarget.upcoming] the next one listed
+ *   that hasn't aired, if any.
  * Null when no regular episode has aired yet.
  */
-fun playTarget(episodes: List<Episode>, last: LastPlayed?, now: Long): PlayTarget? {
-    val regular = episodes.filter { it.season > 0 }.sortedWith(compareBy<Episode>({ it.season }, { it.episode }))
+fun playTarget(episodes: List<Episode>, last: LastPlayed?, now: Long, watched: (Episode) -> Boolean = { false }): PlayTarget? {
+    val regular = UpNext.regular(episodes)
     val first = regular.firstOrNull { it.aired(now) } ?: return null
     val ref = last?.episode
-    if (last == null || ref == null || ref.season <= 0) return PlayTarget(first, PlayAction.PLAY)
-    val i = regular.indexOfFirst { it.season == ref.season && it.episode == ref.episode }
-    if (i < 0) return PlayTarget(first, PlayAction.PLAY)
-    val at = regular[i]
+    if (last == null || ref == null) return PlayTarget(first, PlayAction.PLAY)
     if (!last.finished) {
-        return if (last.resumable) {
-            PlayTarget(at, PlayAction.RESUME, position = last.position)
-        } else {
-            PlayTarget(at, PlayAction.PLAY)
+        val at = regular.firstOrNull { it.season == ref.season && it.episode == ref.episode }
+        return when {
+            at == null -> PlayTarget(first, PlayAction.PLAY)
+            last.resumable -> PlayTarget(at, PlayAction.RESUME, position = last.position)
+            else -> PlayTarget(at, PlayAction.PLAY)
         }
     }
-    val after = regular.subList(i + 1, regular.size)
-    val next = after.firstOrNull { it.aired(now) }
-        ?: return PlayTarget(first, PlayAction.WATCH_AGAIN, upcoming = after.firstOrNull())
+    // Every one aired after it watched: on in order (a show watched again), except after a special.
+    val later = UpNext.later(episodes, ref, now)
+    val next = later.firstOrNull { !watched(it) } ?: later.firstOrNull()?.takeIf { ref.season > 0 }
+        ?: return PlayTarget(first, PlayAction.WATCH_AGAIN, upcoming = regular.firstOrNull { UpNext.isAfter(it, ref) && !it.aired(now) })
     return PlayTarget(next, PlayAction.PLAY, newEpisodes = (next.released ?: 0L) > last.position.at)
 }
 
@@ -561,6 +563,13 @@ interface VodRepository {
      * show's [playTarget] read it. Null for everything until step 3 records playback.
      */
     fun lastPlayed(title: Title): LastPlayed?
+
+    /**
+     * The episode [title]'s show goes on with, as its Continue card plays it (the banner's Watch now): the record's own
+     * until it's over, then the next one ([UpNext]); null for a film, a show never played or one with nothing left to
+     * watch (its title page then knows what Play does).
+     */
+    fun upNext(title: Title): EpisodeRef? = if (title.kind == Kind.SERIES) lastPlayed(title)?.episode else null
 
     /** Where playback of [episode] stopped (its card's progress bar, "12m left"); null when never played. */
     fun positionOf(episode: Episode): Position?

@@ -13,6 +13,7 @@ import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.StartAt
+import app.fireplayer.vod.UpNext
 import app.fireplayer.vod.sources.SourceRank
 import java.util.Locale
 
@@ -285,14 +286,14 @@ object PlayRules {
     const val NEXT_LOOKUP_MS = 4 * 60_000L
 
     /**
-     * The aired regular episode after [current] in [episodes] (any order), across seasons; specials never. Null at the
-     * end, or when the next hasn't aired by [now].
+     * The player's next episode (the end card, Next episode): the aired regular episode after [current] in [episodes]
+     * (any order), across seasons, in [UpNext.later]'s order, so a season's last episode goes on to the next season's
+     * first, as Continue Watching does. In order, watched or not (a show watched again goes on in order); specials never,
+     * and none after a special. Null when nothing after it has aired by [now].
      */
     fun nextEpisode(episodes: List<Episode>, current: EpisodeRef, now: Long): Episode? {
         if (current.season <= 0) return null
-        val regular = episodes.filter { it.season > 0 }.sortedWith(compareBy<Episode>({ it.season }, { it.episode }))
-        val after = regular.firstOrNull { it.season > current.season || (it.season == current.season && it.episode > current.episode) }
-        return after?.takeIf { it.aired(now) }
+        return UpNext.later(episodes, current, now).firstOrNull()
     }
 
     /** Seconds past an answer limit before the title page stops waiting on its own ([waitedOut]). */
