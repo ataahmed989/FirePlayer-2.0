@@ -33,17 +33,74 @@ class LiveSearch(private val db: LiveDb) {
      * [early], when given, is handed the channels as soon as they are found (a quick, indexed-size read), before the
      * guide's programmes are looked through (a slow read on a large guide): the page shows them at once.
      */
-    fun find(query: String, now: Long, cancel: CancellationSignal, early: ((Result) -> Unit)? = null): Result {
+    /**
+     * Every channel's name with its key, read once for a visit to Live TV search ([names]): finding a name in memory
+     * takes a few milliseconds where the database takes most of a second (a name can match anywhere, so no index
+     * helps it). Three short strings a channel; let go with the page.
+     */
+    class Names(val playlists: Array<String>, val ids: Array<String>, /** In lower case. */ val names: Array<String>)
+
+    /** Reads [Names] (worker thread); null when there are too many channels to hold ([NAMES_CAP]): the database is asked. */
+    fun names(): Names? {
+        val playlists = ArrayList<String>()
+        val ids = ArrayList<String>()
+        val names = ArrayList<String>()
+        val same = HashMap<String, String>()
+        db.readableDatabase.rawQuery("SELECT playlist_id, id, name FROM channel", null).use { c ->
+            while (c.moveToNext()) {
+                if (names.size >= NAMES_CAP) return null
+                val p = c.getString(0)
+                playlists += same.getOrPut(p) { p }
+                ids += c.getString(1)
+                // Lower case once, here: each search then only looks for its own lower-cased words (ten times faster
+                // than comparing without regard to case, name by name).
+                names += c.getString(2).lowercase()
+            }
+        }
+        return Names(playlists.toTypedArray(), ids.toTypedArray(), names.toTypedArray())
+    }
+
+    /** The channels whose name holds [q], found in [names] and read (with the rules of what shows) by their keys. */
+    private fun channelsIn(names: Names, q: String, like: String, cancel: CancellationSignal): List<ChannelHit> {
+        val byPlaylist = LinkedHashMap<String, ArrayList<String>>()
+        var found = 0
+        val words = q.lowercase()
+        for (i in names.names.indices) {
+            if (!names.names[i].contains(words)) continue
+            byPlaylist.getOrPut(names.playlists[i]) { ArrayList() } += names.ids[i]
+            if (++found >= READ_CAP) break
+        }
+        if (found == 0) return emptyList()
+        val read = db.readableDatabase
+        val rows = ArrayList<Triple<Long, Long, ChannelHit>>()
+        for ((playlist, ids) in byPlaylist) {
+            for (chunk in ids.chunked(IN_CHUNK)) {
+                cancel.throwIfCanceled()
+                val marks = chunk.joinToString(",") { "?" }
+                // The name is checked again here: the list in memory may be older than a playlist update.
+                read.rawQuery(
+                    CHANNEL_SELECT + "WHERE c.playlist_id = ? AND c.id IN ($marks) AND c.name LIKE ? ESCAPE '\\' AND $VISIBLE",
+                    arrayOf(playlist) + chunk.toTypedArray() + like, cancel,
+                ).use { c -> while (c.moveToNext()) rows += Triple(c.getLong(7), c.getLong(8), channelAt(c)) }
+            }
+        }
+        rows.sortWith(compareBy({ it.first }, { it.second }))
+        return rows.map { it.third }
+    }
+
+    fun find(query: String, now: Long, cancel: CancellationSignal, early: ((Result) -> Unit)? = null, names: Names? = null): Result {
         val q = query.trim()
         if (q.isEmpty()) return Result(query, emptyList(), emptyList())
         val like = LiveSearchRules.likePattern(q)
         val read = db.readableDatabase
-        val channels = read.rawQuery(
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val channels = if (names != null) channelsIn(names, q, like, cancel) else read.rawQuery(
             CHANNEL_SELECT + "WHERE c.name LIKE ? ESCAPE '\\' AND $VISIBLE ORDER BY p.position, c.position LIMIT $READ_CAP",
             arrayOf(like), cancel,
         ).use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
         val orderedChannels = LiveSearchRules.orderChannels(channels, q) { it.name }.take(MAX_CHANNELS)
         if (orderedChannels.isNotEmpty()) early?.invoke(Result(query, orderedChannels, emptyList()))
+        val t1 = android.os.SystemClock.elapsedRealtime()
 
         // Programmes: per source (the playlist whose EPG listed them), the matches still to come.
         val sources = db.sourcesWithEpg()
@@ -76,6 +133,8 @@ class LiveSearch(private val db: LiveDb) {
                 }
             }
         }
+        // How long each half took, for tuning on the TV (never the words searched).
+        android.util.Log.i("FirePlayerLive", "Live search: ${channels.size} channels in ${t1 - t0} ms, ${programmes.size} programmes in ${android.os.SystemClock.elapsedRealtime() - t1} ms")
         return Result(
             query,
             orderedChannels,
@@ -98,9 +157,11 @@ class LiveSearch(private val db: LiveDb) {
         /** Matches read from one query at most (before ranking). */
         private const val READ_CAP = 400
         private const val IN_CHUNK = 500
+        /** The most channel names held in memory for a search; with more, the database is asked each time. */
+        private const val NAMES_CAP = 200_000
 
         private const val CHANNEL_SELECT =
-            "SELECT c.playlist_id, c.id, c.name, c.logo, c.group_id, c.epg_ref, f.channel_id IS NOT NULL FROM channel c " +
+            "SELECT c.playlist_id, c.id, c.name, c.logo, c.group_id, c.epg_ref, f.channel_id IS NOT NULL, p.position, c.position FROM channel c " +
                 "JOIN playlist p ON p.id = c.playlist_id " +
                 "LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
 

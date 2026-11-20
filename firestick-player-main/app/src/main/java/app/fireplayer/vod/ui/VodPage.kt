@@ -12,6 +12,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.LinearLayout
 import app.fireplayer.R
 import app.fireplayer.live.ChannelKey
@@ -135,6 +136,11 @@ class VodPage(
     private val lastWords = SearchRules.LastWords()
     /** Search > Live TV: its results under the bar, made the first time that kind is chosen. */
     private var liveResults: LiveSearchView? = null
+    /** Search: "Searching..." in the history's place, from a search being asked for until its first answer. */
+    private val searchingNote: TextView? = if (search) t.label(ctx, VodSizes.NOTE).apply {
+        text = VodSizes.SEARCHING_NOTE
+        visibility = View.GONE
+    } else null
     private var searchBack = SearchRules.Back.RAIL
     /** Search: the words the result rows are for ("": none, the history shows). */
     private var query = ""
@@ -269,6 +275,13 @@ class VodPage(
                 topMargin = t.dp(VodSizes.searchListTop())
                 bottomMargin = t.dp(VodSizes.SEARCH_LIST_BOTTOM)
             })
+            searchingNote?.let { note ->
+                root.addView(note, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    leftMargin = pageX
+                    topMargin = t.dp(VodSizes.searchListTop())
+                })
+            }
+            column.roomUnderHeader = t.dp(VodSizes.SEARCH_UNDER_BAR)
             list.show(history?.entries.orEmpty())
         }
         searchBar?.let { bar ->
@@ -1328,6 +1341,8 @@ class VodPage(
     /** Search: [words] searched in the kind chosen. */
     private fun searchKind(words: String) {
         if (kind == SearchKind.LIVE) liveView().search(SearchHistoryRules.clean(words)) else search(words)
+        // At once, before any answer: the history gives way to "Searching...", so a search never looks stuck.
+        updateSearchView()
     }
 
     /** Search > Live TV's results, made the first time they're needed (above the history, under the page's windows). */
@@ -1362,6 +1377,7 @@ class VodPage(
         bar.cancel()
         if (kind == SearchKind.LIVE) liveResults?.clear() else search("")
         kind = to
+        if (to == SearchKind.LIVE) liveView().warm()
         pills?.show(to)
         bar.setKind(to)
         val words = lastWords.of(to)
@@ -1456,15 +1472,18 @@ class VodPage(
         val list = historyList ?: return
         val live = liveResults?.takeIf { kind == SearchKind.LIVE }
         val results = visibleRows().isNotEmpty() || live?.hasResults() == true
-        // Focus off the list before it hides (a hidden view holding focus would hand it to the rail's first tab).
-        if (results && list.hasFocus()) searchBar?.focusBar()
-        list.visibility = when {
-            results -> View.GONE
-            covered -> View.INVISIBLE
-            else -> View.VISIBLE
-        }
         val q = live?.query ?: query
         val answered = live?.answered ?: rows.all { it.answered }
+        // Asked for and not answered yet, with nothing to show meanwhile.
+        val searching = q.isNotEmpty() && !results && !answered
+        // Focus off the list before it hides (a hidden view holding focus would hand it to the rail's first tab).
+        if ((results || searching) && list.hasFocus()) searchBar?.focusBar()
+        list.visibility = when {
+            results -> View.GONE
+            covered || searching -> View.INVISIBLE
+            else -> View.VISIBLE
+        }
+        searchingNote?.visibility = if (searching && !covered) View.VISIBLE else View.GONE
         if (q.isNotEmpty() && !results && answered && noticeFor != q && shown) {
             noticeFor = q
             showNotice("Nothing found for \u201C$q\u201D")

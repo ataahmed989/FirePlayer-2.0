@@ -32,6 +32,17 @@ class PageColumn(
     /** Called after a layout that moved rows (main thread, before drawing). */
     var onRowsMoved: (() -> Unit)? = null
 
+    /**
+     * Room the column keeps under its header even with no rows, px: what hangs under the header there (the Search
+     * bar's trash button's name) is drawn inside the column's bounds, so the viewport doesn't cut it.
+     */
+    var roomUnderHeader = 0
+        set(v) {
+            if (field == v) return
+            field = v
+            requestLayout()
+        }
+
     private val headerH = t.dp(headerHDp)
     private val headerGap = t.dp(headerGapDp)
     private var tops = IntArray(0)
@@ -58,7 +69,7 @@ class PageColumn(
             h += ch + if (c === header) headerGap else 0
         }
         // Taller than the viewport it sits in: the parent's limit doesn't apply.
-        setMeasuredDimension(w, h)
+        setMeasuredDimension(w, maxOf(h, headerH + roomUnderHeader))
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {

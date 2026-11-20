@@ -77,12 +77,18 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     private var serial = 0
     private var cancel: CancellationSignal? = null
     private var released = false
+    /** The channels' names, read once for this visit ([warm]); written on the search thread, which also reads it. */
+    @Volatile private var names: LiveSearch.Names? = null
+    private var namesAsked = false
 
     private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
     private val channelsHead = head("Channels")
     private val strip = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
     private val tilesLine = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
     private val programmesHead = head("Programmes")
+    /** Under "Programmes" while the channels show and the guide is still being read (it takes a few seconds). */
+    private val guideNote = t.label(context, VodSizes.NOTE).apply { text = VodSizes.SEARCHING_NOTE; visibility = View.GONE }
+    private var guidePending = false
     private val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val tiles = ArrayList<Tile>()
     private val rows = ArrayList<Row>()
@@ -102,6 +108,9 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         ).apply { topMargin = t.dp(VodSizes.LIVE_ROW_GAP) })
         content.addView(programmesHead, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.LIVE_HEAD_H)).apply {
             topMargin = t.dp(VodSizes.LIVE_SECTION_GAP)
+        })
+        content.addView(guideNote, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = t.dp(VodSizes.LIVE_ROW_GAP)
         })
         content.addView(list, LinearLayout.LayoutParams(t.dp(VodSizes.tabHeaderW()), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = t.dp(VodSizes.LIVE_ROW_GAP)
@@ -131,6 +140,19 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     // ---- Searching ------------------------------------------------------------------------------------------------
 
     /** The results for [words], asked now (blank: none). An older search still running is cancelled. */
+    /** Reads the channels' names ahead (Live TV search chosen): the first search then finds channels at once. */
+    fun warm() {
+        if (namesAsked || released) return
+        namesAsked = true
+        LiveSearch.worker.execute {
+            names = try {
+                LiveSearch(db).names()
+            } catch (e: RuntimeException) {
+                null
+            }
+        }
+    }
+
     fun search(words: String) {
         val q = words.trim()
         if (q == query && (answered || q.isNotEmpty())) return
@@ -138,6 +160,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         val my = ++serial
         cancel?.cancel()
         cancel = null
+        guidePending = false
         if (q.isEmpty()) {
             answered = true
             show(null)
@@ -145,15 +168,22 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             return
         }
         answered = false
+        warm()
         val signal = CancellationSignal().also { cancel = it }
         val now = System.currentTimeMillis()
         LiveSearch.worker.execute {
             if (signal.isCanceled) return@execute
             val r = try {
                 // The channels show as soon as they're found; the programmes join them when the guide has been read.
-                LiveSearch(db).find(q, now, signal) { first ->
-                    main.post { if (my == serial && !released && !answered) show(first) }
-                }
+                LiveSearch(db).find(q, now, signal, { first ->
+                    main.post {
+                        if (my != serial || released || answered) return@post
+                        guidePending = true
+                        show(first)
+                        // The page hears of it too (its "Searching..." gives way to these).
+                        onAnswered?.invoke()
+                    }
+                }, names)
             } catch (e: OperationCanceledException) {
                 return@execute
             } catch (e: RuntimeException) {
@@ -164,6 +194,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             main.post {
                 if (my != serial || released) return@post
                 answered = true
+                guidePending = false
                 show(r)
                 onAnswered?.invoke()
             }
@@ -184,6 +215,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         tileSpring.stop()
         pageSpring.stop()
         logos.clear()
+        names = null
     }
 
     private fun show(r: LiveSearch.Result?) {
@@ -208,7 +240,10 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         val hasProgrammes = programmes.isNotEmpty()
         channelsHead.visibility = if (hasChannels) View.VISIBLE else View.GONE
         strip.visibility = if (hasChannels) View.VISIBLE else View.GONE
-        programmesHead.visibility = if (hasProgrammes) View.VISIBLE else View.GONE
+        // The guide still being read: its heading already there, "Searching..." in the list's place.
+        val waiting = guidePending && hasChannels && !hasProgrammes
+        programmesHead.visibility = if (hasProgrammes || waiting) View.VISIBLE else View.GONE
+        guideNote.visibility = if (waiting) View.VISIBLE else View.GONE
         list.visibility = if (hasProgrammes) View.VISIBLE else View.GONE
         (programmesHead.layoutParams as LinearLayout.LayoutParams).topMargin = if (hasChannels) t.dp(VodSizes.LIVE_SECTION_GAP) else 0
         visibility = if (r == null || r.isEmpty) View.GONE else View.VISIBLE
@@ -267,9 +302,18 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     private fun isOk(keyCode: Int) =
         keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
-    private fun refreshLogos() {
+    /** Logos arrive one by one, many in a burst: the tiles and rows are gone through once a frame, not once a logo. */
+    private var logosDue = false
+    private val logosNow = Runnable {
+        logosDue = false
         for (tile in tiles) tile.refreshLogo()
         for (row in rows) row.refreshLogo()
+    }
+
+    private fun refreshLogos() {
+        if (logosDue || released) return
+        logosDue = true
+        main.post(logosNow)
     }
 
     fun applyLook() {
@@ -306,12 +350,25 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
         }
+        /**
+         * The whole name on one line, as wide as its words (sized once, when the tile is given its channel): the copy
+         * that scrolls. Showing it and moving it lays nothing out, so moving along the row never re-measures the page.
+         */
+        private val full: TextView = t.label(context, VodSizes.LIVE_NAME).apply {
+            isSingleLine = true
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.INVISIBLE
+        }
+        /** How far the whole name has to travel to show its end (0: it fits, nothing scrolls). */
+        private var travel = 0f
         /** In the tile, in place of a logo that isn't there (none listed, or none arrived): the channel's name. */
         private val standIn: TextView = t.label(context, VodSizes.LIVE_NAME).apply {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            alpha = VodSizes.LIVE_STAND_IN_ALPHA
+            // Quiet by its colour, not the view's alpha (which would draw it through a picture of its own each frame).
+            setTextColor((currentTextColor and 0x00FFFFFF) or ((255 * VodSizes.LIVE_STAND_IN_ALPHA).toInt() shl 24))
+            tag = KEEP_COLORS
             visibility = View.INVISIBLE
             val pad = t.dp(VodSizes.LIVE_TILE_PAD)
             setPadding(pad, 0, pad, 0)
@@ -335,6 +392,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             plate.addView(standIn, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(plate, LayoutParams(boxW, t.dp(VodSizes.LIVE_TILE_H)))
             nameBox.addView(name, FrameLayout.LayoutParams(boxW, ViewGroup.LayoutParams.MATCH_PARENT))
+            nameBox.addView(full, FrameLayout.LayoutParams(boxW, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(nameBox, LayoutParams(boxW, t.dp(VodSizes.LIVE_NAME_H)).apply { topMargin = t.dp(VodSizes.LIVE_NAME_TOP) })
             plate.setOnFocusChangeListener { _, has ->
                 plate.invalidate()
@@ -360,7 +418,17 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
                 layoutParams = lp
             }
             if (h == null) return
-            name.text = h.name
+            if (name.text.toString() != h.name) {
+                name.text = h.name
+                full.text = h.name
+                val textW = full.paint.measureText(h.name)
+                travel = Marquee.distance(textW, boxW.toFloat())
+                val w = maxOf(boxW, kotlin.math.ceil(textW).toInt())
+                if (full.layoutParams.width != w) {
+                    full.layoutParams.width = w
+                    full.requestLayout()
+                }
+            }
             refreshLogo()
             main.postDelayed(showStandIn, VodSizes.LIVE_STAND_IN_AFTER_MS)
         }
@@ -391,20 +459,17 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
 
         /** The whole name, when it doesn't fit: one pass to its end, a pause, back to its start, again while focused. */
         private fun startMarquee() {
-            if (!plate.isFocused) return
-            val textW = name.paint.measureText(name.text, 0, name.text.length)
-            val distance = Marquee.distance(textW, boxW.toFloat())
-            if (distance <= 0f) return
-            name.ellipsize = null
-            name.layoutParams.width = kotlin.math.ceil(textW).toInt()
-            name.requestLayout()
-            name.animate().translationX(-distance).setStartDelay(0)
-                .setDuration(Marquee.durationMs(distance, t.dpf(VodSizes.LIVE_MARQUEE_DP_S)))
+            if (!plate.isFocused || travel <= 0f) return
+            name.visibility = View.INVISIBLE
+            full.translationX = 0f
+            full.visibility = View.VISIBLE
+            full.animate().translationX(-travel).setStartDelay(0)
+                .setDuration(Marquee.durationMs(travel, t.dpf(VodSizes.LIVE_MARQUEE_DP_S)))
                 .setInterpolator(null)
                 .withEndAction {
                     main.postDelayed({
                         if (!plate.isFocused) return@postDelayed
-                        name.translationX = 0f
+                        full.translationX = 0f
                         main.postDelayed(marquee, VodSizes.LIVE_MARQUEE_DELAY_MS)
                     }, VodSizes.LIVE_MARQUEE_HOLD_MS)
                 }.start()
@@ -412,12 +477,11 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
 
         fun stopMarquee() {
             main.removeCallbacks(marquee)
-            name.animate().cancel()
-            name.translationX = 0f
-            if (name.ellipsize == null) {
-                name.ellipsize = TextUtils.TruncateAt.END
-                name.layoutParams.width = boxW
-                name.requestLayout()
+            full.animate().cancel()
+            full.translationX = 0f
+            if (full.visibility == View.VISIBLE) {
+                full.visibility = View.INVISIBLE
+                name.visibility = View.VISIBLE
             }
         }
     }

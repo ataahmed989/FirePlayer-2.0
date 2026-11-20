@@ -130,6 +130,13 @@ internal object VodSizes {
     const val SEARCH_TRASH_GAP = 12f
     /** Room under the trash button for its name, which shows while it is focused. */
     const val SEARCH_TRASH_LABEL = 22f
+    /**
+     * Room the Search page's column always has under its bar, results or not: the trash button's name hangs there
+     * (pushed a little lower as the focused button grows) and must never be cut.
+     */
+    const val SEARCH_UNDER_BAR = 44f
+    /** What Search says in the history's place from the moment a search is asked for until its first answer. */
+    const val SEARCHING_NOTE = "Searching\u2026"
     /** Between the bar and what's under it (the history list, the first row of results). */
     const val SEARCH_GAP = HEADER_GAP
     /** The history list's room at the screen's bottom. */
