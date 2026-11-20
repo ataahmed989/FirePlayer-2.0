@@ -393,18 +393,21 @@ class TorzDebridImaxTest {
     @Test
     fun theLogLineSaysAddonCachedAndTheSiteOnlyNeverTheLink() {
         val s = src("imax", 2160, "Film.Name.2021.IMAX.2160p")
-        val link = SecretUrl.of("https://store-031.weur.tb-cdn.st/dl/FAKETOKEN/Film.mkv?token=FAKE&user=FAKEUSER")!!
+        val link = SecretUrl.of("https://store-031.cdn.example.org/dl/FAKETOKEN/Film.mkv?token=FAKE&user=FAKEUSER")!!
         val line = SourceLog.line(Opened.Ready(s, s.offers.single(), link, null, false))
-        assertEquals("Source: StremThru Torz · cached · streams from tb-cdn.st (TorBox)", line)
+        assertEquals("Source: StremThru Torz · cached · streams from example.org", line)
         assertFalse(line.contains("FAKE"))
         assertFalse(line.contains("/") || line.contains("?") || line.contains("store-031"))
         val notCached = s.offers.single().copy(readiness = Readiness.NOT_READY, addon = Addon.TORRENTIO)
-        val rd = SourceLog.line(Opened.Ready(s, notCached, SecretUrl.of("https://42.download.real-debrid.com/d/FAKE/f.mkv")!!, null, false))
-        assertEquals("Source: Torrentio · not cached (the debrid service fetches it) · streams from real-debrid.com (Real-Debrid)", rd)
+        val other = SourceLog.line(Opened.Ready(s, notCached, SecretUrl.of("https://stremthru.example.org/v0/proxy/FAKE")!!, null, false))
+        assertEquals("Source: Torrentio · not cached (the debrid service fetches it) · streams from example.org (StremThru)", other)
     }
 
     @Test
     fun theSiteIsTheHostsLastLabelsWithTheServiceNamed() {
+        // Hosts only (never a link): the debrid services' download hosts are named.
+        assertEquals("tb-cdn.st (TorBox)", SourceLog.site("store-031.weur.tb-cdn.st"))
+        assertEquals("real-debrid.com (Real-Debrid)", SourceLog.site("42.download.real-debrid.com"))
         assertEquals("torbox.app (TorBox)", SourceLog.site("cdn1.torbox.app"))
         assertEquals("elfhosted.com (ElfHosted)", SourceLog.site("someuser-mediafusion.elfhosted.com"))
         assertEquals("example.org (StremThru)", SourceLog.site("stremthru.example.org"))
