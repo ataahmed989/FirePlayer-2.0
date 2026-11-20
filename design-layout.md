@@ -558,3 +558,10 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   The faint vertical line where the banner's artwork begins is fixed (the card left of the picture's box is backed by
   the same solid colour the picture is eased into); dark logo tiles and the title's logo size checked on the TV.
   Open: the user's own tuning notes.
+
+- 2026-11-20 · Glass refresh over heavy films (shipped from the firestick-player repo, b64eada). The user: "get rid
+  of the glass refresh limit for 4k films", then "keep the limit for files that have 70 and higher Mb/s". The glass's
+  lighter load (at most 2 copies a second, cut probes every 500 ms, fades no oftener than 33 ms) now applies only while
+  a film averaging 70 Mb/s or more (its size over its running time; not known counts as under) plays on a TV short of
+  memory; under that, 4K included, Settings › Look › Glass refresh applies as chosen. The row reads
+  "8 a second · 2 at 70+ Mb/s" while it applies. The black-bar watch keeps its own slowdown for any 4K film.
