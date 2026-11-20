@@ -120,19 +120,57 @@ class VodSizesTest {
 
     @Test
     fun homeHeaderAndWindowFillTheWidthWithTheRightMargin() {
-        assertEquals(496f, VodSizes.homeHeaderW())
-        assertEquals(VodSizes.SCREEN_W - VodSizes.CONTENT_SCREEN_X, VodSizes.homeHeaderW() + 16f + 330f + 24f)
-        // The window's right edge sits 24 dp from the screen's (page x + rail = screen x).
+        // Home's banner reaches out towards the rail: it starts 19 dp from the rail's floating window (which ends at
+        // 51), its words (24 dp in) in line with the rows' titles at 94; the rows stay where they were.
+        assertEquals(51f, VodSizes.RAIL_WINDOW_END)
+        assertEquals(12f, VodSizes.HOME_HEADER_X)
+        assertEquals(70f, VodSizes.HOME_HEADER_SCREEN_X)
+        assertEquals(19f, VodSizes.HOME_HEADER_SCREEN_X - VodSizes.RAIL_WINDOW_END)
+        assertEquals(VodSizes.CONTENT_SCREEN_X, VodSizes.HOME_HEADER_SCREEN_X + VodSizes.HEADER_INSET)
+        // Wider (560 dp, it was 496), Recent channels narrower (290, it was 330) and pushed right.
+        assertEquals(560f, VodSizes.homeHeaderW())
+        assertEquals(290f, VodSizes.WINDOW_W)
+        assertEquals(VodSizes.SCREEN_W, VodSizes.HOME_HEADER_SCREEN_X + VodSizes.homeHeaderW() + 16f + VodSizes.WINDOW_W + 24f)
+        // The window's left edge 16 dp past the banner, its right edge 24 dp from the screen's (page x + rail = screen x).
+        assertEquals(646f, VodSizes.windowX() + VodSizes.RAIL)
         assertEquals(936f, VodSizes.windowX() + VodSizes.WINDOW_W + VodSizes.RAIL)
         assertEquals(842f, VodSizes.tabHeaderW())
     }
 
     @Test
+    fun recentChannelsStillHoldsItsRowsWhole() {
+        // A row: the window's side padding, the row's own, the logo tile, the gap, then the two lines of text (cut
+        // short with an ellipsis, never clipped); the scrollbar keeps to the window's right padding.
+        val row = VodSizes.WINDOW_W - 2 * (VodSizes.RECENT_PAD_X - VodSizes.RECENT_ROW_PAD)
+        val text = row - 2 * VodSizes.RECENT_ROW_PAD - VodSizes.RECENT_LOGO_W - VodSizes.RECENT_LOGO_GAP
+        assertEquals(188f, text)
+        assertTrue(VodSizes.RECENT_BAR_RIGHT + VodSizes.RECENT_BAR_W <= VodSizes.RECENT_PAD_X - VodSizes.RECENT_ROW_PAD)
+    }
+
+    @Test
+    fun homesBannerShowsItsPictureWholeBesideTheWords() {
+        val home = VodSizes.homeHeaderW()
+        // The picture in a box of its own shape (16:9) at the card's right, its left edge eased into the dark side.
+        near(405.33f, VodSizes.backdropW(home), 0.01f)
+        assertTrue(VodSizes.backdropW(home) < home)
+        val boxLeft = home - VodSizes.backdropW(home)
+        near(154.67f, boxLeft, 0.01f)
+        near(316.8f, VodSizes.pictureClearX(home), 0.01f)
+        // The words stay on the dark side and the eased edge, never over the clear picture.
+        assertTrue(VodSizes.HEADER_INSET + VodSizes.storyW(home) <= VodSizes.pictureClearX(home) + 0.001f)
+        // The backing behind the dark side reaches under the box (VodHeader), and the easing is the shared one.
+        assertEquals(0.40f, VodSizes.BANNER_FADE_LEFT_TO)
+        // The wide cards are as they were: the same box, the same words.
+        near(561.6f, VodSizes.backdropW(VodSizes.tabHeaderW()), 0.001f)
+        assertEquals(400f, VodSizes.storyW(VodSizes.tabHeaderW()))
+    }
+
+    @Test
     fun theBannerIsTallerAndTheFirstRowStartsUnderIt() {
-        assertEquals(216f, VodSizes.HEADER_H)
-        assertEquals(232f, VodSizes.firstRowTop())
+        assertEquals(228f, VodSizes.HEADER_H)
+        assertEquals(244f, VodSizes.firstRowTop())
         val firstRowScreen = VodSizes.VIEWPORT_TOP + VodSizes.firstRowTop()
-        assertEquals(276f, firstRowScreen)
+        assertEquals(288f, firstRowScreen)
         assertEquals(496f, VodSizes.VIEWPORT_H)
         // Continue Watching under the banner shows whole, its chosen card grown; the next row's title shows under it,
         // its posters running on below the screen (nothing shrinks to fit).
@@ -140,6 +178,10 @@ class VodSizesTest {
         assertTrue(firstRowScreen + wide <= VodSizes.SCREEN_H)
         val next = firstRowScreen + VodSizes.bandH(RowStyle.WIDE, true, VodSizes.ROW_GAP, large = true)
         assertTrue(next + VodSizes.ROW_TITLE_STYLE.lineSp < VodSizes.SCREEN_H)
+        // Its title shows above the part of the screen a TV may cut off (it ends at about 513 dp).
+        assertTrue(next + VodSizes.ROW_TITLE <= VodSizes.SCREEN_H - VodSizes.TV_SAFE)
+        // Recent channels' top is the banner's, and it is as tall.
+        assertEquals(VodSizes.HEADER_H, VodSizes.RECENT_PAD_TOP + VodSizes.RECENT_HEAD_H + VodSizes.RECENT_FIRST_TOP + VodSizes.recentListH() + VodSizes.RECENT_PAD_BOTTOM)
         assertTrue(next + VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP, large = true) > VodSizes.SCREEN_H)
     }
 
@@ -148,12 +190,13 @@ class VodSizesTest {
         val top = VodSizes.firstRowTop()
         val posters = VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true)
         near(292.16f, posters, 0.01f)
-        near(28.16f, RowMath.pageTarget(0, 0, posters, VodSizes.VIEWPORT_H) { top }, 0.01f)
-        // Most of the banner still shows, its words and buttons with it: the words, which start nearer the card's top
-        // than that, move down to stay whole under the cut, and still keep off the buttons.
-        assertTrue(VodSizes.HEADER_TOP < 28.16f)
-        val shift = VodSizes.headerWordsShift(28.16f)
-        near(VodSizes.HEADER_TOP_KEEP, VodSizes.HEADER_TOP + shift - 28.16f, 0.01f)
+        near(40.16f, RowMath.pageTarget(0, 0, posters, VodSizes.VIEWPORT_H) { top }, 0.01f)
+        // Most of the banner still shows (188 dp of it, as before it was taller), its words and buttons with it: the
+        // words, which start nearer the card's top than that, move down to stay whole under the cut, and still keep
+        // off the buttons.
+        assertTrue(VodSizes.HEADER_TOP < 40.16f)
+        val shift = VodSizes.headerWordsShift(40.16f)
+        near(VodSizes.HEADER_TOP_KEEP, VodSizes.HEADER_TOP + shift - 40.16f, 0.01f)
         assertTrue(VodSizes.headerWordsEnd() + shift <= VodSizes.headerButtonsTop() - VodSizes.HEADER_WORDS_MIN_GAP)
         val wide = VodSizes.rowShownH(RowStyle.WIDE, header = true, large = true)
         assertEquals(0f, RowMath.pageTarget(0, 0, wide, VodSizes.VIEWPORT_H) { top })
@@ -178,8 +221,8 @@ class VodSizesTest {
         near(35.2f, VodSizes.headerStoryH(), 0.001f)
         near(114.2f, VodSizes.headerWordsH(), 0.001f)
         near(138.2f, VodSizes.headerWordsEnd(), 0.001f)
-        // The buttons (158..192) stand clear of it, and above the dots (202..207).
-        assertEquals(158f, VodSizes.headerButtonsTop())
+        // The buttons (170..204) at the bottom left, clear of it, and above the dots (214..219).
+        assertEquals(170f, VodSizes.headerButtonsTop())
         assertTrue(VodSizes.headerButtonsTop() - VodSizes.headerWordsEnd() >= 16f)
         assertTrue(VodSizes.HEADER_BUTTONS_BOTTOM >= VodSizes.DOTS_BOTTOM + VodSizes.DOTS_H + 8f)
         // A focused button grows 4% about its centre, with a glow 12.5 dp out all round and a shadow that falls
@@ -192,20 +235,20 @@ class VodSizesTest {
         assertTrue(VodSizes.HEADER_BUTTON_H * grow / 2f + 22.5f <= VodSizes.HEADER_BUTTONS_BOTTOM)
         // That room above the buttons is still below the words.
         assertTrue(VodSizes.headerButtonsTop() - VodSizes.HEADER_BUTTON_ROOM >= VodSizes.headerWordsEnd())
-        // The backdrop: at most 2.6 header heights wide, right-aligned; Home's fills its card.
-        assertEquals(496f, VodSizes.backdropW(VodSizes.homeHeaderW()))
+        // The backdrop, right-aligned: the wide cards' 561.6 dp box; Home's the picture's own shape.
+        near(405.33f, VodSizes.backdropW(VodSizes.homeHeaderW()), 0.01f)
         near(561.6f, VodSizes.backdropW(VodSizes.tabHeaderW()), 0.001f)
-        // The words' column: 300 dp on Home (the picture's subject stays clear of it), 400 on the wide cards.
-        assertEquals(300f, VodSizes.storyW(VodSizes.homeHeaderW()))
+        // The words' column: about 293 dp on Home (ending where its picture shows clear), 400 on the wide cards.
+        near(292.8f, VodSizes.storyW(VodSizes.homeHeaderW()), 0.01f)
         assertEquals(400f, VodSizes.storyW(VodSizes.tabHeaderW()))
         assertTrue(VodSizes.HEADER_INSET + VodSizes.storyW(VodSizes.homeHeaderW()) <= VodSizes.homeHeaderW() - VodSizes.HEADER_CLEAR)
     }
 
     @Test
     fun theBannersTitleIsItsLogoInASmallBoxAtTheTopLeft() {
-        // Up to 210 x 52 dp on Home, 240 x 52 on the wide cards: clearly smaller than the 40 sp name it replaces
+        // Up to 205 x 52 dp on Home, 240 x 52 on the wide cards: clearly smaller than the 40 sp name it replaces
         // (a 48 dp line as wide as the name).
-        near(210f, VodSizes.headerLogoW(VodSizes.homeHeaderW()), 0.001f)
+        near(204.96f, VodSizes.headerLogoW(VodSizes.homeHeaderW()), 0.01f)
         assertEquals(240f, VodSizes.headerLogoW(VodSizes.tabHeaderW()))
         assertEquals(52f, VodSizes.HEADER_TITLE_H)
         assertTrue(VodSizes.headerLogoW(VodSizes.tabHeaderW()) <= VodSizes.storyW(VodSizes.tabHeaderW()))

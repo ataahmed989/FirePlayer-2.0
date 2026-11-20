@@ -88,6 +88,14 @@ class Prefs(context: Context) {
         get() = sp.getInt("glass_refresh", 4)
         set(v) = sp.edit().putInt("glass_refresh", v).apply()
 
+    /**
+     * Settings › Home Header: Home's banner shows the focused Continue Watching title (on), or always goes through its
+     * own titles while it shows (off). Movies and TV Shows always match.
+     */
+    var homeHeaderMatchesContinue: Boolean
+        get() = sp.getBoolean("home_header_match_continue", true)
+        set(v) = sp.edit().putBoolean("home_header_match_continue", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()

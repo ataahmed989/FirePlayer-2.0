@@ -13,6 +13,44 @@ import org.junit.Test
 
 class SearchKindRulesTest {
 
+    // ---- Which row comes first ----
+
+    @Test fun theRowHoldingTheBestMatchComesFirst() {
+        // A show named exactly as searched: TV Shows above Movies.
+        assertTrue(SearchRules.showsFirst(listOf("Breaking Bad: The Movie", "El Camino"), listOf("Breaking Bad"), "breaking bad"))
+        // A film named exactly: Movies first.
+        assertFalse(SearchRules.showsFirst(listOf("Dune"), listOf("Dune: Prophecy"), "Dune"))
+        // Starts with it beats a word starting with it, which beats holding it.
+        assertTrue(SearchRules.showsFirst(listOf("Mad Max: Fury Road"), listOf("Max Payne Show"), "max"))
+        assertFalse(SearchRules.showsFirst(listOf("Mad Max"), listOf("Cinemax Nights"), "max"))
+        // The best title anywhere in the row counts, not only the first.
+        assertTrue(SearchRules.showsFirst(listOf("The Office Job", "Office Space"), listOf("Workplace", "The Office"), "the office"))
+    }
+
+    @Test fun theSameMatchGoesToTheEarlierPlaceThenMovies() {
+        // Both start with it: the one earlier in its row.
+        assertTrue(SearchRules.showsFirst(listOf("Other", "Lost Highway"), listOf("Lost"), "los"))
+        assertFalse(SearchRules.showsFirst(listOf("Lost Highway"), listOf("Other", "Lost"), "los"))
+        // The same rank and place: Movies first; neither matching (Cinemeta found them by other words): Movies first.
+        assertFalse(SearchRules.showsFirst(listOf("Lost Highway"), listOf("Lost Girl"), "lost"))
+        assertFalse(SearchRules.showsFirst(listOf("A"), listOf("B"), "zzz"))
+        // A row with nothing that matches loses to one with any match; an empty row never comes first.
+        assertTrue(SearchRules.showsFirst(listOf("Unrelated"), listOf("Some Lost Thing"), "lost"))
+        assertFalse(SearchRules.showsFirst(listOf("Lost"), emptyList(), "lost"))
+        assertTrue(SearchRules.showsFirst(emptyList(), listOf("Lost"), "lost"))
+        // Case and spaces round the words don't matter (the app's one name ranking).
+        assertTrue(SearchRules.showsFirst(listOf("Lost in Space"), listOf("LOST"), "  lost "))
+    }
+
+    @Test fun aRowsBestMatchIsItsBestRankThenItsPlace() {
+        assertEquals(Long.MAX_VALUE, SearchRules.bestMatch(listOf("A", "B"), "zzz"))
+        assertTrue(SearchRules.bestMatch(listOf("Lost"), "lost") < SearchRules.bestMatch(listOf("Lost Girl"), "lost"))
+        assertTrue(SearchRules.bestMatch(listOf("x", "Lost Girl"), "lost") > SearchRules.bestMatch(listOf("Lost Girl"), "lost"))
+        // A worse rank never wins by its place.
+        assertTrue(SearchRules.bestMatch(listOf("Lost Girl"), "lost") < SearchRules.bestMatch(listOf("Lost"), "los") + 1_000_000L)
+        assertTrue(SearchRules.bestMatch(List(15) { "x" } + "Lost", "lost") < SearchRules.bestMatch(listOf("Lost Girl"), "lost"))
+    }
+
     // ---- Kinds and history ----
 
     @Test fun eachKindHasItsOwnHistoryAndHint() {

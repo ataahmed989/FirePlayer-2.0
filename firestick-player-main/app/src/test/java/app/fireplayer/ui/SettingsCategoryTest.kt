@@ -10,7 +10,7 @@ class SettingsCategoryTest {
         assertEquals(
             listOf(
                 "Playlists & EPG", "Live TV", "Playback", "Remote & skipping", "Subtitles & audio", "Look",
-                "Accounts & services", "Rows", "Add-ons", "This TV", "TiviMate titles", "App",
+                "Accounts & services", "Rows", "Home Header", "Add-ons", "This TV", "TiviMate titles", "App",
             ),
             SettingsCategory.entries.map { it.title },
         )
@@ -57,6 +57,8 @@ class SettingsCategoryTest {
             "Torrentio", "MediaFusion", "Check again", "Best for this TV",
             // Films & Shows step 4: Settings › Rows, a window per page.
             "Home", "Movies", "TV Shows",
+            // Home Header: whether Home's banner shows the focused Continue Watching title.
+            "Match the focused Continue Watching title",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
@@ -77,11 +79,19 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.PLAYLISTS_EPG, where("Manage EPG sources"))
         assertEquals(SettingsCategory.ADDONS, where("MediaFusion"))
         assertEquals(SettingsCategory.THIS_TV, where("Best for this TV"))
+        assertEquals(SettingsCategory.HOME_HEADER, where(SettingsCategory.HOME_HEADER_MATCH))
     }
 
     /** The Settings tab's sizes: rows 44 dp + 8 dp, the title 34 + 16 dp, 27 dp kept clear above and below. */
     private fun columns(rows: Int, screenDp: Int) =
         SettingsCategory.columnsFor(rows, screenDp, rowDp = 44, gapDp = 8, titleDp = 50, edgeDp = 27)
+
+    @Test fun theSettingsTabStillTakesTwoColumnsWithHomeHeader() {
+        // Thirteen categories and Open a link: two columns of seven, eight to a column at most on the Fire TV.
+        assertEquals(14, SettingsCategory.entries.size + 1)
+        assertEquals(2, columns(14, 540))
+        assertEquals(listOf(7, 7), SettingsCategory.inColumns((1..14).toList(), 2).map { it.size })
+    }
 
     @Test fun tenRowsTakeTwoColumnsOnTheFireTv() {
         // 960 x 540 dp: 10 x 52 = 520 dp of rows, with only 436 dp left under the title.

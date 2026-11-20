@@ -27,6 +27,38 @@ class HeaderRotationTest {
     }
 
     @Test
+    fun theBannerFollowsOnlyAFocusedContinueCard() {
+        // A Continue Watching card with focus: its title, on every tab (Home while its setting is on).
+        assertTrue(HeaderFollow.follows(continueCard = true, home = false, matchOnHome = false))
+        assertTrue(HeaderFollow.follows(continueCard = true, home = true, matchOnHome = true))
+        // Home with Settings > Home Header off: always idle while it shows.
+        assertFalse(HeaderFollow.follows(continueCard = true, home = true, matchOnHome = false))
+        // Anything else (another row, its own buttons, the rail, Recent channels): idle.
+        assertFalse(HeaderFollow.follows(continueCard = false, home = true, matchOnHome = true))
+        assertFalse(HeaderFollow.follows(continueCard = false, home = false, matchOnHome = true))
+    }
+
+    @Test
+    fun leavingTheContinueCardForTheButtonsGoesBackToTheFeedAtOnce() {
+        // Up from a Continue card to Watch now: the card is no longer followed, and the feed turns again, the full
+        // wait from there (never frozen on the card's title).
+        val r = running(5)
+        r.follow(1_000L)
+        assertEquals(-1L, r.delayFrom(1_000L))
+        r.focusButtons(2_000L)
+        r.unfollow(2_000L)
+        assertFalse(r.following)
+        assertTrue(r.running)
+        assertEquals(8_000L, r.delayFrom(2_000L))
+        assertTrue(r.advanceIfDue(10_000L))
+        assertEquals(1, r.index)
+        // And from the buttons on to Recent channels or the rail: it keeps turning.
+        r.leaveButtons(11_000L)
+        assertTrue(r.running)
+        assertEquals(8_000L, r.delayFrom(11_000L))
+    }
+
+    @Test
     fun wrapsAtTheEndOfTheFeed() {
         val r = running(3)
         var now = 0L

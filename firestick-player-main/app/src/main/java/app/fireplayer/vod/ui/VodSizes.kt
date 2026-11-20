@@ -1,6 +1,7 @@
 package app.fireplayer.vod.ui
 
 import app.fireplayer.shell.NavRail
+import app.fireplayer.shell.RailShape
 import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.TextStyle.Ink
 import app.fireplayer.shell.TextStyle.Weight
@@ -99,19 +100,37 @@ internal object VodSizes {
     const val NAME_TOP = 12f
     const val VIEWPORT_TOP = 44f
     const val VIEWPORT_H = SCREEN_H - VIEWPORT_TOP
-    /** The banner (and Home's Recent channels beside it): taller, as the concept's. */
-    const val HEADER_H = 216f
+    /**
+     * The banner (and Home's Recent channels beside it), on Home, Movies and TV Shows alike, so the rows under it sit
+     * at the same height on every tab. On Home the first row under it (Continue Watching, a card grown) shows whole and
+     * the next row's title still shows above the part of the screen a TV may cut off ([TV_SAFE]).
+     */
+    const val HEADER_H = 228f
     /** Between the header and the first row. */
     const val HEADER_GAP = 16f
     /** Home's top-right window (the live picture / recent channels), and its gap from the header card. */
-    const val WINDOW_W = 330f
+    const val WINDOW_W = 290f
     const val WINDOW_GAP = 16f
+    /** The bottom of the screen a TV may cut off (5%), kept clear of what must show. */
+    const val TV_SAFE = 27f
+    /** Where the rail's floating window ends on the screen (every tab but Live TV, whose strip is attached). */
+    const val RAIL_WINDOW_END = RAIL - RailShape.FLOAT_SIDE_DP
     /**
      * The backdrop box: at most this many header heights wide, right-aligned in the card. In the classic look it sits
      * this far inside the card's edge (its border shows round it); in the glass look it fills the card and the outline
      * is drawn over it.
      */
     const val BACKDROP_ASPECT = 2.6f
+    /**
+     * The wide cards' (Movies, TV Shows, My List) picture box: as wide as it was with the 216 dp banner, so their dark
+     * side and My List's banner stay as they were.
+     */
+    const val BACKDROP_W = BACKDROP_ASPECT * 216f
+    /**
+     * Home's narrower card has the same look (the picture in a box at its right, its left edge eased into the dark
+     * side): the box is the picture's own shape (16:9), so the picture shows whole, nothing of its subject cut.
+     */
+    const val HOME_BACKDROP_ASPECT = 16f / 9f
     const val HEADER_ART_INSET = 1f
     /**
      * My List: its banner holds still, and its rows scroll under it from [fixedRowsTop] to the screen's bottom. So it's
@@ -190,6 +209,12 @@ internal object VodSizes {
     // the facts line and two lines of story, in one column ([storyW]); at the bottom left the Watch now and Details
     // buttons; the dots centred near the bottom. One margin on the left, the top and under the buttons.
     const val HEADER_INSET = 24f
+    /**
+     * Home's banner reaches out towards the rail's window, its words (at [HEADER_INSET] inside it) in line with the
+     * rows' titles under it: page-local x, and on the screen (19 dp from the rail's window, [RAIL_WINDOW_END]).
+     */
+    const val HOME_HEADER_X = PAGE_X - HEADER_INSET
+    const val HOME_HEADER_SCREEN_X = RAIL + HOME_HEADER_X
     const val HEADER_TOP = 24f
     /** The title's box: the logo stands in it at the left and bottom (its visible part), or the name does. */
     const val HEADER_TITLE_H = 52f
@@ -197,7 +222,7 @@ internal object VodSizes {
     const val HEADER_TITLE_SP = 28f
     const val HEADER_TITLE_LONG_SP = 21f
     const val HEADER_TITLE_LINES = 2
-    /** The logo: at most this share of the column, and never wider than this (210 dp on Home, 240 on the wide cards). */
+    /** The logo: at most this share of the column, and never wider than this (205 dp on Home, 240 on the wide cards). */
     const val HEADER_LOGO_SHARE = 0.7f
     const val HEADER_LOGO_MAX = 240f
     /**
@@ -211,7 +236,7 @@ internal object VodSizes {
     const val HEADER_STORY_SP = 13f
     /**
      * The words' column: never wider than [HEADER_STORY_MAX], and ending at least [HEADER_CLEAR] from the card's right
-     * edge, where the picture's subject is (300 dp on Home, 400 on the wide cards).
+     * edge, where the picture's subject is, and on the dark side ([storyW]: 293 dp on Home, 400 on the wide cards).
      */
     const val HEADER_STORY_MAX = 400f
     const val HEADER_CLEAR = 172f
@@ -316,7 +341,7 @@ internal object VodSizes {
     const val RECENT_LOGO_W = 58f
     const val RECENT_LOGO_H = 34f
     const val RECENT_LOGO_PX = 84f
-    const val RECENT_ROW_H = 54f
+    const val RECENT_ROW_H = 58f
     const val RECENT_ROWS_SHOWN = 3
     /** The most channels it lists. */
     const val RECENT_MAX = 12
@@ -655,19 +680,37 @@ internal object VodSizes {
         return (ceil(room / pitch(style, large)).toInt() + 1).coerceIn(1, most)
     }
 
-    /** Home's header card: what's left beside the window. */
-    fun homeHeaderW(): Float = SCREEN_W - CONTENT_SCREEN_X - RIGHT_MARGIN - WINDOW_GAP - WINDOW_W
+    /** Home's header card: from [HOME_HEADER_X] to the window. */
+    fun homeHeaderW(): Float = SCREEN_W - HOME_HEADER_SCREEN_X - RIGHT_MARGIN - WINDOW_GAP - WINDOW_W
     /** Movies' and TV Shows' header card: the content's width. */
     fun tabHeaderW(): Float = SCREEN_W - CONTENT_SCREEN_X - RIGHT_MARGIN
-    fun windowX(): Float = PAGE_X + homeHeaderW() + WINDOW_GAP
+    fun windowX(): Float = HOME_HEADER_X + homeHeaderW() + WINDOW_GAP
 
     /** The first row's top in the page's column (the header above it). */
     fun firstRowTop(): Float = HEADER_H + HEADER_GAP
 
-    fun backdropW(cardW: Float): Float = min(cardW, BACKDROP_ASPECT * HEADER_H)
+    /** The picture's box in a banner [cardW] wide: Home's ([HOME_BACKDROP_ASPECT]), or the wide cards' ([BACKDROP_W]). */
+    fun backdropW(cardW: Float): Float =
+        min(cardW, if (cardW <= homeHeaderW()) HOME_BACKDROP_ASPECT * HEADER_H else BACKDROP_W)
 
-    /** The banner's words' column (the title's box, the facts, the story): kept clear of the picture's subject. */
-    fun storyW(cardW: Float): Float = min(cardW - HEADER_INSET - HEADER_CLEAR, HEADER_STORY_MAX)
+    /**
+     * Where the picture is seen clear in a banner [cardW] wide: past its eased left edge ([BANNER_FADE_LEFT_TO]); 0
+     * where it fills the card.
+     */
+    fun pictureClearX(cardW: Float): Float {
+        val w = backdropW(cardW)
+        return if (w >= cardW) 0f else cardW - w + w * BANNER_FADE_LEFT_TO
+    }
+
+    /**
+     * The banner's words' column (the title's box, the facts, the story): kept clear of the picture's subject, and
+     * where the picture is in a box, on the dark side and its eased edge ([pictureClearX]).
+     */
+    fun storyW(cardW: Float): Float {
+        val clear = pictureClearX(cardW)
+        val w = min(cardW - HEADER_INSET - HEADER_CLEAR, HEADER_STORY_MAX)
+        return if (clear > 0f) min(w, clear - HEADER_INSET) else w
+    }
 
     /** The room a banner's logo has across (its box is [HEADER_TITLE_H] tall). */
     fun headerLogoW(cardW: Float): Float = min(storyW(cardW) * HEADER_LOGO_SHARE, HEADER_LOGO_MAX)
