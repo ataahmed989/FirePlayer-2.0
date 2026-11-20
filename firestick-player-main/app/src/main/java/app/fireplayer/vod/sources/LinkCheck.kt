@@ -16,9 +16,9 @@ import java.util.Locale
 
 /**
  * Stage 2 (design-brief §6.5, rev_source-failures §4A): opens an add-on's play link itself with redirects off, within
- * [LIMIT_MS], and reads where it points. A notice (Torrentio's /videos/, MediaFusion's /static/exceptions/, an ElfHosted
- * slate) is a failure by the table; anything else is the film's link, handed to the player. The film itself is never
- * downloaded here. Runs on a background thread; never logs a link.
+ * [LIMIT_MS], and reads where it points. A notice (Torrentio's /videos/, MediaFusion's /static/exceptions/, StremThru's
+ * /v0/store/_/static/, an ElfHosted slate) is a failure by the table; anything else is the film's link, handed to the
+ * player. The film itself is never downloaded here. Runs on a background thread; never logs a link.
  */
 class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private val elapsed: () -> Long) {
 
@@ -37,7 +37,7 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
 
     /**
      * Checks [link] from [addon]. [confirmedReady]: FirePlayer played this release before; without it a timeout counts as
-     * "possibly being fetched" (Real-Debrid may have started a download).
+     * "possibly being fetched" (the debrid service may have started a download).
      */
     fun check(addon: Addon, link: SecretUrl, confirmedReady: Boolean, cancel: CallHandle = CallHandle()): Result {
         val start = elapsed()
@@ -59,7 +59,8 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
                         ?: return Result.Failed(Failure(FailureKind.UNKNOWN, addon, "redirect without a target"))
                     Notices.classify(next, addon)?.let { return Result.Failed(it) }
                     val nextHost = host(next)
-                    // Only the add-on's own hops are followed; any other host is the film's (Real-Debrid's) link.
+                    // Only the add-on's own hops are followed; any other host is the film's link (the debrid service's,
+                    // Real-Debrid's, TorBox's…, whichever the add-on uses).
                     if (nextHost != null && nextHost != home) {
                         return SecretUrl.of(next)?.let { Result.Ready(it) }
                             ?: Result.Failed(Failure(FailureKind.UNKNOWN, addon, "not a web link"))
@@ -82,7 +83,7 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
 
     private fun timedOut(addon: Addon, confirmedReady: Boolean): Result.Failed = Result.Failed(
         if (confirmedReady) Failure(FailureKind.SLOW, addon, "no answer in 20 s")
-        else Failure(FailureKind.NOT_READY, addon, "no answer in 20 s: Real-Debrid may be fetching it"),
+        else Failure(FailureKind.NOT_READY, addon, "no answer in 20 s: the debrid service may be fetching it"),
     )
 
     private fun unreachable(addon: Addon, e: IOException): Failure = when {

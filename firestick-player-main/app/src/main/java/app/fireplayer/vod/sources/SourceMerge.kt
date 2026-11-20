@@ -11,7 +11,7 @@ import kotlin.math.max
 
 /**
  * One row per file (r3_sources-organize §4.7): the same info hash + file index, or the same normalised file name with
- * the size within 1 %, is one source; across add-ons it reads "Both add-ons", under several hashes "×N". Facts merge:
+ * the size within 1 %, is one source; across add-ons it reads "Both add-ons" (any two or more), under several hashes "×N". Facts merge:
  * HDR kinds joined, MediaFusion's exact size, Torrentio's seeders. Offers are tried ready mark first, then Torrentio.
  * Answers are merged in the order they arrived, so a row keeps its key as later answers join it.
  */

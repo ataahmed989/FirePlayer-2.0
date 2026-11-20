@@ -73,13 +73,33 @@ object Notices {
         "too many requests" to FailureKind.RATE_LIMITED,
     )
 
+    /**
+     * StremThru's `/v0/store/_/static/<name>.mp4` notices (internal/store/video in its source), which Torz redirects to
+     * instead of a film: named by HTTP status or by what happened, the same for every debrid service.
+     */
+    private val STREMTHRU = mapOf(
+        "downloading" to FailureKind.NOT_READY,
+        "download_failed" to FailureKind.FILE,
+        "no_matching_file" to FailureKind.FILE,
+        "451" to FailureKind.FILE,
+        "401" to FailureKind.ACCOUNT,
+        "403" to FailureKind.ACCOUNT,
+        "payment_required" to FailureKind.ACCOUNT,
+        "store_limit_exceeded" to FailureKind.LIMITS,
+        "content_proxy_limit_reached" to FailureKind.LIMITS,
+        "429" to FailureKind.RATE_LIMITED,
+        "500" to FailureKind.UNKNOWN,
+    )
+
     const val SLATE_HOST = "slate.elfhosted.com"
 
     private val TIO_VIDEO = Regex("""/videos/([a-z_]+?)(?:_v\d+)?\.mp4$""")
     private val MF_VIDEO = Regex("""/static/exceptions/([a-z_]+)\.mp4$""")
+    private val ST_VIDEO = Regex("""/v0/store/_/static/([a-z0-9_]+)\.mp4$""")
 
-    /** Whether "copyright" is what [kind] came from, for the "just added" rule (§6.5). */
-    fun isCopyright(detail: String?): Boolean = detail != null && (detail.contains("infring") || detail.contains("copyright"))
+    /** Whether "copyright" is what [kind] came from, for the "just added" rule (§6.5); StremThru's is its "451". */
+    fun isCopyright(detail: String?): Boolean =
+        detail != null && (detail.contains("infring") || detail.contains("copyright") || detail == "451")
 
     /**
      * What a link ([url], an add-on's play link or where it redirected) says when it is a notice; null when it is not
@@ -98,6 +118,10 @@ object Notices {
             val name = m.groupValues[1]
             return Failure(MEDIAFUSION[name] ?: FailureKind.UNKNOWN, addon ?: Addon.MEDIAFUSION, name)
         }
+        ST_VIDEO.find(path)?.let { m ->
+            val name = m.groupValues[1]
+            return Failure(STREMTHRU[name] ?: FailureKind.UNKNOWN, addon ?: Addon.TORZ, name)
+        }
         if (uri.host?.lowercase(Locale.ROOT) == SLATE_HOST) {
             val title = query(uri.rawQuery, "title").orEmpty()
             return Failure(slateKind(title), addon ?: Addon.MEDIAFUSION, redactLinks(title).take(80).ifEmpty { "slate" })
@@ -112,13 +136,13 @@ object Notices {
     }
 
     /**
-     * An error row inside an add-on's list (Torrentio's "RD error" rows, MediaFusion's configuration notice): what its
-     * words say, or null when [text] isn't one of those words.
+     * An error row inside an add-on's list (Torrentio's "RD error" / "TB error" rows, MediaFusion's configuration
+     * notice): what its words say, or null when [text] isn't one of those words.
      */
     fun listError(text: String, addon: Addon): Failure? {
         val t = text.lowercase(Locale.ROOT)
         val kind = when {
-            "invalid realdebrid" in t || "invalid real-debrid" in t || "apikey" in t || "api key" in t -> FailureKind.ACCOUNT
+            INVALID_SERVICE.containsMatchIn(t) || "apikey" in t || "api key" in t -> FailureKind.ACCOUNT
             "subscription" in t || "expired" in t && "debrid" in t -> FailureKind.ACCOUNT
             "currently unavailable" in t -> FailureKind.OUTAGE
             "invalid mediafusion configuration" in t || "invalid configuration" in t -> FailureKind.CONFIG
@@ -126,6 +150,10 @@ object Notices {
         }
         return Failure(kind, addon, kind.name.lowercase(Locale.ROOT))
     }
+
+    /** "Invalid RealDebrid ApiKey", "invalid torbox token": a debrid service refusing the key, whichever it is. */
+    private val INVALID_SERVICE =
+        Regex("""invalid (?:real-?debrid|torbox|alldebrid|premiumize|debrid-?link|easydebrid|offcloud|put\.?io|debrid)""")
 
     private fun query(raw: String?, name: String): String? {
         raw ?: return null
@@ -160,32 +188,36 @@ object PlayerErrors {
     }
 }
 
-/** The words the player shows when a play stops or nothing is left (plain words, no links). */
+/**
+ * The words the player shows when a play stops or nothing is left (plain words, no links). They name no one debrid
+ * service: the add-ons may use Real-Debrid, TorBox or another, and the same failures mean the same with each.
+ */
 object FailureWords {
     fun stop(kind: FailureKind): String = when (kind) {
-        FailureKind.ACCOUNT -> "Real-Debrid refused your account. Check your sign-in or subscription at real-debrid.com."
-        FailureKind.LIMITS -> "Real-Debrid says a limit is reached (often its download slots are full). Clear stuck " +
-            "downloads at real-debrid.com › Torrents, then try again."
-        FailureKind.RATE_LIMITED -> "Real-Debrid is busy (too many requests). Try again in a minute."
-        FailureKind.OUTAGE -> "Real-Debrid isn't working right now. Try again later."
+        FailureKind.ACCOUNT -> "Your debrid service (Real-Debrid, TorBox…) refused your account. Check your sign-in or " +
+            "subscription on its website."
+        FailureKind.LIMITS -> "Your debrid service says a limit is reached (often its download slots are full). Clear " +
+            "stuck downloads on its website, then try again."
+        FailureKind.RATE_LIMITED -> "Your debrid service is busy (too many requests). Try again in a minute."
+        FailureKind.OUTAGE -> "Your debrid service isn't working right now. Try again later."
         FailureKind.NO_INTERNET -> "No internet connection. Check the Wi-Fi and try again."
         FailureKind.CONFIG -> "MediaFusion's settings need redoing: enter its link again in Settings › Add-ons."
         else -> "This source didn't start."
     }
 
-    const val NONE_READY = "No source on Real-Debrid worked. Choose one in Sources."
+    const val NONE_READY = "No cached source worked. Choose one in Sources."
     const val TRIES_USED = "Tried 3 sources. Choose another in Sources, or use Next source."
     const val SWITCHES_USED = "Switched source twice already. Use Next source in Picture & sound to try another."
-    const val GUESSES_WRONG = "Two sources said to be on Real-Debrid weren't. Choose one in Sources."
-    const val NO_ADDONS = "No add-ons yet: add Torrentio or MediaFusion in Settings › Add-ons."
-    const val NOTHING_FOUND = "Neither add-on found a source for this."
-    const val FETCHING = "Real-Debrid is fetching it now. It can't play until that's done: try again in a few minutes."
+    const val GUESSES_WRONG = "Two sources said to be cached weren't. Choose one in Sources."
+    const val NO_ADDONS = "No add-ons yet: add Torrentio, MediaFusion or StremThru Torz in Settings › Add-ons."
+    const val NOTHING_FOUND = "No add-on found a source for this."
+    const val FETCHING = "Your debrid service is fetching it now. It can't play until that's done: try again in a few minutes."
 
     /** The strip's words for an add-on that failed to answer. */
     fun addonFailed(addon: Addon, failure: Failure?): String = when (failure?.kind) {
-        FailureKind.ACCOUNT -> "${addon.label} · Real-Debrid refused the account"
+        FailureKind.ACCOUNT -> "${addon.label} · the debrid service refused the account"
         FailureKind.CONFIG -> "${addon.label} · settings need redoing"
-        FailureKind.OUTAGE -> "${addon.label} · Real-Debrid unavailable"
+        FailureKind.OUTAGE -> "${addon.label} · the debrid service is unavailable"
         else -> "${addon.label} · didn't answer"
     }
 }

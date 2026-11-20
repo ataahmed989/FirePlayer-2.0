@@ -9,7 +9,8 @@ import app.fireplayer.vod.LookupWhy
  * - MediaFusion (ElfHosted allows 100 per home connection, refilling 1 a minute): at most [MF_EARLY] early look-ups
  *   (a title page's) an hour; no automatic look-up once FirePlayer has sent [MF_ALL] in the hour, counting the user's;
  *   after "busy" (🐢 or HTTP 429) no early look-up for 10 minutes and none at all for 2.
- * - Torrentio: at most [TIO_AUTO] automatic look-ups an hour (a guard against bugs); after HTTP 429 none for 2 minutes.
+ * - Torrentio and StremThru Torz: at most [TIO_AUTO] automatic look-ups an hour each (a guard against bugs); after
+ *   HTTP 429 none for 2 minutes.
  * The user's own requests (Play, Sources) are only held back by a "busy" pause. Main thread.
  */
 class Budget(private val store: Store, private val clock: () -> Long) {
@@ -43,7 +44,7 @@ class Budget(private val store: Store, private val clock: () -> Long) {
                 if (early && sent.count { it.addon == addon && it.early } >= MF_EARLY) return false
                 sent.count { it.addon == addon } < MF_ALL
             }
-            Addon.TORRENTIO -> sent.count { it.addon == addon && it.automatic } < TIO_AUTO
+            Addon.TORRENTIO, Addon.TORZ -> sent.count { it.addon == addon && it.automatic } < TIO_AUTO
         }
     }
 

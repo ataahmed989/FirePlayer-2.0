@@ -5871,6 +5871,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val request = source?.request ?: return
             if (isFinishing || isDestroyed) return
             launchMark(LaunchLog.LINK)
+            android.util.Log.i(TAG, app.fireplayer.vod.sources.SourceLog.line(ready))
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily).
             (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.storeKey }
