@@ -43,8 +43,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
 
     /** A channel's logo with its plate, if it has loaded (never waits for it). */
     var logo: (String) -> Logo? = { null }
-    /** A channel's programme on now, if read (the rows show none until it is). */
-    var nowOf: (Channel) -> Programme? = { null }
+    /** A channel's programme on now, by its key, if read (the rows show none until it is). */
+    var nowOf: (ChannelKey) -> Programme? = { null }
     var clock: () -> Long = System::currentTimeMillis
 
     var glass = false
@@ -86,6 +86,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         private set
     private var programmes: List<Programme> = emptyList()
     private var numbers: Array<String> = emptyArray()
+    /** Per channel row, its key (made once per list: drawing makes nothing). */
+    private var keys: Array<ChannelKey> = emptyArray()
     private var times: Array<String> = emptyArray()
     /** Per row, cut to fit when first drawn and kept: the name, its width, and the programme line. */
     private var names: Array<CharSequence?> = emptyArray()
@@ -221,6 +223,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     fun setChannels(list: List<Channel>, select: Int) {
         channels = list
         numbers = Array(list.size) { list[it].number.toString() }
+        keys = Array(list.size) { list[it].key }
         resetRows(list.size)
         place(select)
     }
@@ -418,7 +421,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     private fun drawChannel(canvas: Canvas, r: Int, top: Float, now: Long) {
         val ch = channels[r]
         val onPill = active && r == focus
-        val playing = ch.key == playingKey
+        val key = keys[r]
+        val playing = key == playingKey
         val nameCy = top + rowH * NAME_AT
         val subCy = top + rowH * SUB_AT
         val x = rowX()
@@ -454,10 +458,10 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
             }
         }
 
-        val p = nowOf(ch)?.takeIf { it.isOn(now) }
-        val key: Any = p ?: NONE
-        if (subFor[r] !== key) {
-            subFor[r] = key
+        val p = nowOf(key)?.takeIf { it.isOn(now) }
+        val madeFor: Any = p ?: NONE
+        if (subFor[r] !== madeFor) {
+            subFor[r] = madeFor
             val words = p?.title?.takeIf { it.isNotEmpty() } ?: if (p == null) NO_INFO else UNTITLED
             subs[r] = TextUtils.ellipsize(words, subPaint, room, TextUtils.TruncateAt.END)
         }

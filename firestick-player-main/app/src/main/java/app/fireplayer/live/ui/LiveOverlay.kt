@@ -168,7 +168,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         val logo: (String) -> Logo? = { io.logo(it) }
         for (c in listOf(groupsCol, channelsCol, programmesCol)) c.logo = logo
-        channelsCol.nowOf = { nowMap[it.key] }
+        channelsCol.nowOf = { nowMap[it] }
         addView(programmesCol, LayoutParams(programmesW, ViewGroup.LayoutParams.MATCH_PARENT).apply { leftMargin = channelsW })
         addView(channelsCol, LayoutParams(channelsW, ViewGroup.LayoutParams.MATCH_PARENT))
         addView(groupsCol, LayoutParams(groupsW, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -284,7 +284,14 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
 
     /** Closes (fading away with [animate]); nothing more is read or answered. */
     fun close(animate: Boolean = true) {
-        if (!isOpen) return
+        if (!isOpen) {
+            // Still fading away: gone at once.
+            if (!animate && visibility != GONE) {
+                animate().cancel()
+                hideNow.run()
+            }
+            return
+        }
         isOpen = false
         searching = false
         level = Level.CLOSED

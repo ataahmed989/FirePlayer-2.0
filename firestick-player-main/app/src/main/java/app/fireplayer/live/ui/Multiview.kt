@@ -186,7 +186,7 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
     private fun closeAll() {
         menu?.close(fade = false, focusBack = false)
         val pick = pickFor
-        closePicker()
+        closePicker(animate = false)
         // Its start given up: the one picture full screen again.
         if (pick is Pick.Enter) callbacks.readyPicture(false, animate = false)
         for (tile in model.tiles) dropTile(tile)
@@ -211,7 +211,7 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         menu?.close(fade = false, focusBack = false)
         // A pick half made is dropped (Multiview's start too: full screen is as it was).
         val pick = pickFor
-        closePicker()
+        closePicker(animate = false)
         if (pick is Pick.Enter) callbacks.readyPicture(false, animate = false)
         backDown = false
         press.cancel()
@@ -526,10 +526,10 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
     }
 
     /** The pick is done or given up: the list and the search page close. */
-    private fun closePicker() {
+    private fun closePicker(animate: Boolean = true) {
         pickFor = null
         picker?.close()
-        list?.takeIf { it.isOpen && it.picking }?.close()
+        list?.takeIf { it.isOpen && it.picking }?.close(animate)
     }
 
     /** Back in the list: Multiview as it was; at Multiview's start, full screen as it was (the picture grows back). */
