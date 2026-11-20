@@ -1,0 +1,1564 @@
+From 8c44d632fc0d11cf3dc39b49befe405d750b3d64 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:19:24 +0000
+Subject: [PATCH 1/6] WIP audit/vod: the film's buffer is sized again once room
+ has been made (pages' pictures, the last episode's buffer)
+
+The player is built about half a second after OK, before the page it started from has let go of its pictures and
+before Android has collected the buffer of the film or episode before, so the free-memory rule held the buffer down
+for memory that was on its way back. FilmRoom collects at once when something big is let go of and tells the film's
+player, which reads the free memory again (only ever more, up to the tier's size).
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     | 26 +++++++
+ .../java/app/fireplayer/player/FilmMemory.kt  | 24 +++++-
+ .../java/app/fireplayer/player/FilmRoom.kt    | 65 ++++++++++++++++
+ .../app/fireplayer/player/PlayerFactory.kt    | 74 ++++++++++++++++---
+ .../java/app/fireplayer/vod/play/FilmMode.kt  |  4 +
+ .../fireplayer/player/BufferAndRateTest.kt    | 57 ++++++++++++++
+ 6 files changed, 239 insertions(+), 11 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index ca51b02..c93ed30 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -86,6 +86,7 @@ import app.fireplayer.player.BufferWait
+ import app.fireplayer.player.DecoderCheck
+ import app.fireplayer.player.Delays
+ import app.fireplayer.player.FilmMemory
++import app.fireplayer.player.FilmRoom
+ import app.fireplayer.player.MemoryPressure
+ import app.fireplayer.player.DisplaySwitch
+ import app.fireplayer.player.FpsMeter
+@@ -1170,6 +1171,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         builtPlayer = built
+         // A new player while the TV is still short of memory starts squeezed.
+         if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
++        // Its buffer was sized by the memory free just now; told when room made for it is back with the TV (FilmRoom).
++        FilmRoom.onMade = roomListener
+         p.setVideoSurfaceView(surfaceView)
+         p.addListener(this)
+         p.addAnalyticsListener(filmLoadErrors)
+@@ -1287,7 +1290,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         if (diagMade.isInitialized()) diag.playerGone()
+         // Its listener is gone, so the glass won't hear that it stopped playing.
+         backdrop?.playing = false
++        // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
++        if (FilmRoom.onMade === roomListener) FilmRoom.onMade = null
+         p.release()
++        // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
++        // built meanwhile (the next episode's, a rebuilt one) hears when it's there.
++        FilmRoom.made()
+         assHandler?.release()
+         assHandler = null
+         builtPlayer = null
+@@ -1313,6 +1321,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         initPlayer()
+     }
+ 
++    private val roomListener: () -> Unit = { filmRoomMade() }
++
++    /**
++     * Memory let go of for this film is back with the TV ([FilmRoom]: the pages' pictures and caches, the buffer of the
++     * film or episode before): a buffer held down by the memory free as the player was built is sized by what's free
++     * now, up to this TV's own size for it. Logged when it changes, to be read on the TV.
++     */
++    private fun filmRoomMade() {
++        val built = builtPlayer ?: return
++        val free = FilmMemory.freeNow(this)
++        val bytes = built.roomMade(free)
++        if (bytes > 0) {
++            val step = memoryPressure.step
++            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free: the film's buffer is now ${bytes shr 20} MiB" +
++                if (step > 0) " (filling to ${built.fillBytes() shr 20} MiB while memory is short)" else "")
++        }
++    }
++
+     /** The decoder service hasn't answered: say so once, instead of a spinner that never ends. */
+     private fun showDecoderStuck() {
+         if (decoderStuck || isFinishing) return
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+index 4d63c4a..3f1ff89 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+@@ -59,7 +59,8 @@ enum class RamTier(
+ /**
+  * What the film's buffer gets on this TV (see [FilmMemory.plan]): [budgetBytes] in all, [backBufferMs] of it behind
+  * where the film plays, held to [backCapBytes] (0: no limit). [byFreeMemory]: the budget is below the tier's because
+- * little memory was free when the film started.
++ * little memory was free when the film started; [tierBytes] is what it would be with enough free (the most it can be
++ * raised to once room has been made, [FilmMemory.afterRoom]).
+  */
+ data class FilmBufferPlan(
+     val tier: RamTier,
+@@ -67,6 +68,7 @@ data class FilmBufferPlan(
+     val backBufferMs: Int,
+     val backCapBytes: Long = 0L,
+     val byFreeMemory: Boolean = false,
++    val tierBytes: Int = budgetBytes,
+ )
+ 
+ /**
+@@ -119,9 +121,29 @@ object FilmMemory {
+             // What's kept behind is held to the smaller of the two tiers' sizes, as its length is.
+             backCapBytes = listOf(tier.backCapMiB, fits.backCapMiB).filter { it > 0 }.minOrNull()?.let { it.toLong() shl 20 } ?: 0L,
+             byFreeMemory = budget < byTier,
++            tierBytes = byTier.toInt(),
+         )
+     }
+ 
++    /**
++     * The film's budget once room has been made for it: [budgetBytes] is what it got when its player was built, held
++     * under [tierBytes] by the memory free at that moment. That moment comes before the room is made: the player is
++     * built as soon as the link is checked (about half a second after OK), while the page it was started from lets go
++     * of its pictures and caches only once the player's screen covers it, and the film or episode before (Next
++     * episode, a rebuilt player) has only just let go of its own buffer, which Android hasn't taken back yet. So the
++     * free memory is read again when that memory is back ([FilmRoom]): [freeBytes] free now, plus [heldBytes] the
++     * film's buffer already holds itself, by the same rule as at the start ([plan]: all but [RESERVE_BYTES]).
++     *
++     * Only ever more, and never past [tierBytes]: a reading that comes out lower (the decoder has taken its frames
++     * meanwhile) changes nothing, and memory running short later is [MemoryPressure]'s to answer. Gives back the
++     * budget from now on ([budgetBytes] when nothing changes, or [freeBytes] isn't known).
++     */
++    fun afterRoom(budgetBytes: Int, tierBytes: Int, freeBytes: Long, heldBytes: Long): Int {
++        if (freeBytes <= 0L || budgetBytes >= tierBytes) return budgetBytes
++        val spare = freeBytes + heldBytes.coerceAtLeast(0L) - RESERVE_BYTES
++        return minOf(tierBytes.toLong(), spare).toInt().coerceAtLeast(budgetBytes)
++    }
++
+     /**
+      * What the buffer fills to at squeeze [step]: 0 is the whole [budgetBytes], 1 three quarters (Fire OS says memory
+      * is running low), 2 half (critical, or still low half a minute on); never below [FLOOR_BYTES].
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+new file mode 100644
+index 0000000..e517e8c
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -0,0 +1,65 @@
++package app.fireplayer.player
++
++import android.os.Handler
++import android.os.Looper
++import android.os.Process
++import android.util.Log
++import java.util.concurrent.LinkedBlockingQueue
++import java.util.concurrent.ThreadPoolExecutor
++import java.util.concurrent.TimeUnit
++
++/**
++ * Room made for a film is given back to the TV at once, and the film is told when it's there.
++ *
++ * What FirePlayer lets go of for a film (the pages' pictures and caches as the player covers them, the buffer of the
++ * film or episode before) is only memory nobody points to any more: Android takes it back the next time it collects,
++ * which it does when the app has made enough new things, not when something big was let go of. Until then the TV
++ * counts it as in use. A film's buffer is sized by the memory free as its player is built ([FilmMemory.plan]), so one
++ * built just then was held down for memory that was already on its way back: after Next episode, with the last
++ * episode's buffer (up to 128 MiB on a Fire TV Stick 4K Max) not yet collected, and at every start from a page, whose
++ * pictures go only once the player's screen is up.
++ *
++ * [made] has Android collect now, on a thread of its own at background priority (the app's other threads carry on;
++ * they're held for a millisecond or two), and [onMade] is told a moment after, when what the pictures held outside
++ * the app's own heap has been freed as well. The film's player then reads the free memory again
++ * ([FilmMemory.afterRoom]).
++ */
++object FilmRoom {
++    private const val TAG = "FirePlayer"
++    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: read the free memory after it. */
++    const val SETTLE_MS = 400L
++
++    private val main = Handler(Looper.getMainLooper())
++
++    // One collection at a time, and at most one more waiting (asked for while the first ran: it may have let go of
++    // more since); any further ask meanwhile is covered by the one waiting.
++    private val worker = ThreadPoolExecutor(
++        0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue(1),
++        { r -> Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "FirePlayerRoom").apply { isDaemon = true } },
++        ThreadPoolExecutor.DiscardPolicy(),
++    )
++
++    private val told = Runnable { onMade?.invoke() }
++
++    /**
++     * Told on the main thread once memory let go of is back with the TV. The film player on screen sets it, and takes
++     * it away again when its player goes (only its own: the next player may have set its own meanwhile).
++     */
++    var onMade: (() -> Unit)? = null
++
++    /** Something big was just let go of (main thread): Android collects it now, and [onMade] hears when it's back. */
++    fun made() {
++        worker.execute {
++            val started = android.os.SystemClock.elapsedRealtime()
++            try {
++                // Not System.gc(): Android's may put it off until finalizers have run.
++                Runtime.getRuntime().gc()
++            } catch (e: Throwable) {
++                Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
++            }
++            Log.i(TAG, "Room made: memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
++            main.removeCallbacks(told)
++            main.postDelayed(told, SETTLE_MS)
++        }
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index 190df58..5969de3 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -88,12 +88,20 @@ object PlayerFactory {
+         val keptBehindMs: () -> Long = { 0L },
+         /** What the film's buffer fills to now, in bytes: its budget, or less while squeezed. */
+         val fillBytes: () -> Long = { 0L },
++        private val roomer: (Long) -> Int = { 0 },
+     ) {
+         /**
+          * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
+          * 2 half (see [FilmMemory.capFor]). Gives back what the buffer now fills to, in bytes.
+          */
+         fun squeeze(step: Int): Int = squeezer(step)
++
++        /**
++         * Room has been made for the film since its player was built ([FilmRoom]), and [freeBytes] are free now: a
++         * buffer held down by the memory free at its start gets what that memory allows now, up to its tier's
++         * ([FilmMemory.afterRoom]). Gives back the new budget in bytes, or 0 when it stays as it is.
++         */
++        fun roomMade(freeBytes: Long): Int = roomer(freeBytes)
+     }
+ 
+     /**
+@@ -343,7 +351,8 @@ object PlayerFactory {
+         // press (10 s, landing up to 2 s early) loads that stretch again (2 s in a 4K film, measured).
+         val backBufferMs = plan.backBufferMs
+         Log.i("FirePlayer", "Film buffer: ${plan.tier} memory, ${free shr 20} MiB free, ${budget shr 20} MiB" +
+-            (if (plan.byFreeMemory) " (held down by free memory)" else "") + ", ${backBufferMs / 1000} s kept behind" +
++            (if (plan.byFreeMemory) " (held down by free memory, ${plan.tierBytes shr 20} MiB with room)" else "") +
++            ", ${backBufferMs / 1000} s kept behind" +
+             (if (plan.backCapBytes > 0) " up to ${plan.backCapBytes shr 20} MiB" else ""))
+         // Owned here so the film's buffer can give memory back while the TV is short of it (FilmLoadControl.squeeze).
+         val allocator = DefaultAllocator(/* trimOnReset = */ true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+@@ -357,7 +366,9 @@ object PlayerFactory {
+                     /* bufferForPlaybackMs = */ 1_000,
+                     /* bufferForPlaybackAfterRebufferMs = */ 4_000,
+                 )
+-                .setTargetBufferBytes(budget)
++                // Media3's own rule stops at the tier's size; FilmLoadControl stops at the budget, which is the same
++                // unless little memory was free just now, and can then be raised once room has been made.
++                .setTargetBufferBytes(plan.tierBytes)
+                 .setPrioritizeTimeOverSizeThresholds(false)
+                 // The last 15 s are kept (less on TVs with little memory), so going back one press (10 s, landing up
+                 // to 2 s early) plays at once instead of loading again; more would come out of the memory a
+@@ -367,6 +378,7 @@ object PlayerFactory {
+                 .build(),
+             allocator,
+             budget,
++            plan.tierBytes,
+             serverSwitch,
+         )
+ 
+@@ -396,7 +408,7 @@ object PlayerFactory {
+                 .setMediaSourceFactory(sources)
+                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
+                 .build()
+-            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes })
++            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade)
+         }
+ 
+         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
+@@ -420,7 +432,7 @@ object PlayerFactory {
+         // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
+         // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
+         val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
+-        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes })
++        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade)
+     }
+ 
+     /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */
+@@ -532,20 +544,32 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
+  *
+  * While the TV is short of memory the buffer fills to less than its budget ([squeeze]), and the memory it lets go of
+  * is freed instead of kept for reuse. [allocator] is [inner]'s, owned by [PlayerFactory.build] for that.
++ *
++ * [plannedBytes] is the budget as the player was built, [tierBytes] what this TV's tier allows at most ([inner] stops
++ * loading there). They differ only when little memory was free at that moment; the budget is then raised once room
++ * has been made ([roomMade]).
+  */
+ @OptIn(UnstableApi::class)
+ private class FilmLoadControl(
+     private val inner: DefaultLoadControl,
+     private val allocator: DefaultAllocator,
+-    private val budgetBytes: Int,
++    plannedBytes: Int,
++    private val tierBytes: Int,
+     private val serverSwitch: ServerSwitch,
+ ) : LoadControl {
+ 
++    /** The film's budget: [plannedBytes], or more once room was made. Set on the main thread, read on the playback thread. */
++    @Volatile private var budgetBytes = plannedBytes
++    /** How far the buffer is squeezed now ([squeeze]). Main thread. */
++    private var step = 0
++    /** The budget was raised: how much of the film fits is measured afresh. Set on the main thread, taken on the playback thread. */
++    @Volatile private var raised = false
++
+     /**
+      * What the buffer fills to: [budgetBytes], or less while the TV is short of memory. Set on the main thread, read on
+      * the playback thread.
+      */
+-    @Volatile private var capBytes = budgetBytes
++    @Volatile private var capBytes = plannedBytes
+     // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
+     private var trimmedAt = 0L
+ 
+@@ -592,6 +616,7 @@ private class FilmLoadControl(
+         // one can come, so waiting on would only wait on the next episode's server.
+         if (loadedToEnd(parameters)) return true
+         measure(parameters, waiting = true)
++        forgetRoomIfRaised()
+         // Memory full means nothing more can come before playing on.
+         val limit = FilmMemory.fillLimit(capBytes, budgetBytes, parameters.bufferedDurationUs)
+         if (allocator.totalBytesAllocated >= limit) return true
+@@ -711,22 +736,33 @@ private class FilmLoadControl(
+ 
+     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
+         measure(parameters, waiting = false)
+-        // Media3's own rule stops at the whole budget; squeezed, it stops at the lower cap as well.
++        forgetRoomIfRaised()
++        // Media3's own rule stops at the tier's size (and at two minutes ahead); the budget, when free memory holds it
++        // under that, and the lower cap while squeezed, stop it here.
+         val wanted = inner.shouldContinueLoading(parameters)
+         val cap = capBytes
+-        if (cap < budgetBytes) freeLetGo(cap)
++        val budget = budgetBytes
++        if (cap < budget) freeLetGo(cap)
+         val allocated = allocator.totalBytesAllocated
+-        val limit = FilmMemory.fillLimit(cap, budgetBytes, parameters.bufferedDurationUs)
++        val limit = FilmMemory.fillLimit(cap, budget, parameters.bufferedDurationUs)
+         // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits. (A live
+         // channel's is never read: shouldStartPlayback leaves those to Media3's own rule.)
+         if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US) {
+             fullUs = parameters.bufferedDurationUs
+             fullPeriod = parameters.mediaPeriodId.periodUid
+         }
+-        val full = cap < budgetBytes && allocated >= limit
++        val full = cap < tierBytes && allocated >= limit
+         return (wanted && !full).also { loading = it }
+     }
+ 
++    /** After a raise, what fit in the smaller budget says nothing about the new one: measured again when next full. */
++    private fun forgetRoomIfRaised() {
++        if (!raised) return
++        raised = false
++        fullUs = 0L
++        fullPeriod = null
++    }
++
+     /**
+      * Lowers what the buffer fills to while the TV is short of memory, or raises it back: [step] 0 is the whole budget,
+      * 1 three quarters, 2 half ([FilmMemory.capFor]). Memory loaded and let go of is no longer kept beyond the new
+@@ -734,12 +770,30 @@ private class FilmLoadControl(
+      * thread; gives back the new size in bytes.
+      */
+     fun squeeze(step: Int): Int {
++        this.step = step
+         val cap = FilmMemory.capFor(budgetBytes, step)
+         capBytes = cap
+         allocator.setTargetBufferSize(cap)
+         return cap
+     }
+ 
++    /**
++     * Room has been made since the player was built, and [freeBytes] are free now: a budget held under the tier's by
++     * the memory free at the start is read again ([FilmMemory.afterRoom]: only ever more), and the squeeze of the
++     * moment applies to the new one. On the main thread; gives back the new budget in bytes, or 0 when it stays.
++     */
++    fun roomMade(freeBytes: Long): Int {
++        val now = budgetBytes
++        val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes)
++        if (next <= now) return 0
++        budgetBytes = next
++        raised = true
++        val cap = FilmMemory.capFor(next, step)
++        capBytes = cap
++        allocator.setTargetBufferSize(cap)
++        return next
++    }
++
+     /**
+      * Squeezed: the memory the film let go of since (what's played past, and kept behind no longer) is freed rather
+      * than kept for reuse, at most once a second. Media3 frees it only on a jump. The cap is given to the allocator
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+index 9b3e8e9..e44116c 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+@@ -11,6 +11,7 @@ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
+ import android.widget.ImageView
++import app.fireplayer.player.FilmRoom
+ import app.fireplayer.player.GraphicsTrim
+ 
+ /**
+@@ -94,6 +95,9 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+         released = true
+         hooks.release()
+         trimGraphics()
++        // The pictures let go of are only free once Android collects them: now, so the film starting has the memory
++        // (its buffer is sized by what's free), and a background release really gives it back to the TV.
++        FilmRoom.made()
+     }
+ 
+     /**
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+index eaeb256..8ab6e7e 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+@@ -49,6 +49,63 @@ class BufferAndRateTest {
+         assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.plan(RamTier.TINY, 32 * mib, freeBytes = 50 * mib).budgetBytes)
+     }
+ 
++    // ---- The buffer once room has been made for it (FilmMemory.afterRoom)
++
++    private val tier128 = (128 * mib).toInt()
++
++    @Test fun aPlanSaysWhatItsTierWouldGiveWithRoom() {
++        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib).tierBytes)
++        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 600 * mib).tierBytes)
++        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap).tierBytes)
++        // The heap limit holds the tier's own size down too: that is as far as room can raise it.
++        assertEquals((60 * mib).toInt(), FilmMemory.plan(RamTier.LARGE, 100 * mib, freeBytes = 50 * mib).tierBytes)
++    }
++
++    @Test fun aBufferHeldDownAtTheStartGetsItsTiersSizeOnceThePageLetGo() {
++        // Built with 340 MiB free (80 MiB); the page then lets go of 90 MiB while the film has loaded 10 MiB.
++        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
++        val after = FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, freeBytes = 420 * mib, heldBytes = 10 * mib)
++        assertEquals(tier128, after)
++    }
++
++    @Test fun theNextEpisodeIsNotHeldDownByTheLastOnesBuffer() {
++        // Built while the last episode's 128 MiB weren't collected yet: 200 MiB free, the floor.
++        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib)
++        assertEquals(FilmMemory.FREE_FLOOR_BYTES, started.budgetBytes)
++        // Collected: 328 MiB free, of which the new buffer may take all but the reserve; more when more is free.
++        assertEquals((68 * mib).toInt(), FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 328 * mib, 0L))
++        assertEquals(tier128, FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 400 * mib, 0L))
++    }
++
++    @Test fun whatTheBufferHoldsItselfCountsAsFreeForIt() {
++        // 300 MiB free with 60 MiB of the film loaded is as 360 MiB free with none: 100 MiB.
++        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom((80 * mib).toInt(), tier128, 300 * mib, 60 * mib))
++        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom((80 * mib).toInt(), tier128, 360 * mib, 0L))
++    }
++
++    @Test fun roomNeverLowersABufferNorTakesItPastItsTier() {
++        val held = (80 * mib).toInt()
++        // The decoder took its frames meanwhile: less is free than at the start. Nothing changes.
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 150 * mib, heldBytes = 20 * mib))
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 1 * mib, heldBytes = 0L))
++        // Not known: nothing changes.
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 0L, heldBytes = 50 * mib))
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = -1L, heldBytes = 0L))
++        // Plenty free: the tier's size, no more.
++        assertEquals(tier128, FilmMemory.afterRoom(held, tier128, freeBytes = 4096 * mib, heldBytes = 0L))
++        // Already at its tier's size: left alone.
++        assertEquals(tier128, FilmMemory.afterRoom(tier128, tier128, freeBytes = 4096 * mib, heldBytes = 0L))
++        assertEquals(tier128, FilmMemory.afterRoom(tier128, tier128, freeBytes = 100 * mib, heldBytes = 0L))
++    }
++
++    @Test fun aRaisedBufferIsSqueezedFromItsNewSize() {
++        // Memory short as the room is made: three quarters of the new budget, as of any budget.
++        val raised = FilmMemory.afterRoom((64 * mib).toInt(), tier128, 420 * mib, 0L)
++        assertEquals(tier128, raised)
++        assertEquals((96 * mib).toInt(), FilmMemory.capFor(raised, 1))
++        assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
++    }
++
+     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
+ 
+     private val sixSeconds = 6_000_000L
+-- 
+2.43.0
+
+
+From 8dbdd4060b15bc19e9e1549357c30b6014454974 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:32:23 +0000
+Subject: [PATCH 2/6] WIP audit/vod: a squeezed film buffer's memory goes back
+ to the TV at once; film mode logs when room was made
+
+While the TV is short of memory the film's buffer fills to less, but what it gives back was only dropped: Android
+collects when enough new things were made, and a buffer coming down to its new size loads nothing new. Collected now
+at the squeeze and at each 10 s check while it comes down (playing only).
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     | 13 ++++++++--
+ .../java/app/fireplayer/player/FilmMemory.kt  | 12 ++++++++++
+ .../java/app/fireplayer/player/FilmRoom.kt    |  5 +++-
+ .../java/app/fireplayer/vod/play/FilmMode.kt  | 11 ++++++++-
+ .../fireplayer/player/BufferAndRateTest.kt    | 24 +++++++++++++++++++
+ 5 files changed, 61 insertions(+), 4 deletions(-)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index c93ed30..ad02959 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -2608,8 +2608,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+      * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
+      */
+     private fun checkMemory() {
+-        if (player == null) return
+-        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) squeezeFilmBuffer()
++        val p = player ?: return
++        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
++            squeezeFilmBuffer()
++            return
++        }
++        // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
++        val built = builtPlayer ?: return
++        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made()
+     }
+ 
+     /** Gives the film's buffer the size [memoryPressure] calls for now. */
+@@ -2619,6 +2625,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         val bytes = built.squeeze(step)
+         android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
+             ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
++        // What the smaller buffer no longer keeps for reuse is only dropped: collected now, so the TV gets it at once
++        // rather than whenever Android next collects (it loads nothing new until it's down to its new size).
++        if (step > 0) FilmRoom.made()
+     }
+ 
+     /**
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+index 3f1ff89..6fe9b11 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+@@ -157,6 +157,18 @@ object FilmMemory {
+         return cap.coerceAtLeast(FLOOR_BYTES).coerceAtMost(budgetBytes)
+     }
+ 
++    /**
++     * Whether a squeezed buffer is coming down to what it now fills to: at squeeze [step] (above 0) it holds
++     * [heldBytes], more than the [fillBytes] it stops loading at, and the film is [playing] (paused or waiting, it
++     * lets go of nothing). Until it's down, it loads nothing new, so the memory it lets go of as the film plays on is
++     * only dropped, and nothing has Android collect it (it collects when enough new things were made): the TV would
++     * stay as short of memory as before the squeeze, and half a minute on the squeeze would go a step further for it
++     * ([MemoryPressure]). So while this is true, FirePlayer has it collected at each memory check ([FilmRoom.made]).
++     * Once the buffer is down and loading again, what it loads anew makes Android collect by itself.
++     */
++    fun comingDown(step: Int, heldBytes: Long, fillBytes: Long, playing: Boolean): Boolean =
++        playing && step > 0 && fillBytes > 0L && heldBytes > fillBytes
++
+     /**
+      * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], or the whole
+      * [budgetBytes] while less than [MIN_AHEAD_US] is ahead.
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+index e517e8c..6cc5f14 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -23,6 +23,9 @@ import java.util.concurrent.TimeUnit
+  * they're held for a millisecond or two), and [onMade] is told a moment after, when what the pictures held outside
+  * the app's own heap has been freed as well. The film's player then reads the free memory again
+  * ([FilmMemory.afterRoom]).
++ *
++ * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
++ * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
+  */
+ object FilmRoom {
+     private const val TAG = "FirePlayer"
+@@ -57,7 +60,7 @@ object FilmRoom {
+             } catch (e: Throwable) {
+                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
+             }
+-            Log.i(TAG, "Room made: memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
++            Log.i(TAG, "Memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
+             main.removeCallbacks(told)
+             main.postDelayed(told, SETTLE_MS)
+         }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+index e44116c..7d19721 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+@@ -5,6 +5,7 @@ import android.graphics.Bitmap
+ import android.os.Build
+ import android.os.Handler
+ import android.os.Looper
++import android.os.SystemClock
+ import android.util.Log
+ import android.view.PixelCopy
+ import android.view.View
+@@ -43,6 +44,8 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+     private var filmStarting = false
+     /** The release ran while away: the snapshot shows on return. */
+     private var released = false
++    /** When the film now starting was asked for (elapsedRealtime), for the log; 0 when none is. */
++    private var filmAskedAt = 0L
+     private val backgroundRelease = Runnable { releaseNow() }
+ 
+     /**
+@@ -52,6 +55,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+      */
+     fun beforeFilm(go: () -> Unit) {
+         filmStarting = true
++        filmAskedAt = SystemClock.elapsedRealtime()
+         hooks.stopLive()
+         capture(null)
+         go()
+@@ -78,6 +82,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+         main.removeCallbacks(backgroundRelease)
+         main.removeCallbacks(trimStale)
+         filmStarting = false
++        filmAskedAt = 0L
+         val shot = snapshot
+         if (released && shot != null) show(over, shot) else dropSnapshot()
+         released = false
+@@ -172,7 +177,11 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+      */
+     private fun trimGraphics() {
+         val trimmed = GraphicsTrim.trim()
+-        Log.i(TAG, "Film mode: the pages' pictures and caches let go" + if (trimmed) ", graphics trimmed" else "")
++        // For a film: how long after OK the room was made (the film's buffer is sized again once it's there, FilmRoom).
++        val asked = filmAskedAt
++        filmAskedAt = 0L
++        val after = if (asked > 0L) " ${SystemClock.elapsedRealtime() - asked} ms after OK" else ""
++        Log.i(TAG, "Film mode: the pages' pictures and caches let go$after" + if (trimmed) ", graphics trimmed" else "")
+         // Where Android only lets go of graphics unused for half a minute, the pages' go once they've been hidden that long.
+         main.removeCallbacks(trimStale)
+         if (GraphicsTrim.staleOnly) main.postDelayed(trimStale, GraphicsTrim.STALE_MS + 1_000L)
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+index 8ab6e7e..e679999 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+@@ -106,6 +106,30 @@ class BufferAndRateTest {
+         assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
+     }
+ 
++    // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)
++
++    @Test fun aSqueezedBufferIsCollectedWhileItHoldsMoreThanItFillsTo() {
++        // Full at 128 MiB when memory ran low: it fills to 96 now, and holds more until the film has played 32 MiB on.
++        assertTrue(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
++        assertTrue(FilmMemory.comingDown(step = 2, heldBytes = 97 * mib, fillBytes = 64 * mib, playing = true))
++        // Down to its new size (it loads again, and Android collects by itself): no more.
++        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 96 * mib, fillBytes = 96 * mib, playing = true))
++        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 40 * mib, fillBytes = 64 * mib, playing = true))
++    }
++
++    @Test fun aPausedOrWaitingFilmLetsGoOfNothingToCollect() {
++        // Paused with a full buffer while memory is low: it stays as it is, and nothing is collected every 10 s for it.
++        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = false))
++        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 128 * mib, fillBytes = 64 * mib, playing = false))
++    }
++
++    @Test fun aBufferThatIsNotSqueezedIsNeverCollectedForIt() {
++        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 128 * mib, playing = true))
++        // Held over its size for a moment without a squeeze (a size not known): not this rule's.
++        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
++        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 0L, playing = true))
++    }
++
+     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
+ 
+     private val sixSeconds = 6_000_000L
+-- 
+2.43.0
+
+
+From 2200d000b33df7634ae51f4ab3f3891387cd4fda Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:41:23 +0000
+Subject: [PATCH 3/6] WIP audit/vod: room made counts by what came back (the
+ decoder taking its frames first no longer hides it); a rebuilt player keeps
+ its film's budget; pictures left in memory go when the buffer is squeezed
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     | 64 +++++++++++----
+ .../java/app/fireplayer/player/FilmMemory.kt  | 51 +++++++++---
+ .../java/app/fireplayer/player/FilmRoom.kt    | 79 +++++++++++++------
+ .../app/fireplayer/player/PlayerFactory.kt    | 47 +++++++----
+ .../java/app/fireplayer/vod/play/FilmMode.kt  |  2 +-
+ .../fireplayer/player/BufferAndRateTest.kt    | 67 ++++++++++++++++
+ 6 files changed, 246 insertions(+), 64 deletions(-)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index ad02959..c1c4494 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -856,6 +856,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         backdrop?.stop()
+         val releaseFrom = SystemClock.elapsedRealtime()
+         releasePlayer()
++        // Whatever player comes next is built later, from the memory free then.
++        keepBudgetBytes = 0
+         // For the log on the TV: how long after Back this screen was taken down, and how long letting go of the player
+         // held the app's main thread (the page is on screen by then).
+         if (leftAt > 0) {
+@@ -1156,7 +1158,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             frameCounts = diag.counts,
+             byteMeter = diag.meter,
+             freshLinks = source != null,
++            keepBudgetBytes = keepBudgetBytes,
+         )
++        keepBudgetBytes = 0
++        builtAt = SystemClock.elapsedRealtime()
+         vsyncFix = vsync.also { it.start() }
+         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
+         hdr10PlusGate = hdr10Plus.also { it.start() }
+@@ -1172,7 +1177,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         // A new player while the TV is still short of memory starts squeezed.
+         if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
+         // Its buffer was sized by the memory free just now; told when room made for it is back with the TV (FilmRoom).
+-        FilmRoom.onMade = roomListener
++        FilmRoom.film = filmRoom
+         p.setVideoSurfaceView(surfaceView)
+         p.addListener(this)
+         p.addAnalyticsListener(filmLoadErrors)
+@@ -1291,11 +1296,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         // Its listener is gone, so the glass won't hear that it stopped playing.
+         backdrop?.playing = false
+         // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
+-        if (FilmRoom.onMade === roomListener) FilmRoom.onMade = null
++        if (FilmRoom.film === filmRoom) FilmRoom.film = null
+         p.release()
+         // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
+-        // built meanwhile (the next episode's, a rebuilt one) hears when it's there.
+-        FilmRoom.made()
++        // built meanwhile (the next episode's) hears when it's there.
++        FilmRoom.made(this)
+         assHandler?.release()
+         assHandler = null
+         builtPlayer = null
+@@ -1317,24 +1322,39 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+     }
+ 
+     private fun rebuildPlayer() {
++        // The same film in a new player: its buffer is the old one's memory over again (see FilmMemory.plan).
++        keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
+         releasePlayer()
+         initPlayer()
+     }
+ 
+-    private val roomListener: () -> Unit = { filmRoomMade() }
++    /** The budget of the player just let go of, for the one built in its place in the same moment; 0 otherwise. */
++    private var keepBudgetBytes = 0
++    /** When the player was built (elapsedRealtime). */
++    private var builtAt = 0L
++
++    private val filmRoom = object : FilmRoom.Film {
++        override fun heldBytes(): Long = builtPlayer?.filmBytes?.invoke() ?: 0L
++        override fun roomMade(askedAt: Long, gainedBytes: Long) = filmRoomMade(askedAt, gainedBytes)
++    }
+ 
+     /**
+      * Memory let go of for this film is back with the TV ([FilmRoom]: the pages' pictures and caches, the buffer of the
+      * film or episode before): a buffer held down by the memory free as the player was built is sized by what's free
+-     * now, up to this TV's own size for it. Logged when it changes, to be read on the TV.
++     * now, or by what was free then with what came back since ([gainedBytes]), up to this TV's own size for it.
++     * Logged when it changes, to be read on the TV.
+      */
+-    private fun filmRoomMade() {
++    private fun filmRoomMade(askedAt: Long, gainedBytes: Long) {
+         val built = builtPlayer ?: return
+         val free = FilmMemory.freeNow(this)
+-        val bytes = built.roomMade(free)
++        // What came back counts when it was let go of in this player's first moments, as room is made for a film
++        // (the page behind it, the episode before). Later, more free memory may be the film's own (after a jump).
++        val gained = if (askedAt >= builtAt && askedAt - builtAt <= ROOM_GAIN_MS) gainedBytes else 0L
++        val bytes = built.roomMade(free, gained)
+         if (bytes > 0) {
+             val step = memoryPressure.step
+-            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free: the film's buffer is now ${bytes shr 20} MiB" +
++            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free" + (if (gained > 0L) ", ${gained shr 20} MiB came back" else "") +
++                ": the film's buffer is now ${bytes shr 20} MiB" +
+                 if (step > 0) " (filling to ${built.fillBytes() shr 20} MiB while memory is short)" else "")
+         }
+     }
+@@ -2615,7 +2635,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         }
+         // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
+         val built = builtPlayer ?: return
+-        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made()
++        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made(this, forFilm = false)
+     }
+ 
+     /** Gives the film's buffer the size [memoryPressure] calls for now. */
+@@ -2625,9 +2645,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         val bytes = built.squeeze(step)
+         android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
+             ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
+-        // What the smaller buffer no longer keeps for reuse is only dropped: collected now, so the TV gets it at once
+-        // rather than whenever Android next collects (it loads nothing new until it's down to its new size).
+-        if (step > 0) FilmRoom.made()
++        if (step > 0) {
++            // The pictures the Episodes sheet and the details windows left in memory go too (up to 12 MB; what's on
++            // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
++            // OS asks them to trim, and a film opened from Glass Home or another app has no page behind it at all.
++            app.fireplayer.ui.ImageLoader.trim()
++            // What the smaller buffer no longer keeps for reuse is only dropped, as those pictures are: collected
++            // now, so the TV gets it at once rather than whenever Android next collects (the buffer loads nothing
++            // new until it's down to its new size).
++            FilmRoom.made(this, forFilm = false)
++        }
+     }
+ 
+     /**
+@@ -5841,7 +5868,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+                 playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
+                 return
+             }
+-            if (p != null) releasePlayer()
++            if (p != null) {
++                // Its buffer is this one's memory over again (see FilmMemory.plan).
++                keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
++                releasePlayer()
++            }
+             entries.clear()
+             val entry = Entry(uri, vodRawTitle(request), null, storeKey = vodKey(request, ready))
+             entries += entry
+@@ -6785,6 +6816,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         const val FRAME_COUNT_TICKS = 5
+         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
+         const val MEMORY_CHECK_TICKS = 50
++        /**
++         * Memory let go of this soon after the player was built was let go of to make room for its film (the page
++         * behind it, the episode before): what came back then counts for the film's buffer (see filmRoomMade).
++         */
++        const val ROOM_GAIN_MS = 10_000L
+         /** The decoders' kinds looked up ahead of the film (see warmDecoders). */
+         private val WARM_MIMES = listOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_H264, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_AV1,
+             MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_AAC)
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+index 6fe9b11..dcf570b 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+@@ -109,12 +109,17 @@ object FilmMemory {
+      * The buffer never takes more of it than leaves [RESERVE_BYTES], down to [FREE_FLOOR_BYTES]: the tier says what the
+      * TV can spare at best, the free memory what it can spare now (seen: a 260 MB buffer and up to 198 MB of decoder
+      * frames on a 1.7 GB Stick, with 76 kB of swap left).
++     *
++     * [keepBytes] is the budget of the player this one takes the place of, in the same moment (the same film in a
++     * rebuilt player, another source in a new one; 0: none). That player's buffer has just been let go of, and
++     * Android hasn't taken it back yet, so the free memory still reads as if it were held: this player gets at least
++     * the budget that one had (never past the tier's), which is that same memory again.
+      */
+-    fun plan(tier: RamTier, maxHeapBytes: Long, freeBytes: Long = 0L): FilmBufferPlan {
++    fun plan(tier: RamTier, maxHeapBytes: Long, freeBytes: Long = 0L, keepBytes: Int = 0): FilmBufferPlan {
+         val byTier = minOf(tier.budgetMiB.toLong() shl 20, (maxHeapBytes * HEAP_SHARE).toLong(), CEILING_BYTES.toLong())
+             .coerceAtLeast(FLOOR_BYTES.toLong())
+         val byFree = if (freeBytes > 0L) (freeBytes - RESERVE_BYTES).coerceAtLeast(minOf(FREE_FLOOR_BYTES.toLong(), byTier)) else byTier
+-        val budget = minOf(byTier, byFree).toInt()
++        val budget = maxOf(minOf(byTier, byFree), minOf(byTier, keepBytes.toLong())).toInt()
+         val fits = RamTier.entries.lastOrNull { (it.budgetMiB.toLong() shl 20) <= budget } ?: RamTier.TINY
+         return FilmBufferPlan(
+             tier, budget, minOf(tier.backBufferMs, fits.backBufferMs),
+@@ -131,19 +136,43 @@ object FilmMemory {
+      * built as soon as the link is checked (about half a second after OK), while the page it was started from lets go
+      * of its pictures and caches only once the player's screen covers it, and the film or episode before (Next
+      * episode, a rebuilt player) has only just let go of its own buffer, which Android hasn't taken back yet. So the
+-     * free memory is read again when that memory is back ([FilmRoom]): [freeBytes] free now, plus [heldBytes] the
+-     * film's buffer already holds itself, by the same rule as at the start ([plan]: all but [RESERVE_BYTES]).
++     * free memory is read again when that memory is back ([FilmRoom]), by the same rule as at the start ([plan]: all
++     * but [RESERVE_BYTES]), in two ways, the better of which counts:
++     * - [freeBytes] free now, plus [heldBytes] the film's buffer already holds itself. Right until the film's decoder
++     *   has taken its frames (they come out of the same memory, and the reserve is there for them), too low after.
++     * - [startFreeBytes] free when the player was built, plus [gainedBytes] seen to come back since ([roomGained]):
++     *   what would have been free then, had the room been made first. The decoder taking its frames before or after
++     *   the room is made doesn't change it.
+      *
+-     * Only ever more, and never past [tierBytes]: a reading that comes out lower (the decoder has taken its frames
+-     * meanwhile) changes nothing, and memory running short later is [MemoryPressure]'s to answer. Gives back the
+-     * budget from now on ([budgetBytes] when nothing changes, or [freeBytes] isn't known).
++     * Only ever more, and never past [tierBytes]: a reading that comes out lower changes nothing, and memory running
++     * short later is [MemoryPressure]'s to answer. Gives back the budget from now on ([budgetBytes] when nothing
++     * changes, or nothing is known).
+      */
+-    fun afterRoom(budgetBytes: Int, tierBytes: Int, freeBytes: Long, heldBytes: Long): Int {
+-        if (freeBytes <= 0L || budgetBytes >= tierBytes) return budgetBytes
+-        val spare = freeBytes + heldBytes.coerceAtLeast(0L) - RESERVE_BYTES
+-        return minOf(tierBytes.toLong(), spare).toInt().coerceAtLeast(budgetBytes)
++    fun afterRoom(
++        budgetBytes: Int,
++        tierBytes: Int,
++        freeBytes: Long,
++        heldBytes: Long,
++        startFreeBytes: Long = 0L,
++        gainedBytes: Long = 0L,
++    ): Int {
++        if (budgetBytes >= tierBytes) return budgetBytes
++        val now = if (freeBytes > 0L) freeBytes + heldBytes.coerceAtLeast(0L) else 0L
++        val atStart = if (startFreeBytes > 0L && gainedBytes > 0L) startFreeBytes + gainedBytes else 0L
++        val free = maxOf(now, atStart)
++        if (free <= 0L) return budgetBytes
++        return minOf(tierBytes.toLong(), free - RESERVE_BYTES).toInt().coerceAtLeast(budgetBytes)
+     }
+ 
++    /**
++     * How much more is free for a film once memory let go of was collected: what's free for it after
++     * ([afterBytes]: the TV's free memory and what its own buffer holds) less the same before ([beforeBytes]). 0 when
++     * either isn't known, or when less is free (something else took memory meanwhile: the film's decoder, another
++     * app): only what was seen to come back counts.
++     */
++    fun roomGained(beforeBytes: Long, afterBytes: Long): Long =
++        if (beforeBytes <= 0L || afterBytes <= 0L) 0L else (afterBytes - beforeBytes).coerceAtLeast(0L)
++
+     /**
+      * What the buffer fills to at squeeze [step]: 0 is the whole [budgetBytes], 1 three quarters (Fire OS says memory
+      * is running low), 2 half (critical, or still low half a minute on); never below [FLOOR_BYTES].
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+index 6cc5f14..5368b7a 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -1,8 +1,10 @@
+ package app.fireplayer.player
+ 
++import android.content.Context
+ import android.os.Handler
+ import android.os.Looper
+ import android.os.Process
++import android.os.SystemClock
+ import android.util.Log
+ import java.util.concurrent.LinkedBlockingQueue
+ import java.util.concurrent.ThreadPoolExecutor
+@@ -14,55 +16,86 @@ import java.util.concurrent.TimeUnit
+  * What FirePlayer lets go of for a film (the pages' pictures and caches as the player covers them, the buffer of the
+  * film or episode before) is only memory nobody points to any more: Android takes it back the next time it collects,
+  * which it does when the app has made enough new things, not when something big was let go of. Until then the TV
+- * counts it as in use. A film's buffer is sized by the memory free as its player is built ([FilmMemory.plan]), so one
+- * built just then was held down for memory that was already on its way back: after Next episode, with the last
+- * episode's buffer (up to 128 MiB on a Fire TV Stick 4K Max) not yet collected, and at every start from a page, whose
+- * pictures go only once the player's screen is up.
++ * counts it as in use. A film's buffer is sized by the memory free as its player is built ([FilmMemory.plan]), and
++ * that comes first: the player is built as soon as the link is checked (about half a second after OK), the page it
++ * was started from lets go of its pictures only once the player's screen covers it. So the buffer was held down for
++ * memory that was on its way back.
+  *
+  * [made] has Android collect now, on a thread of its own at background priority (the app's other threads carry on;
+- * they're held for a millisecond or two), and [onMade] is told a moment after, when what the pictures held outside
+- * the app's own heap has been freed as well. The film's player then reads the free memory again
+- * ([FilmMemory.afterRoom]).
++ * they're held for a millisecond or two), and the [film] on screen is told a moment after, when what the pictures held
++ * outside the app's own heap has been freed as well, with how much came back ([FilmMemory.roomGained]). Its player
++ * then sizes the buffer again ([FilmMemory.afterRoom]).
+  *
+  * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
+  * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
++ *
++ * Main thread, but for the collecting itself.
+  */
+ object FilmRoom {
+     private const val TAG = "FirePlayer"
+-    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: read the free memory after it. */
+-    const val SETTLE_MS = 400L
++    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: the free memory is read after it. */
++    const val SETTLE_MS = 150L
++
++    /** The film player on screen, as this needs it. */
++    interface Film {
++        /** The memory its buffer holds now, in bytes. */
++        fun heldBytes(): Long
++
++        /**
++         * Memory let go of at [askedAt] (elapsedRealtime) is back with the TV; [gainedBytes] is how much more is free
++         * for this film than just before (0 when that can't be said: it wasn't the film on screen then).
++         */
++        fun roomMade(askedAt: Long, gainedBytes: Long)
++    }
++
++    /**
++     * The film player on screen: it sets itself as its player is built and takes itself away as the player goes
++     * (only itself: the next one may be there already).
++     */
++    var film: Film? = null
+ 
+     private val main = Handler(Looper.getMainLooper())
+ 
+-    // One collection at a time, and at most one more waiting (asked for while the first ran: it may have let go of
+-    // more since); any further ask meanwhile is covered by the one waiting.
++    // One collection at a time, and at most one more waiting (asked for while the first ran: more may have been let
++    // go of since); any further ask meanwhile is covered by the one waiting.
+     private val worker = ThreadPoolExecutor(
+         0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue(1),
+         { r -> Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "FirePlayerRoom").apply { isDaemon = true } },
+         ThreadPoolExecutor.DiscardPolicy(),
+     )
+ 
+-    private val told = Runnable { onMade?.invoke() }
+-
+     /**
+-     * Told on the main thread once memory let go of is back with the TV. The film player on screen sets it, and takes
+-     * it away again when its player goes (only its own: the next player may have set its own meanwhile).
++     * Something big was just let go of: Android collects it now, and the [film] on screen hears when it's back.
++     * [forFilm]: it was let go of to make room for the film (the pages' pictures, the player before), so what comes
++     * back is told as gained; not when it's the film's own buffer giving memory back while the TV is short of it
++     * (that is no room made: the buffer must not grow for it).
+      */
+-    var onMade: (() -> Unit)? = null
+-
+-    /** Something big was just let go of (main thread): Android collects it now, and [onMade] hears when it's back. */
+-    fun made() {
++    fun made(context: Context, forFilm: Boolean = true) {
++        val app = context.applicationContext
++        val askedAt = SystemClock.elapsedRealtime()
++        val asker = if (forFilm) film else null
++        val before = if (asker != null) freeFor(app, asker) else 0L
+         worker.execute {
+-            val started = android.os.SystemClock.elapsedRealtime()
+             try {
+                 // Not System.gc(): Android's may put it off until finalizers have run.
+                 Runtime.getRuntime().gc()
+             } catch (e: Throwable) {
+                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
+             }
+-            Log.i(TAG, "Memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
+-            main.removeCallbacks(told)
+-            main.postDelayed(told, SETTLE_MS)
++            val took = SystemClock.elapsedRealtime() - askedAt
++            main.postDelayed({
++                val now = film
++                // Another film player than the one asked about (or none then): how much came back for it can't be said.
++                val gain = if (asker != null && now === asker) FilmMemory.roomGained(before, freeFor(app, asker)) else 0L
++                Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
++                now?.roomMade(askedAt, gain)
++            }, SETTLE_MS)
+         }
+     }
++
++    /** What's free for [f]'s film: the TV's free memory and what its buffer holds itself; 0 when the first isn't known. */
++    private fun freeFor(app: Context, f: Film?): Long {
++        val free = FilmMemory.freeNow(app)
++        return if (free <= 0L) 0L else free + (f?.heldBytes() ?: 0L).coerceAtLeast(0L)
++    }
+ }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index 5969de3..806ded0 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -88,7 +88,9 @@ object PlayerFactory {
+         val keptBehindMs: () -> Long = { 0L },
+         /** What the film's buffer fills to now, in bytes: its budget, or less while squeezed. */
+         val fillBytes: () -> Long = { 0L },
+-        private val roomer: (Long) -> Int = { 0 },
++        private val roomer: (Long, Long) -> Int = { _, _ -> 0 },
++        /** The film's budget now, in bytes (what it fills to when not squeezed); 0 when not known. */
++        val budgetBytes: () -> Int = { 0 },
+     ) {
+         /**
+          * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
+@@ -97,11 +99,12 @@ object PlayerFactory {
+         fun squeeze(step: Int): Int = squeezer(step)
+ 
+         /**
+-         * Room has been made for the film since its player was built ([FilmRoom]), and [freeBytes] are free now: a
+-         * buffer held down by the memory free at its start gets what that memory allows now, up to its tier's
+-         * ([FilmMemory.afterRoom]). Gives back the new budget in bytes, or 0 when it stays as it is.
++         * Room has been made for the film since its player was built ([FilmRoom]): [freeBytes] are free now, and
++         * [gainedBytes] were seen to come back (0: not known). A buffer held down by the memory free at its start
++         * gets what that memory allows now, up to its tier's ([FilmMemory.afterRoom]). Gives back the new budget in
++         * bytes, or 0 when it stays as it is.
+          */
+-        fun roomMade(freeBytes: Long): Int = roomer(freeBytes)
++        fun roomMade(freeBytes: Long, gainedBytes: Long): Int = roomer(freeBytes, gainedBytes)
+     }
+ 
+     /**
+@@ -322,6 +325,11 @@ object PlayerFactory {
+         byteMeter: ByteMeter? = null,
+         /** The film's link can be had afresh from its add-on (see [FreshLinks]): a refused one isn't asked again. */
+         freshLinks: Boolean = false,
++        /**
++         * The budget of the player this one takes the place of in the same moment (see [FilmMemory.plan]); 0 for a
++         * player that follows none.
++         */
++        keepBudgetBytes: Int = 0,
+     ): Built {
+         IndexCache.dir = context.cacheDir
+         val serverSwitch = ServerSwitch()
+@@ -344,7 +352,7 @@ object PlayerFactory {
+         // losing frames.
+         // And by what's free as the film starts: the decoder's own 4K frames (up to 200 MB) come out of the same memory.
+         val free = FilmMemory.freeNow(context)
+-        val plan = FilmMemory.plan(FilmMemory.tier(context), Runtime.getRuntime().maxMemory(), free)
++        val plan = FilmMemory.plan(FilmMemory.tier(context), Runtime.getRuntime().maxMemory(), free, keepBudgetBytes)
+         val budget = plan.budgetBytes
+         // What's kept behind comes out of the same memory as what's ahead (for a 4K remux, about 8 MB a second), so
+         // TVs with less of it keep less, or the room ahead would shrink to a few seconds. Below 10 s, going back one
+@@ -379,6 +387,7 @@ object PlayerFactory {
+             allocator,
+             budget,
+             plan.tierBytes,
++            free,
+             serverSwitch,
+         )
+ 
+@@ -408,7 +417,7 @@ object PlayerFactory {
+                 .setMediaSourceFactory(sources)
+                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
+                 .build()
+-            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade)
++            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget })
+         }
+ 
+         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
+@@ -432,7 +441,7 @@ object PlayerFactory {
+         // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
+         // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
+         val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
+-        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade)
++        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget })
+     }
+ 
+     /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */
+@@ -546,8 +555,8 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
+  * is freed instead of kept for reuse. [allocator] is [inner]'s, owned by [PlayerFactory.build] for that.
+  *
+  * [plannedBytes] is the budget as the player was built, [tierBytes] what this TV's tier allows at most ([inner] stops
+- * loading there). They differ only when little memory was free at that moment; the budget is then raised once room
+- * has been made ([roomMade]).
++ * loading there). They differ only when little memory was free at that moment ([startFreeBytes]; 0 when not known);
++ * the budget is then raised once room has been made ([roomMade]).
+  */
+ @OptIn(UnstableApi::class)
+ private class FilmLoadControl(
+@@ -555,6 +564,7 @@ private class FilmLoadControl(
+     private val allocator: DefaultAllocator,
+     plannedBytes: Int,
+     private val tierBytes: Int,
++    private val startFreeBytes: Long,
+     private val serverSwitch: ServerSwitch,
+ ) : LoadControl {
+ 
+@@ -562,6 +572,11 @@ private class FilmLoadControl(
+     @Volatile private var budgetBytes = plannedBytes
+     /** How far the buffer is squeezed now ([squeeze]). Main thread. */
+     private var step = 0
++    /** What was seen to come back to the TV since the player was built ([roomMade]), in bytes. Main thread. */
++    private var gainedBytes = 0L
++
++    /** The film's budget now, in bytes. */
++    val budget: Int get() = budgetBytes
+     /** The budget was raised: how much of the film fits is measured afresh. Set on the main thread, taken on the playback thread. */
+     @Volatile private var raised = false
+ 
+@@ -778,13 +793,15 @@ private class FilmLoadControl(
+     }
+ 
+     /**
+-     * Room has been made since the player was built, and [freeBytes] are free now: a budget held under the tier's by
+-     * the memory free at the start is read again ([FilmMemory.afterRoom]: only ever more), and the squeeze of the
+-     * moment applies to the new one. On the main thread; gives back the new budget in bytes, or 0 when it stays.
++     * Room has been made since the player was built: [freeBytes] are free now, and [gained] bytes were seen to come
++     * back (0: not known). A budget held under the tier's by the memory free at the start is read again
++     * ([FilmMemory.afterRoom]: only ever more), and the squeeze of the moment applies to the new one. On the main
++     * thread; gives back the new budget in bytes, or 0 when it stays.
+      */
+-    fun roomMade(freeBytes: Long): Int {
++    fun roomMade(freeBytes: Long, gained: Long): Int {
++        if (gained > 0L) gainedBytes += gained
+         val now = budgetBytes
+-        val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes)
++        val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes, startFreeBytes, gainedBytes)
+         if (next <= now) return 0
+         budgetBytes = next
+         raised = true
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+index 7d19721..76f114d 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/vod/play/FilmMode.kt
+@@ -102,7 +102,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
+         trimGraphics()
+         // The pictures let go of are only free once Android collects them: now, so the film starting has the memory
+         // (its buffer is sized by what's free), and a background release really gives it back to the TV.
+-        FilmRoom.made()
++        FilmRoom.made(activity)
+     }
+ 
+     /**
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+index e679999..d1aa362 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+@@ -65,6 +65,7 @@ class BufferAndRateTest {
+         // Built with 340 MiB free (80 MiB); the page then lets go of 90 MiB while the film has loaded 10 MiB.
+         val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
+         val after = FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, freeBytes = 420 * mib, heldBytes = 10 * mib)
++        assertTrue(started.byFreeMemory)
+         assertEquals(tier128, after)
+     }
+ 
+@@ -106,6 +107,72 @@ class BufferAndRateTest {
+         assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
+     }
+ 
++    // ---- What came back since the player was built (FilmMemory.roomGained, and afterRoom with it)
++
++    @Test fun whatCameBackIsTheRiseInWhatIsFreeForTheFilm() {
++        // 330 MiB free with 10 MiB of film loaded before; 400 MiB free with 30 MiB loaded after: 90 MiB came back.
++        assertEquals(90 * mib, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 430 * mib))
++        // Less free than before (the decoder took its frames meanwhile): nothing was seen to come back.
++        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 250 * mib))
++        // Not known on either side: nothing.
++        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 0L, afterBytes = 430 * mib))
++        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 0L))
++    }
++
++    @Test fun theDecoderTakingItsFramesFirstDoesNotHoldTheBufferDown() {
++        // Built with 340 MiB free (80 MiB). The page lets go of 90 MiB, but by the time that's read the decoder has
++        // taken 150 MiB: only 270 MiB are free, with 10 MiB of film loaded. Read as it stands, nothing changes...
++        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
++        assertEquals(started.budgetBytes, FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 270 * mib, 10 * mib))
++        // ...but 90 MiB were seen to come back: free at the start, with them, is 430 MiB, as if the room had been made first.
++        assertEquals(
++            tier128,
++            FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 270 * mib, 10 * mib, startFreeBytes = 340 * mib, gainedBytes = 90 * mib),
++        )
++        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 430 * mib).budgetBytes)
++    }
++
++    @Test fun whatCameBackCountsOnlyAsFarAsItGoes() {
++        val held = (80 * mib).toInt()
++        // 20 MiB back on 340 at the start: 360 MiB, 100 MiB of buffer.
++        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 20 * mib))
++        // Nothing seen to come back, or the start's reading not known: only what's free now counts.
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 0L))
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 0L, gainedBytes = 90 * mib))
++        // The better of the two readings counts, never their sum.
++        assertEquals((110 * mib).toInt(), FilmMemory.afterRoom(held, tier128, 370 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 20 * mib))
++        // And with nothing known at all, nothing changes.
++        assertEquals(held, FilmMemory.afterRoom(held, tier128, 0L, 0L, startFreeBytes = 0L, gainedBytes = 0L))
++    }
++
++    // ---- A player built in the place of another keeps its budget (FilmMemory.plan's keepBytes)
++
++    @Test fun aRebuiltPlayerKeepsTheBudgetItsFilmHad() {
++        // Rebuilt in the middle of a film: 200 MiB read as free, the old player's 128 MiB not yet taken back.
++        val alone = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib)
++        assertEquals(FilmMemory.FREE_FLOOR_BYTES, alone.budgetBytes)
++        val rebuilt = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = tier128)
++        assertEquals(tier128, rebuilt.budgetBytes)
++        assertFalse(rebuilt.byFreeMemory)
++        // And what it keeps behind goes with the budget it has.
++        assertEquals(6_000, rebuilt.backBufferMs)
++        assertEquals(24 * mib, rebuilt.backCapBytes)
++    }
++
++    @Test fun aKeptBudgetNeverGoesPastTheTiersNorUnderWhatFreeMemoryGives() {
++        // The old player had 96 MiB: kept, still held down against the tier's 128.
++        val kept = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = (96 * mib).toInt())
++        assertEquals((96 * mib).toInt(), kept.budgetBytes)
++        assertTrue(kept.byFreeMemory)
++        assertEquals(tier128, kept.tierBytes)
++        // More is free than the old one had: the free memory's size, as for any player.
++        assertEquals((100 * mib).toInt(), FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 360 * mib, keepBytes = (64 * mib).toInt()).budgetBytes)
++        // A budget from a bigger tier (never happens on one TV) is still held to this one's.
++        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = (256 * mib).toInt()).budgetBytes)
++        // None kept: as before.
++        assertEquals(FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib), FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib, keepBytes = 0))
++    }
++
+     // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)
+ 
+     @Test fun aSqueezedBufferIsCollectedWhileItHoldsMoreThanItFillsTo() {
+-- 
+2.43.0
+
+
+From b996a8252b50a2605f153a690127d13f24045b6c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:50:10 +0000
+Subject: [PATCH 4/6] WIP audit/vod: the most seen to come back counts (three
+ readings, never a sum)
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/player/FilmRoom.kt    | 28 +++++++++++++------
+ .../app/fireplayer/player/PlayerFactory.kt    |  7 +++--
+ 2 files changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+index 5368b7a..a0e8d56 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -33,8 +33,12 @@ import java.util.concurrent.TimeUnit
+  */
+ object FilmRoom {
+     private const val TAG = "FirePlayer"
+-    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: the free memory is read after it. */
+-    const val SETTLE_MS = 150L
++    /**
++     * After collecting, the pictures' own memory is freed by Android's clean-up thread, a moment later. The free
++     * memory is read at once, and again this long after (ms), the film being told at the last: the most seen to
++     * have come back counts, so the film's decoder taking its frames between two readings hides only what came after.
++     */
++    private val READ_AFTER_MS = longArrayOf(0L, 60L, 150L)
+ 
+     /** The film player on screen, as this needs it. */
+     interface Film {
+@@ -83,13 +87,19 @@ object FilmRoom {
+                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
+             }
+             val took = SystemClock.elapsedRealtime() - askedAt
+-            main.postDelayed({
+-                val now = film
+-                // Another film player than the one asked about (or none then): how much came back for it can't be said.
+-                val gain = if (asker != null && now === asker) FilmMemory.roomGained(before, freeFor(app, asker)) else 0L
+-                Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
+-                now?.roomMade(askedAt, gain)
+-            }, SETTLE_MS)
++            // On the main thread only.
++            var gain = 0L
++            for ((i, after) in READ_AFTER_MS.withIndex()) {
++                main.postDelayed({
++                    val now = film
++                    // Another film player than the one asked about (or none then): how much came back for it can't be said.
++                    if (asker != null && now === asker) gain = maxOf(gain, FilmMemory.roomGained(before, freeFor(app, asker)))
++                    if (i == READ_AFTER_MS.lastIndex) {
++                        Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
++                        now?.roomMade(askedAt, gain)
++                    }
++                }, after)
++            }
+         }
+     }
+ 
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+index 806ded0..4c3b882 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/PlayerFactory.kt
+@@ -572,7 +572,10 @@ private class FilmLoadControl(
+     @Volatile private var budgetBytes = plannedBytes
+     /** How far the buffer is squeezed now ([squeeze]). Main thread. */
+     private var step = 0
+-    /** What was seen to come back to the TV since the player was built ([roomMade]), in bytes. Main thread. */
++    /**
++     * The most seen to come back to the TV at one time since the player was built ([roomMade]), in bytes. The most,
++     * not the sum: two collections close together can each see part of the same memory come back. Main thread.
++     */
+     private var gainedBytes = 0L
+ 
+     /** The film's budget now, in bytes. */
+@@ -799,7 +802,7 @@ private class FilmLoadControl(
+      * thread; gives back the new budget in bytes, or 0 when it stays.
+      */
+     fun roomMade(freeBytes: Long, gained: Long): Int {
+-        if (gained > 0L) gainedBytes += gained
++        if (gained > gainedBytes) gainedBytes = gained
+         val now = budgetBytes
+         val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes, startFreeBytes, gainedBytes)
+         if (next <= now) return 0
+-- 
+2.43.0
+
+
+From b0fe5aa86e659e94ff24fa32f3bbbfd90b9f86a4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:58:31 +0000
+Subject: [PATCH 5/6] WIP audit/vod: a squeeze's collection tells the film
+ nothing
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../app/src/main/java/app/fireplayer/player/FilmRoom.kt      | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+index a0e8d56..4231b0a 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -87,6 +87,11 @@ object FilmRoom {
+                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
+             }
+             val took = SystemClock.elapsedRealtime() - askedAt
++            if (!forFilm) {
++                // The film's own memory given back: nothing to tell it.
++                Log.i(TAG, "Memory let go of collected in $took ms")
++                return@execute
++            }
+             // On the main thread only.
+             var gain = 0L
+             for ((i, after) in READ_AFTER_MS.withIndex()) {
+-- 
+2.43.0
+
+
+From 46bbb4fbea2f45ea7cf23d8e31a32f16040a4a9e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 08:00:51 +0000
+Subject: [PATCH 6/6] WIP: audit work saved when the usage window ran out
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/PlayerActivity.kt     | 26 ++++++++++----
+ .../java/app/fireplayer/player/FilmMemory.kt  | 20 +++++++----
+ .../java/app/fireplayer/player/FilmRoom.kt    |  4 +--
+ .../fireplayer/player/BufferAndRateTest.kt    | 35 ++++++++++---------
+ 4 files changed, 52 insertions(+), 33 deletions(-)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+index c1c4494..910bcc0 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/PlayerActivity.kt
+@@ -1162,6 +1162,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+         )
+         keepBudgetBytes = 0
+         builtAt = SystemClock.elapsedRealtime()
++        // A new buffer holds nothing yet: what it gives back under a squeeze is counted from there (checkMemory).
++        heldAtCollect = 0L
+         vsyncFix = vsync.also { it.start() }
+         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
+         hdr10PlusGate = hdr10Plus.also { it.start() }
+@@ -2628,16 +2630,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+      * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
+      */
+     private fun checkMemory() {
+-        val p = player ?: return
++        if (player == null) return
+         if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
+             squeezeFilmBuffer()
+             return
+         }
+-        // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
++        // Squeezed and coming down to its new size: what it has let go of meanwhile goes back to the TV, a good
++        // piece at a time (see FilmMemory.givenBack).
+         val built = builtPlayer ?: return
+-        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made(this, forFilm = false)
++        val held = built.filmBytes()
++        if (FilmMemory.givenBack(memoryPressure.step, held, heldAtCollect)) {
++            heldAtCollect = held
++            FilmRoom.made(this, forFilm = false)
++        } else if (held > heldAtCollect) {
++            // Loading again: counted from the most it holds.
++            heldAtCollect = held
++        }
+     }
+ 
++    /** What the film's buffer held when its memory was last collected for a squeeze, or when it was squeezed (bytes). */
++    private var heldAtCollect = 0L
++
+     /** Gives the film's buffer the size [memoryPressure] calls for now. */
+     private fun squeezeFilmBuffer() {
+         val built = builtPlayer ?: return
+@@ -2650,10 +2663,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host
+             // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
+             // OS asks them to trim, and a film opened from Glass Home or another app has no page behind it at all.
+             app.fireplayer.ui.ImageLoader.trim()
+-            // What the smaller buffer no longer keeps for reuse is only dropped, as those pictures are: collected
+-            // now, so the TV gets it at once rather than whenever Android next collects (the buffer loads nothing
+-            // new until it's down to its new size).
+-            FilmRoom.made(this, forFilm = false)
++            // What the smaller buffer lets go of as it comes down is only dropped, as those pictures are: collected
++            // from the next memory check on, as it goes (checkMemory), counted from what it holds now.
++            heldAtCollect = built.filmBytes()
+         }
+     }
+ 
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+index dcf570b..40f466b 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmMemory.kt
+@@ -187,16 +187,22 @@ object FilmMemory {
+     }
+ 
+     /**
+-     * Whether a squeezed buffer is coming down to what it now fills to: at squeeze [step] (above 0) it holds
+-     * [heldBytes], more than the [fillBytes] it stops loading at, and the film is [playing] (paused or waiting, it
+-     * lets go of nothing). Until it's down, it loads nothing new, so the memory it lets go of as the film plays on is
++     * Whether what a squeezed buffer has given back should be collected now: at squeeze [step] (above 0) it holds
++     * [heldBytes], [COLLECT_STEP_BYTES] or more under what it held when memory was last collected for it, or when it
++     * was squeezed ([heldAtCollectBytes]).
++     *
++     * A buffer coming down to a smaller size loads nothing new, so the memory it lets go of as the film plays on is
+      * only dropped, and nothing has Android collect it (it collects when enough new things were made): the TV would
+      * stay as short of memory as before the squeeze, and half a minute on the squeeze would go a step further for it
+-     * ([MemoryPressure]). So while this is true, FirePlayer has it collected at each memory check ([FilmRoom.made]).
+-     * Once the buffer is down and loading again, what it loads anew makes Android collect by itself.
++     * ([MemoryPressure]). So FirePlayer has it collected itself ([FilmRoom.made]), a good piece at a time rather than
++     * at every check: collecting looks at everything the app holds, which is work a TV short of memory is short of
++     * too. Once the buffer is down and loading again, what it loads anew makes Android collect by itself.
+      */
+-    fun comingDown(step: Int, heldBytes: Long, fillBytes: Long, playing: Boolean): Boolean =
+-        playing && step > 0 && fillBytes > 0L && heldBytes > fillBytes
++    fun givenBack(step: Int, heldBytes: Long, heldAtCollectBytes: Long): Boolean =
++        step > 0 && heldAtCollectBytes - heldBytes >= COLLECT_STEP_BYTES
++
++    /** A squeezed buffer's memory is collected each time it holds this much less ([givenBack]). */
++    const val COLLECT_STEP_BYTES = 16L shl 20
+ 
+     /**
+      * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], or the whole
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+index 4231b0a..b57e19d 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/player/FilmRoom.kt
+@@ -26,8 +26,8 @@ import java.util.concurrent.TimeUnit
+  * outside the app's own heap has been freed as well, with how much came back ([FilmMemory.roomGained]). Its player
+  * then sizes the buffer again ([FilmMemory.afterRoom]).
+  *
+- * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
+- * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
++ * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected as it
++ * comes down to its new size ([FilmMemory.givenBack]), so the TV has it when it needs it.
+  *
+  * Main thread, but for the collecting itself.
+  */
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+index d1aa362..5f338ba 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/player/BufferAndRateTest.kt
+@@ -173,28 +173,29 @@ class BufferAndRateTest {
+         assertEquals(FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib), FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib, keepBytes = 0))
+     }
+ 
+-    // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)
+-
+-    @Test fun aSqueezedBufferIsCollectedWhileItHoldsMoreThanItFillsTo() {
+-        // Full at 128 MiB when memory ran low: it fills to 96 now, and holds more until the film has played 32 MiB on.
+-        assertTrue(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
+-        assertTrue(FilmMemory.comingDown(step = 2, heldBytes = 97 * mib, fillBytes = 64 * mib, playing = true))
+-        // Down to its new size (it loads again, and Android collects by itself): no more.
+-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 96 * mib, fillBytes = 96 * mib, playing = true))
+-        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 40 * mib, fillBytes = 64 * mib, playing = true))
++    // ---- What a squeezed buffer has given back is collected a good piece at a time (FilmMemory.givenBack)
++
++    @Test fun aSqueezedBuffersMemoryIsCollectedEvery16MiBItComesDown() {
++        // Full at 128 MiB when memory ran low (it fills to 96 now): nothing yet, then at 112 and again at 96.
++        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 128 * mib, heldAtCollectBytes = 128 * mib))
++        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 120 * mib, heldAtCollectBytes = 128 * mib))
++        assertTrue(FilmMemory.givenBack(step = 1, heldBytes = 112 * mib, heldAtCollectBytes = 128 * mib))
++        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 100 * mib, heldAtCollectBytes = 112 * mib))
++        assertTrue(FilmMemory.givenBack(step = 1, heldBytes = 96 * mib, heldAtCollectBytes = 112 * mib))
++        // A fast film is well past a piece by the next check: one collection for all of it.
++        assertTrue(FilmMemory.givenBack(step = 2, heldBytes = 64 * mib, heldAtCollectBytes = 128 * mib))
+     }
+ 
+-    @Test fun aPausedOrWaitingFilmLetsGoOfNothingToCollect() {
+-        // Paused with a full buffer while memory is low: it stays as it is, and nothing is collected every 10 s for it.
+-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = false))
+-        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 128 * mib, fillBytes = 64 * mib, playing = false))
++    @Test fun aBufferHoldingAsMuchOrMoreHasGivenNothingBack() {
++        // Paused, waiting, or down to its size and loading again: it holds what it held, or more.
++        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 96 * mib, heldAtCollectBytes = 96 * mib))
++        assertFalse(FilmMemory.givenBack(step = 2, heldBytes = 70 * mib, heldAtCollectBytes = 64 * mib))
+     }
+ 
+     @Test fun aBufferThatIsNotSqueezedIsNeverCollectedForIt() {
+-        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 128 * mib, playing = true))
+-        // Held over its size for a moment without a squeeze (a size not known): not this rule's.
+-        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
+-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 0L, playing = true))
++        // After a jump it holds far less for a moment: its memory is kept to load into again, not given back.
++        assertFalse(FilmMemory.givenBack(step = 0, heldBytes = 4 * mib, heldAtCollectBytes = 128 * mib))
++        assertFalse(FilmMemory.givenBack(step = 0, heldBytes = 128 * mib, heldAtCollectBytes = 128 * mib))
+     }
+ 
+     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
+-- 
+2.43.0
+

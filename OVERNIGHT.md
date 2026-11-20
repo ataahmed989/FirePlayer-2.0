@@ -111,3 +111,11 @@ and continue from the first unfinished step. Update the status lines here as ste
   Up on a banner button moves to the next title; the Home Header window shows the switch and "Time on each title";
   with the switch Off (the user turned it off themselves: leave it) the banner keeps idling on a Continue card.
   Steps 2, 3 and 3b are done. Waiting for the two Fable audits (run wf_8061bd2f-d97), then 1b, then step 4.
+- 08:07 UTC: the 07:00 window is used up (the user: 96%). The two Fable audits were stopped with their work saved:
+  branches `audit/vod` and `audit/live` (local), and the same work as patches in `player-fixes-wip/overnight-wip/`
+  (if the branches are gone after a restart: `git checkout -b audit/vod a1d8242 && git am < that patch`, same for
+  live). AT THE 12:00 UTC RESET: relaunch the audit script (`overnight-1-playback-audit-wf_19260f83-8c4.js`; the
+  agents continue their branches) with the added instruction to FINISH: complete what is half done, no new
+  exploration, final build + tests + report within about 20 minutes. Then merge, check on the idle TV, and go on with
+  1b, 1c, 1d, step 4, step 5. Budget: one window did not cover the audits, so steps 4-5 will not all fit before the
+  user is up; do not rush or skip checks to make it fit, and never release unverified work.

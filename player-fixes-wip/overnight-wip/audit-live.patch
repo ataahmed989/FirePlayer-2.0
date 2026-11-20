@@ -1,0 +1,2174 @@
+From 1d2bd476f6386d6b72480205ec89bb83b1422f20 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:35:07 +0000
+Subject: [PATCH 1/4] Live TV guide: lists kept while nothing is written, first
+ screenful first, listings for the rows on screen first
+
+Opening Live TV read the same channel list up to three times (the guide's, and the playing
+channel's group twice), every visit read everything again, and every list shown asked for 40
+channels' listings twice. Now:
+
+- LiveDb counts its list and guide writes; LivePage keeps the lists it read (ScopeLists) and
+  shows a list again without reading it while nothing was written since. A visit with nothing
+  changed reads the playlists and groups only, and the guide's listings stay as loaded.
+- The guide's own list is read before the playing channel's group, which shares its copy.
+- A list no longer wanted stops being read (CancellationSignal), so a group looked at next
+  doesn't wait behind a long list.
+- Of a long list (All channels, All playlists) the first screenful shows at once through the
+  position index, the whole list arriving under it without anything moving on screen.
+- Listings: the rows on screen are read and shown first, the rows around after; of asks made
+  while a key is held only the newest is read.
+- Favorites are read from the stars to their channels (it looked every channel up among the
+  stars); a playlist's and a group's id are kept once per list, not once per channel.
+- The guide isn't drawn again for every word from the player, nor the controls worked out
+  again for every logo that lands.
+- FirePlayerLive: "groups listed", "first channels shown", "guide listed (... read/kept)",
+  "programmes shown", each with its time after opening.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../main/java/app/fireplayer/live/LiveDb.kt   | 141 ++++++++--
+ .../java/app/fireplayer/live/ScopeLists.kt    |  71 +++++
+ .../java/app/fireplayer/live/ui/GuideCells.kt |  11 +
+ .../java/app/fireplayer/live/ui/GuideView.kt  |  96 ++++++-
+ .../java/app/fireplayer/live/ui/LivePage.kt   | 256 +++++++++++++++---
+ .../app/fireplayer/live/ScopeListsTest.kt     | 110 ++++++++
+ .../live/ui/GuideFirstScreenTest.kt           |  63 +++++
+ 7 files changed, 671 insertions(+), 77 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/live/ScopeLists.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/live/ScopeListsTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/live/ui/GuideFirstScreenTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
+index 2ab0c77..aaf331e 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
+@@ -6,10 +6,12 @@ import android.database.AbstractWindowedCursor
+ import android.database.Cursor
+ import android.database.CursorWindow
+ import android.os.Build
++import android.os.CancellationSignal
+ import android.database.sqlite.SQLiteDatabase
+ import android.database.sqlite.SQLiteOpenHelper
+ import android.os.SystemClock
+ import android.util.Log
++import java.util.concurrent.atomic.AtomicInteger
+ 
+ /**
+  * Live TV storage (`live.db`): playlists, groups, channels, favorites, recent channels and EPG programmes.
+@@ -28,6 +30,16 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         setWriteAheadLoggingEnabled(true)
+     }
+ 
++    /**
++     * How often what the guide lists was written (playlists, groups, channels, the viewer's stars and group choices),
++     * and how often its listings were (programmes, which import the guide reads). A screen notes them before a read
++     * and keeps what it read for as long as they stand: a visit to Live TV with nothing written since reads nothing
++     * again. Each write counts once it's stored (after its transaction), so a count read before a read is never
++     * newer than what that read sees. This process only (the database has no other).
++     */
++    val listChanges = AtomicInteger()
++    val epgChanges = AtomicInteger()
++
+     override fun onConfigure(db: SQLiteDatabase) {
+         // Android turns auto-vacuum on (FULL) by default: every EPG swap then moved pages around to shrink the file,
+         // writing hundreds of MB. INCREMENTAL (allowed on an existing database, unlike NONE) leaves freed pages for
+@@ -126,6 +138,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             v.put("id", p.id)
+             db.insertOrThrow("playlist", null, v)
+         }
++        listChanges.incrementAndGet()
+     }
+ 
+     fun deletePlaylist(id: String) {
+@@ -141,6 +154,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         } finally {
+             db.endTransaction()
+         }
++        listChanges.incrementAndGet()
++        epgChanges.incrementAndGet()
+     }
+ 
+     fun setPlaylistStatus(id: String, status: String, syncedAt: Long?, expiresAt: Long? = null, maxConnections: Int? = null, playlistEpgUrl: String? = null) {
+@@ -152,6 +167,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             playlistEpgUrl?.let { put("playlist_epg_url", it) }
+         }
+         writableDatabase.update("playlist", v, "id = ?", arrayOf(id))
++        listChanges.incrementAndGet()
+     }
+ 
+     /** The EPG link a playlist's guide comes from: the viewer's own, else the one the playlist names. */
+@@ -239,6 +255,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             return removed
+         } finally {
+             db.endTransaction()
++            // Counted whether or not it was stored: a count too many only has a list read once more.
++            listChanges.incrementAndGet()
+         }
+     }
+ 
+@@ -306,6 +324,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             }
+             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+             switched = true
++            epgChanges.incrementAndGet()
+             val t2 = SystemClock.elapsedRealtime()
+             // A failure here only leaves rows behind (removed at the next import), never the ones now read.
+             runCatching { deleteRows(physical(source, oldGen)) }
+@@ -368,6 +387,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             v.put("source", source); v.put("programmes", 0); v.put("url", url); if (syncedAt == null) v.put("last_sync", 0L)
+             writableDatabase.insert("epg_status", null, v)
+         }
++        epgChanges.incrementAndGet()
+     }
+ 
+     class EpgStatus(val source: String, val url: String, val lastSync: Long, val status: String, val programmes: Int)
+@@ -381,10 +401,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         val db = writableDatabase
+         db.delete("program", null, null)
+         db.delete("epg_status", null, null)
++        epgChanges.incrementAndGet()
+     }
+ 
+     fun pruneProgrammes(keepFrom: Long) {
+-        writableDatabase.delete("program", "stop < ?", arrayOf(keepFrom.toString()))
++        // Counted only when something went: the guide shows from about now on, but a row it holds may reach back.
++        if (writableDatabase.delete("program", "stop < ?", arrayOf(keepFrom.toString())) > 0) epgChanges.incrementAndGet()
+     }
+ 
+     // ---- Guide reads ---------------------------------------------------------------------------------------------
+@@ -412,6 +434,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             v.put("playlist_id", playlistId); v.put("group_id", groupId)
+             db.insertWithOnConflict("group_pref", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+         }
++        listChanges.incrementAndGet()
+     }
+ 
+     /** Hide all / Show all: every group of the playlist, including ones the provider isn't listing just now. */
+@@ -425,6 +448,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         } finally {
+             db.endTransaction()
+         }
++        listChanges.incrementAndGet()
+     }
+ 
+     /** The viewer's order for [groupIds] (the shown groups, top first); groups not listed keep theirs. */
+@@ -444,6 +468,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         } finally {
+             db.endTransaction()
+         }
++        listChanges.incrementAndGet()
+     }
+ 
+     /** Playlists in the viewer's order (top first). */
+@@ -456,26 +481,89 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         } finally {
+             db.endTransaction()
+         }
++        listChanges.incrementAndGet()
+     }
+ 
+-    /** The channels a guide scope lists, in guide order. Blocked channels are left out. */
+-    fun channels(scope: GuideScope): List<Channel> {
+-        val select = "SELECT c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position, " +
+-            "f.channel_id IS NOT NULL, c.blocked FROM channel c LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
++    /**
++     * The channels a guide scope lists, in guide order. Blocked channels are left out. [cancel]: the read is given up
++     * when it's cancelled (the list is no longer wanted), with an OperationCanceledException.
++     */
++    fun channels(scope: GuideScope, cancel: CancellationSignal? = null): List<Channel> {
+         // Every playlist: each one's channels in turn, in playlist order (read in index order, never sorted whole).
+-        if (scope == GuideScope.AllPlaylists) return playlists().flatMap { channels(GuideScope.AllChannels(it.id)) }
++        if (scope == GuideScope.AllPlaylists) return playlists().flatMap { channels(GuideScope.AllChannels(it.id), cancel) }
+         val (sql, args) = when (scope) {
+             GuideScope.AllPlaylists -> error("handled above")
+             is GuideScope.AllChannels ->
+                 // Channels of hidden groups are left out (Manage groups).
+-                (select + "WHERE c.playlist_id = ? AND c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
+-                    "(SELECT group_id FROM group_pref WHERE playlist_id = ? AND hidden = 1)) ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
++                (CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
+             is GuideScope.Favorites ->
+-                (select + "WHERE c.playlist_id = ? AND f.channel_id IS NOT NULL AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
++                // From the stars to their channels (CROSS JOIN keeps that order on every SQLite): a lookup by key for
++                // each star. Joined from the channels, every channel of the playlist was looked up among the stars
++                // (30,000 lookups for a list of 31, checked with EXPLAIN QUERY PLAN).
++                ("SELECT $CHANNEL_COLS, 1, c.blocked FROM favorite f CROSS JOIN channel c ON c.playlist_id = f.playlist_id AND c.id = f.channel_id " +
++                    "WHERE f.playlist_id = ? AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
+             is GuideScope.Group ->
+-                (select + "WHERE c.playlist_id = ? AND c.group_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId, scope.groupId)
++                (CHANNEL_SELECT + "WHERE c.playlist_id = ? AND c.group_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId, scope.groupId)
++        }
++        return readableDatabase.rawQuery(sql, args, cancel).wholeWindow().use { c -> channelsOf(c, cancel) }
++    }
++
++    /**
++     * The first screenful of a long list (All channels of a playlist, or of every playlist): the channels around
++     * [around] when the list holds it, [before] of them before it and [after] from it on; otherwise (or with none
++     * given) the list's first [after]. Read through the position index: a few dozen rows however long the list, in
++     * the order and with the channels left out that [channels] gives. Any other scope is read whole.
++     */
++    fun channelsNear(scope: GuideScope, around: ChannelKey?, before: Int, after: Int): List<Channel> {
++        val ids = when (scope) {
++            GuideScope.AllPlaylists -> playlists().map { it.id }
++            is GuideScope.AllChannels -> listOf(scope.playlistId)
++            else -> return channels(scope)
++        }
++        val db = readableDatabase
++        if (around != null && around.playlistId in ids) {
++            val id = around.playlistId
++            val at = db.rawQuery("SELECT c.position FROM channel c WHERE c.playlist_id = ? AND c.id = ? AND $SHOWN", arrayOf(id, around.channelId, id))
++                .use { c -> if (c.moveToFirst()) c.getInt(0) else null }
++            if (at != null) {
++                val head = db.rawQuery(
++                    CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN AND c.position < ? ORDER BY c.position DESC LIMIT $before",
++                    arrayOf(id, id, at.toString()),
++                ).use { c -> channelsOf(c, null) }
++                return head.asReversed() + channelsFrom(id, at, after)
++            }
+         }
+-        return readableDatabase.rawQuery(sql, args).wholeWindow().use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
++        // Not in the list: its start (the first playlist that has channels to show).
++        for (id in ids) channelsFrom(id, Int.MIN_VALUE, after).let { if (it.isNotEmpty()) return it }
++        return emptyList()
++    }
++
++    /** A playlist's All channels from [position] on, [limit] at most. */
++    private fun channelsFrom(playlistId: String, position: Int, limit: Int): List<Channel> =
++        readableDatabase.rawQuery(
++            CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN AND c.position >= ? ORDER BY c.position LIMIT $limit",
++            arrayOf(playlistId, playlistId, position.toString()),
++        ).use { c -> channelsOf(c, null) }
++
++    /**
++     * The rows of [c] as channels. A playlist's id and a group's id are kept once for the whole list, not once a row:
++     * tens of thousands of copies of the same two texts were megabytes of a big playlist's list.
++     */
++    private fun channelsOf(c: Cursor, cancel: CancellationSignal?): List<Channel> {
++        val same = HashMap<String, String>()
++        val out = ArrayList<Channel>(c.count)
++        while (c.moveToNext()) {
++            // Every few hundred rows: a list no longer wanted stops being read.
++            if (cancel != null && (out.size and 0x1FF) == 0) cancel.throwIfCanceled()
++            val playlist = c.getString(0).let { same.getOrPut(it) { it } }
++            val group = c.getString(5)?.let { same.getOrPut(it) { it } }
++            out += Channel(
++                playlistId = playlist, id = c.getString(1), number = c.getInt(2), name = c.getString(3),
++                logo = c.getString(4), groupId = group, url = c.getString(6), epgRef = c.getString(7),
++                archiveDays = c.getInt(8), position = c.getInt(9), favorite = c.getInt(10) != 0, blocked = c.getInt(11) != 0,
++            )
++        }
++        return out
+     }
+ 
+     /**
+@@ -488,12 +576,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+     }
+ 
+     fun channel(key: ChannelKey): Channel? =
+-        readableDatabase.rawQuery(
+-            "SELECT c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position, " +
+-                "f.channel_id IS NOT NULL, c.blocked FROM channel c LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id " +
+-                "WHERE c.playlist_id = ? AND c.id = ?",
+-            arrayOf(key.playlistId, key.channelId),
+-        ).use { c -> if (c.moveToFirst()) channelAt(c) else null }
++        readableDatabase.rawQuery(CHANNEL_SELECT + "WHERE c.playlist_id = ? AND c.id = ?", arrayOf(key.playlistId, key.channelId))
++            .use { c -> if (c.moveToFirst()) channelAt(c) else null }
+ 
+     fun channelCount(playlistId: String): Int =
+         readableDatabase.rawQuery("SELECT COUNT(*) FROM channel WHERE playlist_id = ?", arrayOf(playlistId)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+@@ -535,11 +619,17 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+     // ---- The viewer's own data ---------------------------------------------------------------------------------
+ 
+     fun setFavorite(key: ChannelKey, favorite: Boolean, now: Long) {
+-        if (favorite) {
+-            val v = ContentValues().apply { put("playlist_id", key.playlistId); put("channel_id", key.channelId); put("added", now) }
+-            writableDatabase.insertWithOnConflict("favorite", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+-        } else {
+-            writableDatabase.delete("favorite", "playlist_id = ? AND channel_id = ?", arrayOf(key.playlistId, key.channelId))
++        try {
++            if (favorite) {
++                val v = ContentValues().apply { put("playlist_id", key.playlistId); put("channel_id", key.channelId); put("added", now) }
++                writableDatabase.insertWithOnConflict("favorite", null, v, SQLiteDatabase.CONFLICT_IGNORE)
++            } else {
++                writableDatabase.delete("favorite", "playlist_id = ? AND channel_id = ?", arrayOf(key.playlistId, key.channelId))
++            }
++        } finally {
++            // Counted even when it couldn't be stored: the star was shown at once, so a list on screen may not be
++            // what's stored, and is read again rather than taken as unchanged.
++            listChanges.incrementAndGet()
+         }
+     }
+ 
+@@ -598,6 +688,13 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+         const val RECENT_KEEP = 11
+         private const val STAGING = "#new"
+         private const val BATCH = 2_000
++        private const val CHANNEL_COLS = "c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position"
++        /** A channel with its star; each list adds what it holds and its order. */
++        private const val CHANNEL_SELECT = "SELECT $CHANNEL_COLS, f.channel_id IS NOT NULL, c.blocked FROM channel c " +
++            "LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
++        /** What a playlist's All channels shows: not blocked, nor in a hidden group (Manage groups). Takes the playlist's id. */
++        private const val SHOWN = "c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
++            "(SELECT group_id FROM group_pref WHERE playlist_id = ? AND hidden = 1))"
+         private const val PLAYLIST_COLS = "id, name, kind, url, username, password, epg_url, output, include_live, include_vod, " +
+             "position, update_hours, last_sync, last_status, expires_at, max_connections, hide_new_groups"
+ 
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ScopeLists.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ScopeLists.kt
+new file mode 100644
+index 0000000..d9cee8d
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ScopeLists.kt
+@@ -0,0 +1,71 @@
++package app.fireplayer.live
++
++/**
++ * The guide's channel lists kept in memory while the Live TV page lives, so a list already read isn't read again:
++ * going back to a group looked at a moment ago, the playing channel's group for Channel ▲ / ▼ when the guide shows the
++ * same one, coming back to the tab. Each list is kept with the count of list writes it was read at ([version],
++ * [LiveDb.listChanges]); asked for at another count, nothing kept is any good and it all goes.
++ *
++ * Bounded, because a big playlist's list is megabytes: the last [smallKept] lists of up to [smallMax] channels (fewer
++ * when they hold more than [smallTotal] between them), and the last one longer than that. Pure (no Android), any thread.
++ */
++class ScopeLists<K : Any, T>(
++    private val smallMax: Int = SMALL_MAX,
++    private val smallKept: Int = SMALL_KEPT,
++    private val smallTotal: Int = SMALL_TOTAL,
++) {
++    private var version = 0
++    /** Lists of up to [smallMax] entries, the one used last at the end. */
++    private val small = LinkedHashMap<K, List<T>>(16, 0.75f, true)
++    private var bigKey: K? = null
++    private var big: List<T>? = null
++
++    /** [key]'s list as read at [version], or null when it isn't kept (or was read at another count). */
++    @Synchronized
++    fun get(key: K, version: Int): List<T>? {
++        if (version != this.version) return null
++        return if (key == bigKey) big else small[key]
++    }
++
++    /** Keeps [list], read at [version], for [key]. */
++    @Synchronized
++    fun put(key: K, version: Int, list: List<T>) {
++        if (version != this.version) {
++            clear()
++            this.version = version
++        }
++        if (key == bigKey) { bigKey = null; big = null }
++        small.remove(key)
++        if (list.size > smallMax) {
++            bigKey = key
++            big = list
++            return
++        }
++        small[key] = list
++        // The ones used longest ago go first; never the one just kept (the last).
++        var total = small.values.sumOf { it.size }
++        val oldest = small.entries.iterator()
++        while ((small.size > smallKept || total > smallTotal) && small.size > 1) {
++            total -= oldest.next().value.size
++            oldest.remove()
++        }
++    }
++
++    @Synchronized
++    fun clear() {
++        small.clear()
++        bigKey = null
++        big = null
++    }
++
++    /** How many lists are kept (for tests). */
++    @get:Synchronized
++    val size: Int get() = small.size + if (big != null) 1 else 0
++
++    companion object {
++        /** A group or a favorites list; longer than this is a playlist's whole list, of which one is kept. */
++        const val SMALL_MAX = 2_000
++        const val SMALL_KEPT = 8
++        const val SMALL_TOTAL = 6_000
++    }
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideCells.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideCells.kt
+index b230f08..3516ace 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideCells.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideCells.kt
+@@ -132,6 +132,17 @@ object GuideCells {
+         }.coerceIn(0, maxTop)
+     }
+ 
++    /**
++     * The first row shown once a list's first screenful has become the whole list: the focused row, [oldFocus] in the
++     * part and [newFocus] in the whole, stays on the row of the screen it was on ([oldTop] was the part's first row
++     * shown), so nothing moves on screen as the rest arrives. Never past either end of the [count] rows.
++     */
++    fun topKeeping(oldTop: Int, oldFocus: Int, newFocus: Int, visible: Int, count: Int): Int =
++        (newFocus - (oldFocus - oldTop)).coerceIn(0, (count - visible).coerceAtLeast(0))
++
++    /** Whether a step from row [from] to row [to] ([down] or up) went round the list's end rather than to the row beside. */
++    fun wentRound(from: Int, to: Int, down: Boolean): Boolean = if (down) to < from else to > from
++
+     /**
+      * Where the rows scroll from to reach [to] (pixels) from [from]: from where they are, unless that's further than
+      * [longest] (round from the last channel to the first in a long list); then from [glide] short of [to]. The rows
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideView.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideView.kt
+index 11ef3c4..aa38512 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideView.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/GuideView.kt
+@@ -57,7 +57,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+         /** Center held on [channel]: its small window (Favorite, Assign favorites). The release after it does nothing. */
+         fun onHold(channel: Channel)
+         fun onLeaveLeft()
+-        fun needProgrammes(channels: List<Channel>, from: Long, to: Long)
++        /**
++         * Listings are wanted for [channels] over [from, to). The first [onScreen] of them are rows showing now, to be
++         * read (and handed to [putProgrammes]) first; the rest are the rows around them.
++         */
++        fun needProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long)
+         /** [url]'s logo with its plate, if it has loaded (never waits for it). */
+         fun logo(url: String): Logo?
+     }
+@@ -71,7 +75,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+ 
+     /** The channel playing (in the miniature or full screen): its name and the ▶ after it are blue. */
+     var playingKey: ChannelKey? = null
+-        set(v) { field = v; invalidate() }
++        // Set with every word from the player (its buffer filling, a caption line): drawn again only when it changes.
++        set(v) { if (field != v) { field = v; invalidate() } }
+ 
+     /** Playlists whose guide is still being loaded for the first time: their empty rows say so. */
+     var loadingPlaylists: Set<String> = emptySet()
+@@ -245,9 +250,13 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+     fun setChannels(list: List<Channel>, focus: ChannelKey?, reload: Boolean = false) {
+         stopMotion()
+         val keep = focus ?: channels.getOrNull(focusRow)?.key
+-        channels = list
+-        indexChannels()
+-        focusRow = GuideFocus.rowAfter(list.indexOfFirst { it.key == keep }, focusRow, list.size, reload)
++        firstScreen = false
++        // The very list already shown (nothing was written since it was read) keeps its rows' text as made.
++        if (list !== channels) {
++            channels = list
++            indexChannels()
++        }
++        focusRow = GuideFocus.rowAfter(rowOf(keep), focusRow, list.size, reload)
+         // The time window catches up with now (it may have been opened a while ago), unless the viewer had moved
+         // ahead into later programmes.
+         val now = clock()
+@@ -260,6 +269,53 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+         invalidate()
+     }
+ 
++    /** [key]'s row (-1: not listed), found in the rows' keys as indexed: nothing is made to look. */
++    private fun rowOf(key: ChannelKey?): Int = if (key == null) -1 else keys.indexOf(key)
++
++    /**
++     * Only a long list's first screenful is showing (the rows around its focus, while the whole list is read): set by
++     * [showFirstScreen], over with [extendChannels] or any other list. Its ends aren't the list's ends, so nothing
++     * goes round them.
++     */
++    private var firstScreen = false
++
++    /**
++     * The first screenful of a long list still being read: [part], the rows around [focus] (or the list's first).
++     * They show at once, with their listings; [extendChannels] puts the whole list under them when it arrives.
++     */
++    fun showFirstScreen(part: List<Channel>, focus: ChannelKey?) {
++        setChannels(part, focus)
++        firstScreen = true
++    }
++
++    /**
++     * The whole [list] has arrived where its first screenful was showing ([showFirstScreen]): the rows on screen stay
++     * exactly where they are (the focused channel on the same row of the screen), their listings as loaded.
++     */
++    fun extendChannels(list: List<Channel>) {
++        stopMotion()
++        val key = channels.getOrNull(focusRow)?.key
++        val oldTop = (scrollTarget / rowH).roundToInt()
++        val oldFocus = focusRow
++        firstScreen = false
++        channels = list
++        indexChannels()
++        val i = rowOf(key)
++        if (i >= 0) {
++            focusRow = i
++            jumpScroll(GuideCells.topKeeping(oldTop, oldFocus, i, visibleRows(), list.size) * rowH)
++        } else {
++            // Its channel went meanwhile (a playlist update): the list's start, as for any new list.
++            focusRow = 0
++            jumpScroll(0f)
++            jumpScroll(targetScroll(focusRow) * rowH)
++        }
++        requested = null
++        ensureLoaded()
++        notifyFocus()
++        invalidate()
++    }
++
+     /** Programmes arrived for [from, to). Rows not in the map have no listings in that range. */
+     fun putProgrammes(channelsLoaded: List<Channel>, map: Map<ChannelKey, List<Programme>>, from: Long, to: Long) {
+         for (c in channelsLoaded) rows[c.key] = RowData(from, to, GuideCells.cells(map[c.key].orEmpty(), from, to))
+@@ -293,6 +349,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+ 
+     fun channelList(): List<Channel> = channels
+ 
++    /** [key]'s channel as the list shown holds it (null: not in it). */
++    fun channelOf(key: ChannelKey): Channel? = channels.getOrNull(rowOf(key))
++
+     /** The loaded programmes of [ch], in order (empty when not loaded or none listed). */
+     fun programmesOf(ch: Channel): List<Programme> = rows[ch.key]?.cells?.mapNotNull { it.programme }.orEmpty()
+ 
+@@ -365,7 +424,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+ 
+     /** Moves focus to [key] (after a channel change in full screen, the guide shows where you are). */
+     fun focusChannel(key: ChannelKey) {
+-        val i = channels.indexOfFirst { it.key == key }
++        val i = rowOf(key)
+         if (i < 0) return
+         val now = clock()
+         cursor = now
+@@ -389,8 +448,10 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+             // Down from the last channel goes round to the first, Up from the first to the last; held, they stop at
+             // the end (holding Down doesn't go round and round).
+             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+-                val to = ListMath.step(focusRow, channels.size, keyCode == KeyEvent.KEYCODE_DPAD_DOWN, event.repeatCount > 0) { true }
+-                if (to >= 0) moveTo(to, d)
++                val down = keyCode == KeyEvent.KEYCODE_DPAD_DOWN
++                val to = ListMath.step(focusRow, channels.size, down, event.repeatCount > 0) { true }
++                // A first screenful's ends aren't the list's: focus waits there for the whole list, it doesn't go round.
++                if (to >= 0 && !(firstScreen && GuideCells.wentRound(focusRow, to, down))) moveTo(to, d)
+             }
+             KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_CHANNEL_UP -> moveTo((focusRow - visibleRows()).coerceAtLeast(0), d)
+             KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> moveTo((focusRow + visibleRows()).coerceAtMost(channels.size - 1), d)
+@@ -590,14 +651,23 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
+         val base = minOf(windowStart, GuideCells.slotStart(clock()))
+         val tFrom = base - GuideCells.SLOT_MS * 2
+         val tTo = maxOf(windowStart + windowMs() + 4 * 60 * 60_000L, until)
+-        val missing = channels.subList(from, to).filter { c ->
+-            rows[c.key].let { it == null || it.from > base || it.to < windowStart + windowMs() || (force && it.to < tTo) }
++        val windowEnd = windowStart + windowMs()
++        // The rows showing (one more while they scroll) are asked for first, the rows around them after.
++        val shownTo = (top + visible + 1).coerceAtMost(to)
++        val shown = ArrayList<Channel>()
++        val around = ArrayList<Channel>()
++        var first: ChannelKey? = null
++        for (i in from until to) {
++            val row = rows[keys[i]]
++            if (row != null && row.from <= base && row.to >= windowEnd && !(force && row.to < tTo)) continue
++            if (first == null) first = keys[i]
++            (if (i in top until shownTo) shown else around) += channels[i]
+         }
+-        if (missing.isEmpty()) return
+-        val key = "${missing.first().key}|${missing.size}|$tFrom"
++        if (first == null) return
++        val key = "$first|${shown.size + around.size}|$tFrom"
+         if (key == requested) return
+         requested = key
+-        callbacks?.needProgrammes(missing, tFrom, tTo)
++        callbacks?.needProgrammes(shown + around, shown.size, tFrom, tTo)
+     }
+ 
+     /** After the width stops changing: listings for the wider window, if any are missing (usually none). */
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+index 2ac91f8..77b8504 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+@@ -22,6 +22,7 @@ import app.fireplayer.live.LiveDb
+ import app.fireplayer.live.LiveSync
+ import app.fireplayer.live.Playlist
+ import app.fireplayer.live.Programme
++import app.fireplayer.live.ScopeLists
+ import app.fireplayer.playback.LiveSession
+ import app.fireplayer.playback.PlayerHost
+ import app.fireplayer.shell.Tokens
+@@ -156,7 +157,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     private val logos = LogoCache(t.dp(76)) { url, loaded ->
+         if (loaded) {
+             guide.invalidate()
+-            refreshControls()
++            // The controls show one logo, the playing channel's: only that one landing concerns them (each of the
++            // guide's rows' logos used to work the controls' channel and programme out again).
++            if (url == controlsLogo) refreshControls()
+         }
+         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
+         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
+@@ -448,7 +451,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+             override fun onPick(channel: Channel, cell: Cell?) = pick(channel)
+             override fun onHold(channel: Channel) = openChannelPopup(channel)
+             override fun onLeaveLeft() = openSidebar(focus = true)
+-            override fun needProgrammes(channels: List<Channel>, from: Long, to: Long) = loadProgrammes(channels, from, to)
++            override fun needProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) = loadProgrammes(channels, onScreen, from, to)
+             override fun logo(url: String): Logo? = logos.get(url)
+         }
+         guide.setOnFocusChangeListener { _, has -> if (has) closeSidebar() }
+@@ -537,6 +540,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
+ 
+     /** When the tab last started showing (uptime ms), until its guide is listed: for the log of how long that took. */
+     private var openedAt = 0L
++    /** The same for its stages, each logged once per opening: the playlists and groups, and the first listings. */
++    private var openGroupsAt = 0L
++    private var openProgrammesAt = 0L
+     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
+     private var keyAt = 0L
+ 
+@@ -551,16 +557,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         // A channel that was playing comes back in the miniature (not full screen).
+         openedAt = android.os.SystemClock.uptimeMillis()
+         startedAt = openedAt
+-        if (!player.onScreenStarted() && player.currentKey == null) {
+-            prefs.lastChannel?.let { key ->
+-                // Built now, while the channel is read, rather than when it arrives.
+-                player.warm()
+-                resumeLast(key)
+-            }
+-        }
++        openGroupsAt = openedAt
++        openProgrammesAt = openedAt
++        val resume = if (!player.onScreenStarted() && player.currentKey == null) prefs.lastChannel else null
++        // Built now, while the channel is read, rather than when it arrives.
++        if (resume != null) player.warm()
+         // The rail and column as they were (the rail shows with the column, or while there's nothing else).
+         layoutFor(columnOpen = sidebarOpen || playlists.isEmpty(), animate = false)
++        // The playlists and groups are asked for first and the last channel right behind them (two reads by key), so
++        // the guide's own list is read before the playing channel's group is (what Channel ▲ / ▼ move through): what
++        // is on screen first. Asked for the other way round, a long group list held up the guide's.
+         reload(keepFocus = true)
++        resume?.let { resumeLast(it) }
+         scheduleIdle()
+         main.post(clockTick)
+         // A sleep timer that waited while the page was away carries on.
+@@ -600,6 +608,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         if (started) return
+         guide.forgetProgrammes()
+         logos.clear()
++        // The lists kept beside the one the guide shows (they are read again when asked for).
++        lists.clear()
+     }
+ 
+     fun release() {
+@@ -608,6 +618,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         released = true
+         ++reloadSerial
+         ++loadSerial
++        listCancel?.cancel()
++        listCancel = null
+         io.shutdown()
+         // Queued favorites are still stored (the queue is the app's, not this page's).
+     }
+@@ -641,15 +653,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     private fun reload(keepFocus: Boolean) {
+         val serial = ++reloadSerial
+         bg {
++            val t0 = android.os.SystemClock.uptimeMillis()
+             val pls = db.playlists()
+             val groups = pls.associate { it.id to db.groups(it.id) }
+             // A guide counts as loading until its first import was attempted (worked or not).
+             val withGuide = db.epgStatuses().map { it.source }.toSet()
++            val readMs = android.os.SystemClock.uptimeMillis() - t0
+             main.post {
+                 if (serial != reloadSerial || released) return@post
+                 playlists = pls
+-                // The playlists changed (or the tab came back): the playing group's order is read again.
+-                invalidateZap()
+                 // A first guide import can take minutes on a big provider: until it lands, empty rows say so.
+                 guide.loadingPlaylists = if (sync.busy) pls.map { it.id }.filter { it !in withGuide }.toSet() else emptySet()
+                 val first = !loaded
+@@ -659,8 +671,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
+                     if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
+                     sidebar.setData(pls, groups, scope)
+                     groupNames = groups.values.flatten().associate { (it.playlistId to it.id) to it.name }
++                    if (openGroupsAt != 0L) {
++                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) ${android.os.SystemClock.uptimeMillis() - openGroupsAt} ms after opening (read $readMs ms)")
++                        openGroupsAt = 0L
++                    }
+                     loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
+                 }
++                // The playlists changed (or the tab came back): the playing group's order is read again, behind the
++                // guide's own list (what's on screen comes first), and only when something was written since.
++                invalidateZap()
+                 // The first load: focus wasn't placed yet (the page had nothing to focus).
+                 if (focusPending || (first && !fullScreen && root.isShown && activity.currentFocus.let { it == null || !isInPage(it) && !host.railHasFocus() })) takeFocus()
+             }
+@@ -674,39 +693,142 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         is GuideScope.Group -> groups[s.playlistId].orEmpty().any { it.id == s.groupId }
+     }
+ 
+-    /** The scope whose channels the guide shows, and the one being loaded (null when none is on its way). */
++    /**
++     * The scope whose channels the guide shows (null while it shows none whole: nothing yet, or only a long list's
++     * first screenful, [firstScreenOf]), and the one being loaded (null when none is on its way).
++     */
+     private var shownScope: GuideScope? = null
+     private var loadingScope: GuideScope? = null
+     /** OK/Right came while [loadingScope]'s list was loading: the grid is entered when it arrives. */
+     private var pendingEnter = false
++    /** [LiveDb.listChanges] as it stood when the list the guide shows was read: unchanged, that list still holds. */
++    private var shownLists = -1
++    /** The long list whose first screenful the guide shows while the whole of it is read (else null). */
++    private var firstScreenOf: GuideScope? = null
++    /** The lists read lately, kept while nothing is written ([ScopeLists]). */
++    private val lists = ScopeLists<GuideScope, Channel>()
++    /** Stops the guide's list being read now, when another is asked for (null: none is). Main thread. */
++    private var listCancel: android.os.CancellationSignal? = null
++    /** The counts of list and guide writes the guide's loaded listings go with: either moves, they're forgotten. */
++    private var rowsLists = -1
++    private var rowsEpg = -1
++
++    /**
++     * [s]'s channels, on the background thread: as kept from an earlier read when nothing was written since, else
++     * read now (and kept), with the count of list writes they go with. Every playlist's are its playlists' lists one
++     * after another, so those are shared with each playlist's own All channels.
++     */
++    private fun listFor(s: GuideScope, cancel: android.os.CancellationSignal? = null): Pair<List<Channel>, Int> {
++        val version = db.listChanges.get()
++        lists.get(s, version)?.let { return it to version }
++        val list = if (s == GuideScope.AllPlaylists) db.playlists().flatMap { listFor(GuideScope.AllChannels(it.id), cancel).first }
++            else db.channels(s, cancel)
++        lists.put(s, version, list)
++        return list to version
++    }
+ 
++    /**
++     * Shows [scope]'s channels. Nothing written since they were last read: the list shown, or one kept from a moment
++     * ago, is shown as it is (no read). Otherwise it's read behind the screen; a list still being read for an earlier
++     * ask is given up first, and of a long list new to the guide the first screenful shows while the rest is read.
++     */
+     private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
+         val s = scope
+         val serial = ++loadSerial
+         if (loadingScope != s) pendingEnter = false
++        listCancel?.cancel()
++        listCancel = null
++        val version = db.listChanges.get()
++        val kept = if (shownScope == s && shownLists == version) guide.channelList() else lists.get(s, version)
++        if (kept != null) {
++            showChannels(s, kept, version, focus, enterGrid)
++            logListed(kept.size, "kept in memory")
++            return
++        }
+         loadingScope = s
++        val cancel = android.os.CancellationSignal()
++        listCancel = cancel
++        // The channel the list will open on, as showChannels picks it.
++        val wanted = focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus
++        // A long list the guide doesn't show yet, with the viewer still in the column (or on the rail).
++        val firstScreen = (s == GuideScope.AllPlaylists || s is GuideScope.AllChannels) && shownScope != s && firstScreenOf != s && !guide.isFocused
+         bg {
+-            val list = db.channels(s)
+-            main.post {
+-                if (serial != loadSerial || released) return@post
+-                showChannels(s, list, focus, enterGrid)
+-                if (openedAt != 0L) {
+-                    Log.i(TAG, "Live TV: guide listed (${list.size} channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening")
+-                    openedAt = 0L
++            try {
++                val t0 = android.os.SystemClock.uptimeMillis()
++                if (firstScreen) {
++                    val part = db.channelsNear(s, wanted, FIRST_BEFORE, FIRST_AFTER)
++                    val partMs = android.os.SystemClock.uptimeMillis() - t0
++                    main.post { if (serial == loadSerial && !released && part.isNotEmpty()) showFirstScreen(s, part, wanted, partMs) }
+                 }
++                val t1 = android.os.SystemClock.uptimeMillis()
++                val (list, read) = listFor(s, cancel)
++                val readMs = android.os.SystemClock.uptimeMillis() - t1
++                main.post {
++                    if (serial != loadSerial || released) return@post
++                    listCancel = null
++                    showChannels(s, list, read, focus, enterGrid)
++                    logListed(list.size, "read $readMs ms")
++                }
++            } catch (e: android.os.OperationCanceledException) {
++                // Another list was asked for meanwhile: that one is on its way.
+             }
+         }
+     }
+ 
+-    /** [s]'s [list] arrived: the guide shows it, focus on [focus] (else the channel playing, else the last focused). */
+-    private fun showChannels(s: GuideScope, list: List<Channel>, focus: ChannelKey?, enterGrid: Boolean) {
++    /** The line for opening the guide, once per opening: how long until its list showed, and how it came. */
++    private fun logListed(channels: Int, how: String) {
++        if (openedAt == 0L) return
++        Log.i(TAG, "Live TV: guide listed ($channels channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening ($how)")
++        openedAt = 0L
++    }
++
++    /** Listings loaded before the lists or the guide were last written are forgotten; otherwise they stay as loaded. */
++    private fun forgetStaleRows() {
++        val nowLists = db.listChanges.get()
++        val nowEpg = db.epgChanges.get()
++        if (rowsLists == nowLists && rowsEpg == nowEpg) return
++        rowsLists = nowLists
++        rowsEpg = nowEpg
++        guide.forgetProgrammes()
++    }
++
++    /**
++     * The first screenful of [s] (a long list still being read): [part], around [focus]. The guide shows it at once;
++     * until the whole list arrives ([showChannels]) it counts as no scope's list: the grid isn't entered, and nothing
++     * takes these few rows for the list (Channel ▲ / ▼, the playing channel's group).
++     */
++    private fun showFirstScreen(s: GuideScope, part: List<Channel>, focus: ChannelKey?, readMs: Long) {
++        shownScope = null
++        firstScreenOf = s
++        forgetStaleRows()
++        guide.showFirstScreen(part, focus)
++        if (openedAt != 0L) {
++            Log.i(TAG, "Live TV: first channels shown (${part.size}) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening (read $readMs ms)")
++        }
++    }
++
++    /**
++     * [s]'s [list] arrived (read at [version] list writes): the guide shows it, focus on [focus] (else the channel
++     * playing, else the last focused). Over its own first screenful, the rows on screen stay where they are.
++     */
++    private fun showChannels(s: GuideScope, list: List<Channel>, version: Int, focus: ChannelKey?, enterGrid: Boolean) {
+         val reload = shownScope == s
++        val extend = firstScreenOf == s
+         shownScope = s
++        shownLists = version
+         loadingScope = null
++        firstScreenOf = null
+         // The playing group's own list, just read: kept for Channel ▲ / ▼ (no read of its own).
+-        if (s == zapScope && list.any { it.key.toString() == player.currentKey }) { zapList = list; zapReading = null }
+-        guide.clearProgrammes()
+-        guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
++        if (s == zapScope && ChannelKey.parse(player.currentKey)?.let { list.holds(it) } == true) {
++            zapList = list
++            zapLists = version
++            zapReading = null
++        }
++        // Listings read before an update are read again; the others stay (a channel in two lists keeps its row), and
++        // the list itself asks for what it's missing.
++        forgetStaleRows()
++        if (extend) guide.extendChannels(list)
++        else guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
+         if (list.isEmpty()) {
+             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
+                 if (sync.busy) "Updating the playlist…" else "No channels here.")
+@@ -715,13 +837,43 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         pendingEnter = false
+     }
+ 
+-    private fun loadProgrammes(channels: List<Channel>, from: Long, to: Long) {
++    /** The listings asked for last, until they're read: an older ask still waiting then has nothing left to do. */
++    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int, val from: Long, val to: Long)
++    @Volatile private var programmeAsk: ProgrammeAsk? = null
++
++    /**
++     * The guide wants listings for [channels] ([GuideView.Callbacks.needProgrammes]): the rows on screen are read and
++     * shown first, the rows around them after. A held Up or Down asks again at every row; only the newest ask is
++     * read (it covers what shows now), and one overtaken half-way stops after the rows on screen.
++     */
++    private fun loadProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) {
++        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size), from, to)
++        programmeAsk = ask
+         bg {
+-            val map = db.programmes(channels, from, to)
+-            main.post { if (!released) guide.putProgrammes(channels, map, from, to) }
++            if (programmeAsk !== ask) return@bg
++            val t0 = android.os.SystemClock.uptimeMillis()
++            // With none on screen (those are loaded), the rows around are the whole of it.
++            val first = if (ask.onScreen > 0) ask.channels.subList(0, ask.onScreen) else ask.channels
++            val map = db.programmes(first, from, to)
++            val readMs = android.os.SystemClock.uptimeMillis() - t0
++            main.post {
++                if (released) return@post
++                guide.putProgrammes(first, map, from, to)
++                if (openProgrammesAt != 0L) {
++                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) ${android.os.SystemClock.uptimeMillis() - openProgrammesAt} ms after opening (read $readMs ms)")
++                    openProgrammesAt = 0L
++                }
++            }
++            if (first.size == ask.channels.size || programmeAsk !== ask) return@bg
++            val rest = ask.channels.subList(ask.onScreen, ask.channels.size)
++            val more = db.programmes(rest, from, to)
++            main.post { if (!released) guide.putProgrammes(rest, more, from, to) }
+         }
+     }
+ 
++    /** Whether this list holds [key]'s channel (nothing is made to look). */
++    private fun List<Channel>.holds(key: ChannelKey): Boolean = any { it.id == key.channelId && it.playlistId == key.playlistId }
++
+     private fun isInPage(v: View): Boolean {
+         var p: View? = v
+         while (p != null) { if (p === root) return true; p = p.parent as? View }
+@@ -740,6 +892,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+             guideLayer.animate().cancel()
+             guideLayer.alpha = 1f
+             guide.setChannels(emptyList(), null)
++            shownScope = null
++            firstScreenOf = null
+         }
+         // The tab rail stays reachable while there's nothing else to go to.
+         if (noPlaylists) { sidebarOpen = true; layoutFor(columnOpen = true, animate = false) }
+@@ -1069,7 +1223,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+      */
+     private fun focusPlaying(): Boolean {
+         val key = ChannelKey.parse(player.currentKey) ?: return false
+-        if (guide.channelList().any { it.key == key }) { guide.focusChannel(key); return true }
++        if (guide.channelOf(key) != null) { guide.focusChannel(key); return true }
+         val known = playingChannel?.takeIf { it.key == key }
+         // The groups the column lists (a hidden group isn't one to show).
+         val shown = groupNames.keys
+@@ -1081,16 +1235,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
+             val ch = known ?: db.channel(key) ?: return@bg
+             val group = ch.groupId?.takeIf { (ch.playlistId to it) in shown }?.let { GuideScope.Group(ch.playlistId, it) }
+             for (s in listOfNotNull(zapIn, group, GuideScope.AllChannels(ch.playlistId)).distinct()) {
+-                val list = db.channels(s)
+-                if (list.none { it.key == key }) continue
++                val (list, read) = listFor(s)
++                if (!list.holds(key)) continue
+                 main.post {
+                     if (serial != loadSerial || released || fullScreen || player.currentKey != key.toString()) return@post
+-                    // Any list still on its way is older than this: it's dropped.
++                    // Any list still on its way is older than this: it's dropped (and no longer read).
+                     ++loadSerial
++                    listCancel?.cancel()
++                    listCancel = null
+                     scope = s
+                     prefs.scope = s
+                     sidebar.select(s)
+-                    showChannels(s, list, key, enterGrid = false)
++                    showChannels(s, list, read, key, enterGrid = false)
+                     guide.focusChannel(key)
+                 }
+                 return@bg
+@@ -1104,7 +1260,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         val pending = zapPending
+         val key = pending?.key ?: ChannelKey.parse(player.currentKey) ?: return
+         // The guide's copy first (fresh favorite state), else the channel as tuned: it may be outside this scope.
+-        val ch = pending ?: guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key }
++        val ch = pending ?: guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key }
+         if (ch == null) {
+             bg {
+                 val found = db.channel(key) ?: return@bg
+@@ -1125,9 +1281,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         val cur = progs.firstOrNull { it.isOn(now) }
+         val nxt = progs.firstOrNull { it.start >= (cur?.stop ?: now) }
+         val plName = playlists.firstOrNull { it.id == ch.playlistId }?.name ?: ""
++        controlsLogo = ch.logo
+         controls.setChannel(ch, cur, nxt, plName, ch.logo?.let { logos.get(it) }, now)
+     }
+ 
++    /** The logo the controls were last given (or are waiting for). */
++    private var controlsLogo: String? = null
+     private var controlsProgrammesFor: ChannelKey? = null
+     private var controlsProgrammes: List<Programme> = emptyList()
+ 
+@@ -1149,6 +1308,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     private var zapScope: GuideScope? = null
+     /** [zapScope]'s channels, read once and kept until the group or a playlist changes; null until read. */
+     private var zapList: List<Channel>? = null
++    /** [LiveDb.listChanges] as it stood when [zapList] was read. */
++    private var zapLists = -1
+     /** The channel whose group is being read now (else null), and how far presses meanwhile asked to go. */
+     private var zapReading: ChannelKey? = null
+     private var zapQueued = 0
+@@ -1162,11 +1323,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         val list = zapList
+         when {
+             // Picked in the guide's list: that list is the group, already read.
+-            from != null && from == shownScope && guide.channelList().any { it.key == channel.key } -> {
+-                zapScope = from; zapList = guide.channelList(); zapReading = null; zapQueued = 0; ++zapSerial
++            from != null && from == shownScope && guide.channelOf(channel.key) != null -> {
++                zapScope = from; zapList = guide.channelList(); zapLists = shownLists; zapReading = null; zapQueued = 0; ++zapSerial
+             }
+             // Moving within the group already read.
+-            from != null && from == zapScope && list != null && list.any { it.key == channel.key } -> Unit
++            from != null && from == zapScope && list != null && list.holds(channel.key) -> Unit
+             else -> { zapScope = null; zapList = null; resolveZap(channel, from) }
+         }
+         zapScope?.let { prefs.setZapGroupOf(channel.key, it) }
+@@ -1175,6 +1336,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     /** The group's list may have changed (a playlist read again, a favorite, a group hidden): it is read again. */
+     private fun invalidateZap() {
+         val ch = playingChannel?.takeIf { it.key.toString() == player.currentKey } ?: return
++        // Nothing was written since it was read: it stands.
++        if (zapList != null && zapLists == db.listChanges.get()) return
+         zapList = null
+         resolveZap(ch, zapScope)
+     }
+@@ -1187,13 +1350,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         val key = channel.key
+         bg {
+             for (s in ZapOrder.candidates(from, last, key.playlistId, channel.groupId)) {
+-                val list = runCatching { db.channels(s) }.getOrNull() ?: continue
+-                if (list.none { it.key == key }) continue
++                // The guide's own copy when it has just read the same list.
++                val (list, read) = runCatching { listFor(s) }.getOrNull() ?: continue
++                if (!list.holds(key)) continue
+                 main.post {
+                     if (serial != zapSerial || released) return@post
+                     zapReading = null
+                     zapScope = s
+                     zapList = list
++                    zapLists = read
+                     prefs.setZapGroupOf(key, s)
+                     // Presses that came while it was read now act, from the channel playing.
+                     val q = zapQueued
+@@ -1214,7 +1379,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+      */
+     private fun zap(delta: Int, held: Boolean = false) {
+         val playing = player.currentKey != null
+-        val list = if (playing) zapList else guide.channelList()
++        // Nothing playing: the guide's list, once it's whole (a long list's first screenful isn't the list).
++        val list = if (playing) zapList else guide.channelList().takeIf { firstScreenOf == null }
+         if (list == null) {
+             // The group is still being read (just after a channel or playlist change): the press waits for it.
+             if (zapReading != null) zapQueued += delta
+@@ -1391,7 +1557,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+      */
+     private fun toggleFavorite(target: Channel? = null, notice: Boolean = true): Boolean? {
+         val key = target?.key ?: ChannelKey.parse(player.currentKey) ?: return null
+-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: target ?: return null
++        val ch = guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key } ?: target ?: return null
+         val fav = !ch.favorite
+         // Shown at once (the star fills, the guide row and the details follow); stored behind it. The database can be
+         // busy for a while with a guide update, which must not hold up the button. Only that row changes in the guide.
+@@ -1417,7 +1583,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+                     loadChannels(focus = keep, enterGrid = false)
+                 } else {
+                     // Already shown; applied again in case a list arrived in between.
+-                    guide.channelList().firstOrNull { it.key == key }?.let { guide.updateChannel(it.copy(favorite = fav)) }
++                    guide.channelOf(key)?.let { guide.updateChannel(it.copy(favorite = fav)) }
+                     playingChannel = playingChannel?.let { if (it.key == key) it.copy(favorite = fav) else it }
+                     refreshControls()
+                 }
+@@ -1573,7 +1739,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     /** The programme on the playing channel now, from the guide (as the controls show it), or null. */
+     private fun programmeNow(): Programme? {
+         val key = ChannelKey.parse(player.currentKey) ?: return null
+-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return null
++        val ch = guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key } ?: return null
+         val now = System.currentTimeMillis()
+         val progs = guide.programmesOf(ch).ifEmpty { controlsProgrammes.takeIf { controlsProgrammesFor == ch.key }.orEmpty() }
+         return progs.firstOrNull { it.isOn(now) }
+@@ -1800,6 +1966,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         private const val ZAP_SETTLE_MS = 250L
+         /** Channel History: the last ten channels watched before the one playing (design-layout.md). */
+         private const val HISTORY_SIZE = 10
++        /**
++         * A long list's first screenful: this many channels before the one it opens on and this many from it on, as
++         * many rows as the guide asks listings for around its eight (two screens above, three below).
++         */
++        private const val FIRST_BEFORE = 16
++        private const val FIRST_AFTER = 24
+         /** Column and rail sliding in and out. */
+         private const val SLIDE_MS = 220L
+         /** The miniature growing to full screen, and shrinking back. */
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/live/ScopeListsTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/live/ScopeListsTest.kt
+new file mode 100644
+index 0000000..7fdd097
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/live/ScopeListsTest.kt
+@@ -0,0 +1,110 @@
++package app.fireplayer.live
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertSame
++import org.junit.Test
++
++/** The guide's lists kept in memory: what is kept, for how long, and what a write does to them. */
++class ScopeListsTest {
++
++    private fun list(n: Int) = List(n) { it }
++
++    @Test fun aListIsKeptForTheCountOfWritesItWasReadAt() {
++        val lists = ScopeLists<String, Int>()
++        val group = list(40)
++        lists.put("group", 7, group)
++        assertSame(group, lists.get("group", 7))
++        // Something was written since (a star, a playlist update): what was read before is no good.
++        assertNull(lists.get("group", 8))
++        // And asked at an older count than it was read at, it isn't that count's list either.
++        assertNull(lists.get("group", 6))
++        assertNull(lists.get("other", 7))
++    }
++
++    @Test fun nothingIsKeptBeforeTheFirstRead() {
++        val lists = ScopeLists<String, Int>()
++        assertNull(lists.get("group", 0))
++        assertEquals(0, lists.size)
++    }
++
++    @Test fun aNewCountDropsEverythingReadAtTheOldOne() {
++        val lists = ScopeLists<String, Int>()
++        lists.put("a", 1, list(10))
++        lists.put("b", 1, list(10))
++        lists.put("all", 1, list(30_000))
++        assertEquals(3, lists.size)
++        val fresh = list(12)
++        lists.put("a", 2, fresh)
++        assertEquals(1, lists.size)
++        assertSame(fresh, lists.get("a", 2))
++        assertNull(lists.get("b", 2))
++        assertNull(lists.get("all", 2))
++        // The old count's lists don't come back with the old count.
++        assertNull(lists.get("b", 1))
++    }
++
++    @Test fun onlyTheLastLongListIsKept() {
++        val lists = ScopeLists<String, Int>(smallMax = 100)
++        val one = list(30_000)
++        val two = list(2_000)
++        lists.put("playlist one", 1, one)
++        assertSame(one, lists.get("playlist one", 1))
++        lists.put("playlist two", 1, two)
++        assertNull(lists.get("playlist one", 1))
++        assertSame(two, lists.get("playlist two", 1))
++        assertEquals(1, lists.size)
++    }
++
++    @Test fun theSmallListsUsedLongestAgoGoFirst() {
++        val lists = ScopeLists<String, Int>(smallMax = 100, smallKept = 3, smallTotal = 1_000)
++        lists.put("a", 1, list(10))
++        lists.put("b", 1, list(10))
++        lists.put("c", 1, list(10))
++        // "a" is looked at again: "b" is now the one used longest ago.
++        lists.get("a", 1)
++        lists.put("d", 1, list(10))
++        assertNull(lists.get("b", 1))
++        assertEquals(10, lists.get("a", 1)?.size)
++        assertEquals(10, lists.get("c", 1)?.size)
++        assertEquals(10, lists.get("d", 1)?.size)
++    }
++
++    @Test fun theSmallListsStayWithinTheirTotal() {
++        val lists = ScopeLists<String, Int>(smallMax = 100, smallKept = 8, smallTotal = 250)
++        lists.put("a", 1, list(100))
++        lists.put("b", 1, list(100))
++        lists.put("c", 1, list(100))
++        // 300 channels between them is over 250: the oldest goes.
++        assertNull(lists.get("a", 1))
++        assertEquals(2, lists.size)
++        // One list over the total by itself is still kept (the one just read is never dropped).
++        val alone = ScopeLists<String, Int>(smallMax = 100, smallKept = 8, smallTotal = 50)
++        alone.put("a", 1, list(80))
++        assertEquals(80, alone.get("a", 1)?.size)
++    }
++
++    @Test fun aListReadAgainReplacesItsOldCopyWhateverItsSize() {
++        val lists = ScopeLists<String, Int>(smallMax = 100)
++        lists.put("group", 1, list(500))
++        // The same key, now short (channels were hidden): it isn't kept twice.
++        val short = list(20)
++        lists.put("group", 1, short)
++        assertSame(short, lists.get("group", 1))
++        assertEquals(1, lists.size)
++        val long = list(700)
++        lists.put("group", 1, long)
++        assertSame(long, lists.get("group", 1))
++        assertEquals(1, lists.size)
++    }
++
++    @Test fun clearLetsGoOfEverything() {
++        val lists = ScopeLists<String, Int>()
++        lists.put("a", 3, list(10))
++        lists.put("all", 3, list(30_000))
++        lists.clear()
++        assertEquals(0, lists.size)
++        assertNull(lists.get("a", 3))
++        assertNull(lists.get("all", 3))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/GuideFirstScreenTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/GuideFirstScreenTest.kt
+new file mode 100644
+index 0000000..4878922
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/GuideFirstScreenTest.kt
+@@ -0,0 +1,63 @@
++package app.fireplayer.live.ui
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/**
++ * A long list's first screenful, shown while the whole list is read: when the rest arrives nothing moves on screen,
++ * and until then focus doesn't go round the few rows' ends.
++ */
++class GuideFirstScreenTest {
++
++    @Test fun theFocusedRowStaysOnItsRowOfTheScreenWhenTheWholeListArrives() {
++        // The first screenful: 16 rows before the focused channel, which shows on the screen's third row (top 14).
++        // In the whole list that channel is row 12,345: the first row shown becomes 12,343.
++        val top = GuideCells.topKeeping(oldTop = 14, oldFocus = 16, newFocus = 12_345, visible = 8, count = 30_000)
++        assertEquals(12_343, top)
++        // The same distance from the top of the screen as before.
++        assertEquals(16 - 14, 12_345 - top)
++    }
++
++    @Test fun aListThatIsItsOwnFirstScreenfulKeepsItsPlace() {
++        // Nothing before the first rows, and the whole list holds the same rows: nothing changes.
++        assertEquals(0, GuideCells.topKeeping(oldTop = 0, oldFocus = 0, newFocus = 0, visible = 8, count = 24))
++        assertEquals(5, GuideCells.topKeeping(oldTop = 5, oldFocus = 9, newFocus = 9, visible = 8, count = 40))
++    }
++
++    @Test fun theRowsNeverScrollPastEitherEndOfTheWholeList() {
++        // The focused channel turned out to be near the list's end: the last screenful shows, focus within it.
++        assertEquals(92, GuideCells.topKeeping(oldTop = 16, oldFocus = 16, newFocus = 98, visible = 8, count = 100))
++        // Fewer channels than rows on screen: from the first row.
++        assertEquals(0, GuideCells.topKeeping(oldTop = 2, oldFocus = 3, newFocus = 3, visible = 8, count = 5))
++        // Rows above the part's focus that the whole list doesn't have before it.
++        assertEquals(0, GuideCells.topKeeping(oldTop = 10, oldFocus = 16, newFocus = 2, visible = 8, count = 500))
++        assertEquals(0, GuideCells.topKeeping(oldTop = 0, oldFocus = 0, newFocus = 0, visible = 8, count = 0))
++    }
++
++    @Test fun theFocusedRowIsAlwaysOnScreenAfterwards() {
++        for (count in listOf(1, 5, 8, 9, 40, 1_000)) {
++            for (newFocus in listOf(0, count / 2, count - 1)) {
++                for (offset in 0 until 8) {
++                    // The part showed its focus on screen: [offset] rows down from the first row shown.
++                    val top = GuideCells.topKeeping(oldTop = 16 - offset, oldFocus = 16, newFocus = newFocus, visible = 8, count = count)
++                    assertTrue("count $count focus $newFocus offset $offset top $top", newFocus in top until top + 8)
++                    assertTrue(top >= 0 && top <= (count - 8).coerceAtLeast(0))
++                }
++            }
++        }
++    }
++
++    @Test fun goingRoundIsToldFromAStepToTheRowBeside() {
++        // Down from the last of 40 rows lands on the first; Up from the first on the last.
++        assertTrue(GuideCells.wentRound(from = 39, to = 0, down = true))
++        assertTrue(GuideCells.wentRound(from = 0, to = 39, down = false))
++        // A plain step isn't.
++        assertFalse(GuideCells.wentRound(from = 3, to = 4, down = true))
++        assertFalse(GuideCells.wentRound(from = 4, to = 3, down = false))
++        // Staying put (a one-row list) isn't either.
++        assertFalse(GuideCells.wentRound(from = 0, to = 0, down = true))
++        assertFalse(GuideCells.wentRound(from = 0, to = 0, down = false))
++    }
++}
+-- 
+2.43.0
+
+
+From b17b304c2cb35be564e811d301523e99ce3d055e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:48:11 +0000
+Subject: [PATCH 2/4] Live TV: logos kept on disk, a pause the player makes
+ itself is shown, the controls set only on news
+
+- Channel logos were downloaded again every time they left the 6 MB memory cache (each scroll
+  back, each start of the app). A fetched logo is now kept on disk as decoded (cache folder,
+  24 MB, two weeks before its server is asked again, the old copy standing in if it doesn't
+  answer); the disk is read on its own thread so a slow logo server doesn't hold those up.
+  FirePlayerLive "logos shown (n kept on disk, n fetched, n without one)" after opening.
+- The player pauses itself when the sound's output goes away (TV or sound bar switched off or
+  over, headphones gone). Only a loss of audio focus was shown as a pause: this one left a
+  still picture that said it was playing, and a first Play/Pause press that did nothing.
+- The full-screen controls' pods were set again (and the screen laid out again) with every
+  word from the player; now only when the status, the pods shown or the playlist changed.
+- The channel timing line also says when the tracks were known and how long the picture's
+  decoder took to start, so a slow channel change can be read on the TV.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../app/fireplayer/live/ui/LiveControls.kt    |  12 ++
+ .../java/app/fireplayer/live/ui/LivePage.kt   |  25 +++-
+ .../java/app/fireplayer/live/ui/LogoCache.kt  | 137 ++++++++++++++++--
+ .../java/app/fireplayer/playback/LivePause.kt |  17 +++
+ .../app/fireplayer/playback/LiveTiming.kt     |  20 ++-
+ .../app/fireplayer/playback/PlayerHost.kt     |  12 +-
+ .../app/fireplayer/live/ui/LogoStoreTest.kt   |  65 +++++++++
+ .../app/fireplayer/playback/LivePauseTest.kt  |  26 ++++
+ .../app/fireplayer/playback/LiveTimingTest.kt |  44 ++++++
+ 9 files changed, 342 insertions(+), 16 deletions(-)
+ create mode 100644 firestick-player-main/app/src/main/java/app/fireplayer/playback/LivePause.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LogoStoreTest.kt
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/playback/LivePauseTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveControls.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveControls.kt
+index 3d66c50..32f819f 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveControls.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveControls.kt
+@@ -267,10 +267,22 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
+         return true
+     }
+ 
++    /** What [setStatus] last showed: the status, the pods turned off and the playlist's name. */
++    private var shownStatus: PlayerHost.Status? = null
++    private var shownHidden: Set<String>? = null
++    private var shownSource: String? = null
++
+     /** Pods as the VOD player writes them, each hidden when turned off in Settings › Look › Info pods. */
+     @OptIn(UnstableApi::class)
+     fun setStatus(s: PlayerHost.Status) {
+         val hidden = prefs.hiddenChips
++        // The player says its status with every bit of its own news (a live window read again every few seconds, a
++        // caption line): the same status, pods and playlist as last time have nothing to set again (each pod's text
++        // set again asked for the whole screen to be laid out again).
++        if (s == shownStatus && hidden == shownHidden && playlistName == shownSource) return
++        shownStatus = s
++        shownHidden = HashSet(hidden)
++        shownSource = playlistName
+         fun pod(chip: TextView, key: String, text: String?) {
+             val shown = text?.takeIf { key !in hidden }
+             chip.text = shown
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+index 77b8504..bfd4796 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+@@ -163,7 +163,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         }
+         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
+         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
+-    }
++        logLogos()
++    }.also { LogoCache.useDisk(ctx) }
+     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
+     /**
+      * The viewer's own changes (favorites, groups) are stored here, not queued behind the guide's reads: the queue the
+@@ -543,6 +544,17 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     /** The same for its stages, each logged once per opening: the playlists and groups, and the first listings. */
+     private var openGroupsAt = 0L
+     private var openProgrammesAt = 0L
++    private var openLogosAt = 0L
++    /** The logo cache's counts (kept on disk, fetched, without one) as they stood when the tab opened. */
++    private val logosAtOpen = IntArray(3)
++
++    /** Once per opening, when the first logos asked for have all landed: how long they took and where they came from. */
++    private fun logLogos() {
++        if (openLogosAt == 0L || logos.pendingCount > 0) return
++        Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
++            "${logos.failedCount - logosAtOpen[2]} without one) ${android.os.SystemClock.uptimeMillis() - openLogosAt} ms after opening")
++        openLogosAt = 0L
++    }
+     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
+     private var keyAt = 0L
+ 
+@@ -559,6 +571,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         startedAt = openedAt
+         openGroupsAt = openedAt
+         openProgrammesAt = openedAt
++        openLogosAt = openedAt
++        logosAtOpen[0] = logos.fromDisk
++        logosAtOpen[1] = logos.fromNetwork
++        logosAtOpen[2] = logos.failedCount
+         val resume = if (!player.onScreenStarted() && player.currentKey == null) prefs.lastChannel else null
+         // Built now, while the channel is read, rather than when it arrives.
+         if (resume != null) player.warm()
+@@ -827,8 +843,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         // Listings read before an update are read again; the others stay (a channel in two lists keeps its row), and
+         // the list itself asks for what it's missing.
+         forgetStaleRows()
+-        if (extend) guide.extendChannels(list)
+-        else guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
++        val target = focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus
++        // Over its own first screenful, opened on the same channel: the whole list comes in under the rows showing.
++        // (Another channel is wanted by now, say one that started playing meanwhile: the list opens on that one.)
++        if (extend && (target == null || target == guide.focusedChannel()?.key)) guide.extendChannels(list)
++        else guide.setChannels(list, target, reload)
+         if (list.isEmpty()) {
+             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
+                 if (sync.busy) "Updating the playlist…" else "No channels here.")
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LogoCache.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LogoCache.kt
+index f92bf48..d4b90a2 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LogoCache.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LogoCache.kt
+@@ -1,20 +1,27 @@
+ package app.fireplayer.live.ui
+ 
++import android.content.Context
+ import android.graphics.Bitmap
+ import android.graphics.BitmapFactory
+ import android.os.Handler
+ import android.os.Looper
+ import android.util.LruCache
++import app.fireplayer.ui.ImageDiskCache
+ import java.io.ByteArrayOutputStream
++import java.io.File
+ import java.net.HttpURLConnection
+ import java.net.URL
+ import java.util.concurrent.Executors
+ 
+ /**
+- * Channel logos for the guide and live controls: fetched and decoded on two background threads, downsampled to the
++ * Channel logos for the guide and live controls: fetched and decoded on background threads, downsampled to the
+  * size they're drawn at, kept in a bounded memory cache (6 MB). Each one's plate ([LogoPlate]) is chosen there too,
+  * once, never while drawing. A logo that fails isn't asked for again this run. [get] never blocks: it returns what's
+  * cached and starts a fetch; [onChange] runs on the main thread when one lands (loaded) or fails.
++ *
++ * A logo once fetched is also kept on disk as it was decoded ([useDisk], [LogoStore]), so the next time it's wanted
++ * (the guide scrolled back, the app opened again) it comes from there in a few milliseconds instead of from its
++ * server: every logo used to be downloaded again each time it left the memory cache.
+  */
+ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: Boolean) -> Unit)? = null) {
+ 
+@@ -25,23 +32,62 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded:
+     private val failed = HashSet<String>()
+     private val main = Handler(Looper.getMainLooper())
+ 
++    /** Logos still on their way. Main thread only. */
++    val pendingCount: Int get() = pending.size
++
++    /** How many logos came from the disk, from their servers, and from nowhere, since this cache was made (for the log). */
++    var fromDisk = 0
++        private set
++    var fromNetwork = 0
++        private set
++    var failedCount = 0
++        private set
++
+     /** Main thread only. */
+     fun get(url: String): Logo? {
+         cache.get(url)?.let { return it }
+         if (url in pending || url in failed) return null
+         if (pending.size > 24) return null // a burst of new rows: the rest wait for the next draw
+         pending += url
+-        pool.execute {
+-            val logo = runCatching { fetch(url) }.getOrNull()
+-            main.post {
+-                pending -= url
+-                if (logo != null) cache.put(url, logo) else failed += url
+-                onChange?.invoke(url, logo != null)
++        val store = disk
++        if (store == null || !url.startsWith("http")) {
++            pool.execute { landed(url, runCatching { fetch(url, null) }.getOrNull(), kept = false) }
++            return null
++        }
++        // The disk first, on its own thread (a server that doesn't answer mustn't hold up the logos already here).
++        diskThread.execute {
++            val key = LogoStore.key(url, targetPx)
++            val bytes = store.read(key)
++            val now = System.currentTimeMillis()
++            val fresh = bytes?.takeIf { LogoStore.isFresh(it, now) }?.let { decodeKept(it) }
++            if (fresh != null) {
++                landed(url, fresh, kept = true)
++                return@execute
++            }
++            pool.execute {
++                val fetched = runCatching { fetch(url) { png -> store.write(key, LogoStore.pack(System.currentTimeMillis(), png)) } }.getOrNull()
++                // Its server didn't give it this time: the copy kept, however old, rather than nothing.
++                val old = if (fetched == null && bytes != null) decodeKept(bytes) else null
++                landed(url, fetched ?: old, kept = fetched == null && old != null)
+             }
+         }
+         return null
+     }
+ 
++    private fun landed(url: String, logo: Logo?, kept: Boolean) {
++        main.post {
++            pending -= url
++            if (logo != null) {
++                cache.put(url, logo)
++                if (kept) fromDisk++ else fromNetwork++
++            } else {
++                failed += url
++                failedCount++
++            }
++            onChange?.invoke(url, logo != null)
++        }
++    }
++
+     /** True when [url] gives no logo (it failed this run, or isn't a web address). Main thread only. */
+     fun missing(url: String): Boolean = url in failed || !url.startsWith("http")
+ 
+@@ -50,7 +96,15 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded:
+         failed.clear()
+     }
+ 
+-    private fun fetch(url: String): Logo? {
++    /** A logo as kept on disk ([LogoStore]): already at the size it's drawn at, so only decoded. */
++    private fun decodeKept(bytes: ByteArray): Logo? {
++        val at = LogoStore.pictureAt(bytes) ?: return null
++        val bmp = runCatching { BitmapFactory.decodeByteArray(bytes, at, bytes.size - at) }.getOrNull() ?: return null
++        return logoOf(bmp)
++    }
++
++    /** [keep], when given, is handed the logo as decoded (a PNG), to keep on disk. */
++    private fun fetch(url: String, keep: ((ByteArray) -> Unit)? = null): Logo? {
+         if (!url.startsWith("http")) return null
+         val conn = URL(url).openConnection() as HttpURLConnection
+         conn.connectTimeout = 6_000
+@@ -82,6 +136,13 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded:
+             var sample = 1
+             while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx / 2) sample *= 2
+             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
++            if (keep != null) {
++                // Kept as decoded (lossless), not as downloaded: small on disk, and quick to show again.
++                runCatching {
++                    val png = ByteArrayOutputStream(16 * 1024)
++                    if (bmp.compress(Bitmap.CompressFormat.PNG, 100, png)) keep(png.toByteArray())
++                }
++            }
+             return logoOf(bmp)
+         } finally {
+             conn.disconnect()
+@@ -105,8 +166,62 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded:
+         return Logo(bmp, LogoPlate.light(px, n), LogoPlate.light(px, n, LogoPlate.DARK_INK_GLASS))
+     }
+ 
+-    private companion object {
+-        const val MAX_BYTES = 2 * 1024 * 1024
+-        val pool = Executors.newFixedThreadPool(2) { r -> Thread(r, "FirePlayerLogos").apply { priority = Thread.MIN_PRIORITY } }
++    companion object {
++        private const val MAX_BYTES = 2 * 1024 * 1024
++        /** Logos on disk: a decoded logo is a few KB, so this is every logo of a big playlist's most used groups. */
++        private const val DISK_BYTES = 24L shl 20
++        private val pool = Executors.newFixedThreadPool(2) { r -> Thread(r, "FirePlayerLogos").apply { priority = Thread.MIN_PRIORITY } }
++        private val diskThread = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerLogoDisk").apply { priority = Thread.MIN_PRIORITY } }
++
++        @Volatile private var disk: ImageDiskCache? = null
++
++        /**
++         * Logos are kept on disk from now on, in the app's cache folder (Fire OS may empty it; they are fetched again
++         * then). For every logo cache of the app; safe to call again.
++         */
++        fun useDisk(context: Context) {
++            if (disk != null) return
++            synchronized(this) {
++                if (disk == null) disk = ImageDiskCache(File(context.applicationContext.cacheDir, "logos"), DISK_BYTES)
++            }
++        }
++    }
++}
++
++/**
++ * How a logo is kept on disk (pure, unit-tested): the time it was fetched, then the picture as decoded (a PNG). Kept
++ * per address and size drawn; after [MAX_AGE_MS] it's fetched again (a provider may put a new logo at the same
++ * address), the old copy standing in if its server doesn't answer.
++ */
++object LogoStore {
++    const val MAX_AGE_MS = 14L * 24 * 60 * 60 * 1000
++    private const val HEAD = 8
++
++    /** What a logo is kept under: its address and the size it's decoded for (the guide's rows and a search row differ). */
++    fun key(url: String, targetPx: Int): String = "$targetPx|$url"
++
++    /** [picture] with the time it was fetched in front. */
++    fun pack(fetchedAt: Long, picture: ByteArray): ByteArray {
++        val out = ByteArray(HEAD + picture.size)
++        for (i in 0 until HEAD) out[i] = (fetchedAt ushr (8 * (HEAD - 1 - i))).toByte()
++        System.arraycopy(picture, 0, out, HEAD, picture.size)
++        return out
++    }
++
++    /** When [kept] was fetched; null when it isn't a kept logo (too short to hold a picture). */
++    fun fetchedAt(kept: ByteArray): Long? {
++        if (kept.size <= HEAD) return null
++        var t = 0L
++        for (i in 0 until HEAD) t = (t shl 8) or (kept[i].toLong() and 0xFF)
++        return t
++    }
++
++    /** Where the picture starts in [kept]; null when there's none. */
++    fun pictureAt(kept: ByteArray): Int? = if (kept.size > HEAD) HEAD else null
++
++    /** Whether [kept] is still to be shown without asking its server: fetched within [MAX_AGE_MS] (and not in the future). */
++    fun isFresh(kept: ByteArray, now: Long): Boolean {
++        val at = fetchedAt(kept) ?: return false
++        return at <= now && now - at < MAX_AGE_MS
+     }
+ }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/playback/LivePause.kt b/firestick-player-main/app/src/main/java/app/fireplayer/playback/LivePause.kt
+new file mode 100644
+index 0000000..97c3689
+--- /dev/null
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/playback/LivePause.kt
+@@ -0,0 +1,17 @@
++package app.fireplayer.playback
++
++import androidx.media3.common.Player
++
++/**
++ * The pauses a live channel makes by itself, which the screen shows as a pause (Play to carry on, Go live offered):
++ * another app took the sound for good (its film or music started), or the sound's way out went away (the TV or sound
++ * bar switched off or over to another input, headphones disconnected). The player stops playing in both cases; a
++ * pause that showed nowhere left a still picture that said it was playing. A pause the viewer made, and the player's
++ * own waits (buffering, a moment's loss of the sound), aren't these. Pure: Media3's reason numbers only.
++ */
++object LivePause {
++    /** Whether a change of play-when-ready for [reason] (Player.PLAY_WHEN_READY_CHANGE_REASON_*) is the channel pausing itself. */
++    fun byItself(reason: Int): Boolean =
++        reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS ||
++            reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY
++}
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/playback/LiveTiming.kt b/firestick-player-main/app/src/main/java/app/fireplayer/playback/LiveTiming.kt
+index 94a8d5b..08ec9ca 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/playback/LiveTiming.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/playback/LiveTiming.kt
+@@ -3,12 +3,16 @@ package app.fireplayer.playback
+ /**
+  * How long a channel takes to show, for the log (never a link or a name: only times and the kind of stream):
+  * from the key press to the stream being asked for, to the player having enough to start, and to the first frame.
++ * Where the time between went shows too, when it's known: when the stream's tracks were known (its server had
++ * answered and the first of it was read) and how long the picture's decoder took to start.
+  * Pure: times are passed in (uptime ms).
+  */
+ class LiveTiming {
+     private var pressedAt = NONE
+     private var openedAt = NONE
+     private var readyAt = NONE
++    private var tracksAt = NONE
++    private var decoderMs = NONE
+     private var kind = ""
+     private var reused = false
+ 
+@@ -17,6 +21,8 @@ class LiveTiming {
+         openedAt = now
+         pressedAt = if (pressed in 1..now) pressed else now
+         readyAt = NONE
++        tracksAt = NONE
++        decoderMs = NONE
+         this.kind = kind
+         reused = reusedPlayer
+     }
+@@ -26,6 +32,16 @@ class LiveTiming {
+         if (openedAt != NONE && readyAt == NONE) readyAt = now
+     }
+ 
++    /** The stream's tracks are known (the first time counts): its server answered and the first of it was read. */
++    fun tracks(now: Long) {
++        if (openedAt != NONE && tracksAt == NONE) tracksAt = now
++    }
++
++    /** The picture's decoder started, taking [ms] (the stream's first one counts). */
++    fun decoder(ms: Long) {
++        if (openedAt != NONE && decoderMs == NONE && ms >= 0) decoderMs = ms
++    }
++
+     /** The first frame is on screen: the line to log, once per opened stream (null after that). */
+     fun firstFrame(now: Long): String? {
+         if (openedAt == NONE) return null
+@@ -33,7 +49,9 @@ class LiveTiming {
+         val toOpen = openedAt - pressedAt
+         val toReady = (if (readyAt == NONE) now else readyAt) - pressedAt
+         openedAt = NONE
+-        return "Channel shown in $total ms (key to open $toOpen ms, ready at $toReady ms; $kind; player ${if (reused) "reused" else "new"})"
++        val where = (if (tracksAt == NONE) "" else "; tracks at ${tracksAt - pressedAt} ms") +
++            (if (decoderMs == NONE) "" else "; video decoder $decoderMs ms")
++        return "Channel shown in $total ms (key to open $toOpen ms, ready at $toReady ms; $kind; player ${if (reused) "reused" else "new"}$where)"
+     }
+ 
+     /** Nothing is being timed (the stream closed before it showed). */
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/playback/PlayerHost.kt b/firestick-player-main/app/src/main/java/app/fireplayer/playback/PlayerHost.kt
+index 159173d..e43376c 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/playback/PlayerHost.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/playback/PlayerHost.kt
+@@ -558,6 +558,7 @@ class PlayerHost private constructor(context: Context) {
+ 
+         override fun onTracksChanged(tracks: Tracks) {
+             val p = player ?: return
++            if (!tracks.isEmpty) timing.tracks(SystemClock.uptimeMillis())
+             // Reopened by Live TV buffer: the captions picked before, rather than the first of their kind.
+             if (!pickAgain(p, tracks)) keepCaptions(p, tracks)
+         }
+@@ -568,7 +569,11 @@ class PlayerHost private constructor(context: Context) {
+             // Another app took the sound for good (its film or music started): the channel paused itself, and shows as
+             // paused, as if the viewer had paused it. (A moment's loss, Alexa answering, doesn't come here: the player
+             // waits and carries on by itself; see onPlaybackSuppressionReasonChanged.)
+-            if (reason != Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) return
++            // The same when the sound's way out goes (the TV or sound bar switched off or over, headphones
++            // disconnected): the player pauses itself then too (setHandleAudioBecomingNoisy). That pause showed
++            // nowhere: a still picture that said it was playing, and a first Play/Pause press that did nothing.
++            if (!LivePause.byItself(reason)) return
++            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) Log.i(TAG, "Live: paused itself, the sound's output went away")
+             paused = !playWhenReady
+             if (paused) behind = true
+             publish()
+@@ -655,6 +660,11 @@ class PlayerHost private constructor(context: Context) {
+         override fun onBandwidthEstimate(eventTime: AnalyticsListener.EventTime, totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
+             this@PlayerHost.bitrateEstimate = bitrateEstimate
+         }
++
++        /** How long the picture's decoder took to start, for the channel's timing line (once a channel, never per frame). */
++        override fun onVideoDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
++            timing.decoder(initializationDurationMs)
++        }
+     }
+ 
+     /**
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LogoStoreTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LogoStoreTest.kt
+new file mode 100644
+index 0000000..f598f32
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LogoStoreTest.kt
+@@ -0,0 +1,65 @@
++package app.fireplayer.live.ui
++
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotEquals
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** A channel logo as kept on disk: when it was fetched, then the picture; shown from there while it's fresh. */
++class LogoStoreTest {
++
++    private val day = 24L * 60 * 60 * 1000
++    private val picture = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 1, 2, 3, -1, 0, 127, -128)
++
++    @Test fun thePictureComesBackAsItWentIn() {
++        val fetched = 1_795_000_000_123L
++        val kept = LogoStore.pack(fetched, picture)
++        assertEquals(fetched, LogoStore.fetchedAt(kept))
++        val at = LogoStore.pictureAt(kept)!!
++        assertArrayEquals(picture, kept.copyOfRange(at, kept.size))
++    }
++
++    @Test fun everyTimeIsKeptExactly() {
++        for (t in longArrayOf(0L, 1L, 255L, 256L, 1_700_000_000_000L, Long.MAX_VALUE, 0x0102030405060708L)) {
++            assertEquals(t, LogoStore.fetchedAt(LogoStore.pack(t, picture)))
++        }
++    }
++
++    @Test fun aLogoIsShownFromDiskForTwoWeeksThenFetchedAgain() {
++        val fetched = 1_795_000_000_000L
++        val kept = LogoStore.pack(fetched, picture)
++        assertTrue(LogoStore.isFresh(kept, fetched))
++        assertTrue(LogoStore.isFresh(kept, fetched + 13 * day))
++        assertTrue(LogoStore.isFresh(kept, fetched + LogoStore.MAX_AGE_MS - 1))
++        // Two weeks on, its server is asked again (a provider may have put a new logo at the same address).
++        assertFalse(LogoStore.isFresh(kept, fetched + LogoStore.MAX_AGE_MS))
++        assertFalse(LogoStore.isFresh(kept, fetched + 30 * day))
++    }
++
++    @Test fun aLogoFetchedInTheFutureIsNotTrusted() {
++        // The TV's clock was wrong when it was kept (or is wrong now): asked for again rather than kept for years.
++        val kept = LogoStore.pack(2_000_000_000_000L, picture)
++        assertFalse(LogoStore.isFresh(kept, 1_795_000_000_000L))
++    }
++
++    @Test fun whatIsNotAKeptLogoIsNeverShown() {
++        // Cut short (the app stopped while writing), or empty: no picture, never fresh.
++        for (n in 0..8) {
++            val short = ByteArray(n)
++            assertNull(LogoStore.pictureAt(short))
++            assertNull(LogoStore.fetchedAt(short))
++            assertFalse(LogoStore.isFresh(short, 1_795_000_000_000L))
++        }
++    }
++
++    @Test fun theSameLogoAtAnotherSizeIsKeptApart() {
++        val url = "http://logos.example/one.png"
++        // The guide's rows and a search row decode it for different sizes: one mustn't be shown for the other.
++        assertNotEquals(LogoStore.key(url, 152), LogoStore.key(url, 96))
++        assertEquals(LogoStore.key(url, 152), LogoStore.key(url, 152))
++        assertNotEquals(LogoStore.key(url, 152), LogoStore.key("http://logos.example/two.png", 152))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/playback/LivePauseTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/playback/LivePauseTest.kt
+new file mode 100644
+index 0000000..f01454d
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/playback/LivePauseTest.kt
+@@ -0,0 +1,26 @@
++package app.fireplayer.playback
++
++import androidx.media3.common.Player
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** Which of the player's stops the live screen shows as a pause. */
++class LivePauseTest {
++
++    @Test fun anotherAppTakingTheSoundForGoodIsAPause() {
++        assertTrue(LivePause.byItself(Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS))
++    }
++
++    @Test fun theSoundsOutputGoingAwayIsAPause() {
++        // The TV or sound bar switched off or over: the player stops itself, and the screen must say so.
++        assertTrue(LivePause.byItself(Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY))
++    }
++
++    @Test fun theViewersOwnPauseAndTheRestAreNot() {
++        // The viewer's own Play/Pause is noted where it's pressed; these come from the app or the stream itself.
++        assertFalse(LivePause.byItself(Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST))
++        assertFalse(LivePause.byItself(Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE))
++        assertFalse(LivePause.byItself(Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/playback/LiveTimingTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/playback/LiveTimingTest.kt
+index 77133db..d9ce9ac 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/playback/LiveTimingTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/playback/LiveTimingTest.kt
+@@ -37,6 +37,50 @@ class LiveTimingTest {
+         assertNull(t.firstFrame(400))
+     }
+ 
++    @Test fun whereTheTimeWentWhenItIsKnown() {
++        val t = LiveTiming()
++        t.opened(now = 1_012, pressed = 1_000, kind = "TS", reusedPlayer = true)
++        t.tracks(1_400)
++        t.decoder(85)
++        t.ready(1_600)
++        assertEquals(
++            "Channel shown in 850 ms (key to open 12 ms, ready at 600 ms; TS; player reused; tracks at 400 ms; video decoder 85 ms)",
++            t.firstFrame(1_850),
++        )
++    }
++
++    @Test fun onlyTheFirstTracksAndDecoderOfAStreamCount() {
++        val t = LiveTiming()
++        t.opened(now = 100, pressed = 100, kind = "HLS", reusedPlayer = true)
++        t.tracks(300)
++        // The tracks change again as captions are picked, and a second decoder starts on a change of quality.
++        t.tracks(900)
++        t.decoder(60)
++        t.decoder(200)
++        assertEquals(
++            "Channel shown in 1000 ms (key to open 0 ms, ready at 1000 ms; HLS; player reused; tracks at 200 ms; video decoder 60 ms)",
++            t.firstFrame(1_100),
++        )
++    }
++
++    @Test fun whatWasNotedForOneStreamIsNotSaidOfTheNext() {
++        val t = LiveTiming()
++        t.opened(100, 100, "TS", true)
++        t.tracks(200)
++        t.decoder(70)
++        t.firstFrame(500)
++        // Noted with no stream being timed (the first frame is out): not kept for the next one.
++        t.tracks(600)
++        t.decoder(90)
++        t.opened(1_000, 1_000, "TS", true)
++        assertEquals("Channel shown in 400 ms (key to open 0 ms, ready at 400 ms; TS; player reused)", t.firstFrame(1_400))
++        // A sound-only channel has no picture decoder; one that reports nonsense isn't believed.
++        t.opened(2_000, 2_000, "TS", true)
++        t.decoder(-1)
++        t.tracks(2_250)
++        assertEquals("Channel shown in 500 ms (key to open 0 ms, ready at 500 ms; TS; player reused; tracks at 250 ms)", t.firstFrame(2_500))
++    }
++
+     @Test fun theKindOfStreamNeverTheAddress() {
+         assertEquals("HLS", LiveTiming.kindOf("index.M3U8"))
+         assertEquals("DASH", LiveTiming.kindOf("manifest.mpd"))
+-- 
+2.43.0
+
+
+From a4e671624592d71043572a648964be2a508b339b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 07:58:06 +0000
+Subject: [PATCH 3/4] Live TV guide: the whole list opens on the channel it
+ always did; opening's log lines only at an opening
+
+- The whole list arriving over its first screenful keeps the rows where they are only when it
+  would open on the same channel; otherwise it opens exactly as before.
+- A playlist's update status is in no channel list: writing it no longer has the lists read again.
+- The stage lines (groups, first channels, guide, programmes, logos) are logged only within
+  30 s of opening the tab, and say "kept in memory" when nothing had to be read.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../main/java/app/fireplayer/live/LiveDb.kt   | 12 ++---
+ .../java/app/fireplayer/live/ui/LivePage.kt   | 53 +++++++++++++------
+ 2 files changed, 42 insertions(+), 23 deletions(-)
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
+index aaf331e..63f2ef4 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/LiveDb.kt
+@@ -31,11 +31,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+     }
+ 
+     /**
+-     * How often what the guide lists was written (playlists, groups, channels, the viewer's stars and group choices),
+-     * and how often its listings were (programmes, which import the guide reads). A screen notes them before a read
+-     * and keeps what it read for as long as they stand: a visit to Live TV with nothing written since reads nothing
+-     * again. Each write counts once it's stored (after its transaction), so a count read before a read is never
+-     * newer than what that read sees. This process only (the database has no other).
++     * How often what the guide lists was written (playlists and their order, groups, channels, the viewer's stars and
++     * group choices), and how often its listings were (programmes, which import the guide reads). A screen notes them
++     * before a read and keeps what it read for as long as they stand: a visit to Live TV with nothing written since
++     * reads no channel list or listing again. Each write counts once it's stored (after its transaction), so a count
++     * read before a read is never newer than what that read sees. A playlist's update status and account details
++     * ([setPlaylistStatus]) are in no channel list and count for neither. This process only (the database has no other).
+      */
+     val listChanges = AtomicInteger()
+     val epgChanges = AtomicInteger()
+@@ -167,7 +168,6 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
+             playlistEpgUrl?.let { put("playlist_epg_url", it) }
+         }
+         writableDatabase.update("playlist", v, "id = ?", arrayOf(id))
+-        listChanges.incrementAndGet()
+     }
+ 
+     /** The EPG link a playlist's guide comes from: the viewer's own, else the one the playlist names. */
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+index bfd4796..be2c7d4 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+@@ -541,20 +541,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
+ 
+     /** When the tab last started showing (uptime ms), until its guide is listed: for the log of how long that took. */
+     private var openedAt = 0L
+-    /** The same for its stages, each logged once per opening: the playlists and groups, and the first listings. */
++    /**
++     * The same for its stages, each logged once per opening: the playlists and groups, the first listings and the
++     * first logos. A stage that comes long after ([OPENING_MS]: nothing was read at the opening, and this is a later
++     * scroll's) says nothing.
++     */
+     private var openGroupsAt = 0L
+     private var openProgrammesAt = 0L
+     private var openLogosAt = 0L
+     /** The logo cache's counts (kept on disk, fetched, without one) as they stood when the tab opened. */
+     private val logosAtOpen = IntArray(3)
++    /** The listings last asked for when the tab opened: still the last when its list shows, none were needed. */
++    private var askAtOpening: Any? = null
++
++    /** How long after the tab opened at [at] it is now, for a stage's line; null when that's no longer an opening's. */
++    private fun sinceOpening(at: Long): Long? =
++        if (at == 0L) null else (android.os.SystemClock.uptimeMillis() - at).takeIf { it <= OPENING_MS }
+ 
+     /** Once per opening, when the first logos asked for have all landed: how long they took and where they came from. */
+     private fun logLogos() {
+         if (openLogosAt == 0L || logos.pendingCount > 0) return
+-        Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
+-            "${logos.failedCount - logosAtOpen[2]} without one) ${android.os.SystemClock.uptimeMillis() - openLogosAt} ms after opening")
++        sinceOpening(openLogosAt)?.let { ms ->
++            Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
++                "${logos.failedCount - logosAtOpen[2]} without one) $ms ms after opening")
++        }
+         openLogosAt = 0L
+     }
++
+     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
+     private var keyAt = 0L
+ 
+@@ -572,6 +585,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         openGroupsAt = openedAt
+         openProgrammesAt = openedAt
+         openLogosAt = openedAt
++        askAtOpening = programmeAsk
+         logosAtOpen[0] = logos.fromDisk
+         logosAtOpen[1] = logos.fromNetwork
+         logosAtOpen[2] = logos.failedCount
+@@ -687,10 +701,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
+                     if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
+                     sidebar.setData(pls, groups, scope)
+                     groupNames = groups.values.flatten().associate { (it.playlistId to it.id) to it.name }
+-                    if (openGroupsAt != 0L) {
+-                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) ${android.os.SystemClock.uptimeMillis() - openGroupsAt} ms after opening (read $readMs ms)")
+-                        openGroupsAt = 0L
++                    sinceOpening(openGroupsAt)?.let { ms ->
++                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) $ms ms after opening (read $readMs ms)")
+                     }
++                    openGroupsAt = 0L
+                     loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
+                 }
+                 // The playlists changed (or the tab came back): the playing group's order is read again, behind the
+@@ -758,7 +772,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         val kept = if (shownScope == s && shownLists == version) guide.channelList() else lists.get(s, version)
+         if (kept != null) {
+             showChannels(s, kept, version, focus, enterGrid)
+-            logListed(kept.size, "kept in memory")
++            logListed(kept.size, "kept in memory", kept = true)
+             return
+         }
+         loadingScope = s
+@@ -792,10 +806,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     }
+ 
+     /** The line for opening the guide, once per opening: how long until its list showed, and how it came. */
+-    private fun logListed(channels: Int, how: String) {
++    private fun logListed(channels: Int, how: String, kept: Boolean = false) {
+         if (openedAt == 0L) return
+-        Log.i(TAG, "Live TV: guide listed ($channels channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening ($how)")
++        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: guide listed ($channels channels) $ms ms after opening ($how)") }
+         openedAt = 0L
++        // The list was the one already showing and it asked for no listings: its rows still had them.
++        if (kept && openProgrammesAt != 0L && programmeAsk === askAtOpening) {
++            sinceOpening(openProgrammesAt)?.let { ms -> Log.i(TAG, "Live TV: programmes shown (kept in memory) $ms ms after opening") }
++            openProgrammesAt = 0L
++        }
+     }
+ 
+     /** Listings loaded before the lists or the guide were last written are forgotten; otherwise they stay as loaded. */
+@@ -818,9 +837,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         firstScreenOf = s
+         forgetStaleRows()
+         guide.showFirstScreen(part, focus)
+-        if (openedAt != 0L) {
+-            Log.i(TAG, "Live TV: first channels shown (${part.size}) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening (read $readMs ms)")
+-        }
++        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: first channels shown (${part.size}) $ms ms after opening (read $readMs ms)") }
+     }
+ 
+     /**
+@@ -857,7 +874,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+     }
+ 
+     /** The listings asked for last, until they're read: an older ask still waiting then has nothing left to do. */
+-    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int, val from: Long, val to: Long)
++    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int)
+     @Volatile private var programmeAsk: ProgrammeAsk? = null
+ 
+     /**
+@@ -866,7 +883,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
+      * read (it covers what shows now), and one overtaken half-way stops after the rows on screen.
+      */
+     private fun loadProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) {
+-        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size), from, to)
++        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size))
+         programmeAsk = ask
+         bg {
+             if (programmeAsk !== ask) return@bg
+@@ -878,10 +895,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
+             main.post {
+                 if (released) return@post
+                 guide.putProgrammes(first, map, from, to)
+-                if (openProgrammesAt != 0L) {
+-                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) ${android.os.SystemClock.uptimeMillis() - openProgrammesAt} ms after opening (read $readMs ms)")
+-                    openProgrammesAt = 0L
++                sinceOpening(openProgrammesAt)?.let { ms ->
++                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) $ms ms after opening (read $readMs ms)")
+                 }
++                openProgrammesAt = 0L
+             }
+             if (first.size == ask.channels.size || programmeAsk !== ask) return@bg
+             val rest = ask.channels.subList(ask.onScreen, ask.channels.size)
+@@ -1991,6 +2008,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+          */
+         private const val FIRST_BEFORE = 16
+         private const val FIRST_AFTER = 24
++        /** A stage of opening the tab is logged as such only this soon after it. */
++        private const val OPENING_MS = 30_000L
+         /** Column and rail sliding in and out. */
+         private const val SLIDE_MS = 220L
+         /** The miniature growing to full screen, and shrinking back. */
+-- 
+2.43.0
+
+
+From 4a890f28f3f0e9d536bc5cb88b6d22d870311db5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 08:00:52 +0000
+Subject: [PATCH 4/4] WIP: audit work saved when the usage window ran out
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CeAGQc19KZMJTFxzJrjwSq
+---
+ .../java/app/fireplayer/live/ui/LivePage.kt   | 17 ++++++++++++++-
+ .../app/fireplayer/live/ui/LiveSettings.kt    |  5 +++++
+ .../app/fireplayer/ui/SettingsCategory.kt     |  2 +-
+ .../fireplayer/live/ui/LivePrefsRowTest.kt    | 21 +++++++++++++++++++
+ .../app/fireplayer/ui/SettingsCategoryTest.kt |  2 ++
+ 5 files changed, 45 insertions(+), 2 deletions(-)
+ create mode 100644 firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LivePrefsRowTest.kt
+
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+index be2c7d4..dee5a97 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LivePage.kt
+@@ -589,7 +589,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
+         logosAtOpen[0] = logos.fromDisk
+         logosAtOpen[1] = logos.fromNetwork
+         logosAtOpen[2] = logos.failedCount
+-        val resume = if (!player.onScreenStarted() && player.currentKey == null) prefs.lastChannel else null
++        // (A channel that was playing when the tab was left comes back whatever the setting says: that's carrying on.)
++        val resume = if (!player.onScreenStarted() && player.currentKey == null && prefs.playLastOnOpening) prefs.lastChannel else null
+         // Built now, while the channel is read, rather than when it arrives.
+         if (resume != null) player.warm()
+         // The rail and column as they were (the rail shows with the column, or while there's nothing else).
+@@ -2051,6 +2052,11 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
+ class LivePrefs(context: Context) {
+     private val sp = context.getSharedPreferences("fireplayer_live", Context.MODE_PRIVATE)
+ 
++    companion object {
++        /** [playLastOnOpening]'s row in Settings › Live TV, as its category lists it. */
++        const val PLAY_LAST_ON_OPENING = "Play the last channel on opening"
++    }
++
+     var scope: GuideScope?
+         get() = GuideScope.decode(sp.getString("scope", null))
+         set(v) = sp.edit().putString("scope", v?.encode()).apply()
+@@ -2094,6 +2100,15 @@ class LivePrefs(context: Context) {
+         get() = sp.getInt("epg_update_h", 24)
+         set(v) = sp.edit().putInt("epg_update_h", v).apply()
+ 
++    /**
++     * Play the last channel on opening (Settings › Live TV): opening Live TV with nothing playing starts the channel
++     * watched last in the small picture. On by default, as it always did; off, it opens on the guide alone (no
++     * stream, no sound, the provider's connection left free) until a channel is picked.
++     */
++    var playLastOnOpening: Boolean
++        get() = sp.getBoolean("play_last_on_opening", true)
++        set(v) = sp.edit().putBoolean("play_last_on_opening", v).apply()
++
+     /** Live TV buffer: how much of a channel is loaded ahead. Default Medium, the buffer live TV always had. */
+     var liveBuffer: app.fireplayer.player.LiveBuffer
+         get() = app.fireplayer.player.LiveBuffer.named(sp.getString("live_buffer", null))
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveSettings.kt b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveSettings.kt
+index 4742256..00abafc 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveSettings.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/live/ui/LiveSettings.kt
+@@ -892,6 +892,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
+                 prefs.fullScreenAfterSec = secs[i]
+             }
+             header("Playback")
++            // Off: Live TV opens on the guide alone until a channel is picked (LivePrefs.playLastOnOpening).
++            row(LivePrefs.PLAY_LAST_ON_OPENING, SettingsPanels.onOff(prefs.playLastOnOpening)) {
++                prefs.playLastOnOpening = !prefs.playLastOnOpening
++                refresh()
++            }
+             liveBufferRow(this, activity)
+         }
+     }
+diff --git a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsCategory.kt b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsCategory.kt
+index 02a09f6..4144ddc 100644
+--- a/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsCategory.kt
++++ b/firestick-player-main/app/src/main/java/app/fireplayer/ui/SettingsCategory.kt
+@@ -22,7 +22,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
+     LIVE_TV(
+         "Live TV",
+         R.drawable.ic_live,
+-        listOf("Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Live TV buffer"),
++        listOf("Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Play the last channel on opening", "Live TV buffer"),
+     ),
+     PLAYBACK(
+         "Playback",
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LivePrefsRowTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LivePrefsRowTest.kt
+new file mode 100644
+index 0000000..61610c3
+--- /dev/null
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/live/ui/LivePrefsRowTest.kt
+@@ -0,0 +1,21 @@
++package app.fireplayer.live.ui
++
++import app.fireplayer.ui.SettingsCategory
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** Live TV's own preference rows are listed under the category whose window draws them. */
++class LivePrefsRowTest {
++
++    @Test fun playTheLastChannelOnOpeningIsALiveTvSetting() {
++        val where = SettingsCategory.entries.filter { LivePrefs.PLAY_LAST_ON_OPENING in it.settings }
++        assertEquals(listOf(SettingsCategory.LIVE_TV), where)
++    }
++
++    @Test fun itSitsWithLiveTvsPlaybackRowsBeforeTheBuffer() {
++        // The window lists it under Playback, just before Live TV buffer: the category names them in that order.
++        val rows = SettingsCategory.LIVE_TV.settings
++        assertTrue(rows.indexOf(LivePrefs.PLAY_LAST_ON_OPENING) in 0 until rows.indexOf("Live TV buffer"))
++    }
++}
+diff --git a/firestick-player-main/app/src/test/java/app/fireplayer/ui/SettingsCategoryTest.kt b/firestick-player-main/app/src/test/java/app/fireplayer/ui/SettingsCategoryTest.kt
+index 281d9f8..f6d661a 100644
+--- a/firestick-player-main/app/src/test/java/app/fireplayer/ui/SettingsCategoryTest.kt
++++ b/firestick-player-main/app/src/test/java/app/fireplayer/ui/SettingsCategoryTest.kt
+@@ -51,6 +51,8 @@ class SettingsCategoryTest {
+         )
+         val added = listOf(
+             "Manage playlists", "Manage EPG sources", "Live TV buffer",
++            // Live TV: whether opening it starts the channel watched last (on, as it always did).
++            "Play the last channel on opening",
+             // Manage playlists and Update playlists sit under it, as Manage EPG sources does under EPG sources.
+             "Playlists",
+             // Films & Shows step 3: the add-ons and This TV.
+-- 
+2.43.0
+
