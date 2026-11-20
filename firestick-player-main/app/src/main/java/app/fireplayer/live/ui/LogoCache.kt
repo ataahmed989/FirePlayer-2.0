@@ -58,6 +58,10 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: 
         conn.setRequestProperty("User-Agent", "FirePlayer/2.0 (Linux; Android)")
         try {
             if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
+            // A logo deleted from imgur answers with a picture of the words "The image you are requesting does not
+            // exist..." (it sends the request on to removed.png, 161 x 81): that's no logo.
+            val imgurGone = conn.url.host.orEmpty().endsWith("imgur.com")
+            if (imgurGone && conn.url.path.orEmpty().endsWith("/removed.png")) return null
             val bytes = conn.inputStream.use { input ->
                 val out = ByteArrayOutputStream()
                 val buf = ByteArray(16 * 1024)
@@ -74,6 +78,7 @@ class LogoCache(private val targetPx: Int, var onChange: ((url: String, loaded: 
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            if (imgurGone && bounds.outWidth == 161 && bounds.outHeight == 81) return null
             var sample = 1
             while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx / 2) sample *= 2
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null

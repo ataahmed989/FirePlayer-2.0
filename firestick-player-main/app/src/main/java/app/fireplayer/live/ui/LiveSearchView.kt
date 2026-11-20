@@ -182,7 +182,12 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         result = r
         val channels = r?.channels.orEmpty()
         val programmes = r?.programmes.orEmpty()
-        while (tiles.size < channels.size) Tile().also { tiles += it; tilesLine.addView(it) }
+        // Each tile at its own fixed width: left to wrap, the ones past the screen's edge are given no room at all and
+        // pile up on one another when the row moves along.
+        while (tiles.size < channels.size) Tile().also {
+            tiles += it
+            tilesLine.addView(it, LinearLayout.LayoutParams(t.dp(VodSizes.LIVE_TILE_W), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         while (rows.size < programmes.size) Row().also { rows += it; list.addView(it.view) }
         tiles.forEachIndexed { i, tile -> tile.bind(channels.getOrNull(i)) }
         rows.forEachIndexed { i, row -> row.bind(programmes.getOrNull(i)) }
