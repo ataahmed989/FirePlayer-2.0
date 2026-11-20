@@ -23,11 +23,17 @@ class RankInput(
     val measured: (String) -> Measured?,
     val runtimeMin: Int?,
     val episode: Boolean,
+    /**
+     * What this TV's connection was measured to sustain while a film kept stalling for want of it ([LineRate]), in
+     * Mb/s; null when nothing of the kind was measured lately.
+     */
+    val lineMbps: Double? = null,
 )
 
 /**
  * "Best for this TV" (r3_sources-organize §4.4), the same order in every group: first a 4K IMAX or open-matte release
- * this TV plays ([imaxFirst], the user's wish), then plays on this TV (measured here > likely > unknown > likely not),
+ * this TV plays ([imaxFirst], the user's wish), then plays on this TV (measured here > likely > unknown > likely not;
+ * a file needing more than this connection was measured to sustain is "likely not", and its row says so),
  * the debrid service's state (played here > probably cached > unknown), the sound wanted
  * ([CopyLanguage]), the picture ([CopyRank]'s data per pixel with codec efficiency, starved and full limits, and the HDR
  * the [TvPlan] prefers), then width, bit depth, source, sound for this TV's receiver, size. Pure.
@@ -44,7 +50,7 @@ object SourceRank {
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
         val scored = sources.mapIndexed { i, s ->
             val measured = s.release?.let { input.measured(it.storeKey) }
-            val (fit, warning) = fit(s.facts, input.plan, measured)
+            val (fit, warning) = fit(s.facts, input.plan, measured, input.lineMbps)
             val ranked = s.copy(fit = fit, warning = warning, measured = measured)
             Scored(ranked, i, keyOf(ranked, input))
         }
@@ -115,8 +121,11 @@ object SourceRank {
         )
     }
 
-    /** Whether [facts] likely play well under [plan], and at most one warning for the row. */
-    fun fit(facts: SourceFacts, plan: TvPlan, measured: Measured?): Pair<TvFit, String?> {
+    /**
+     * Whether [facts] likely play well under [plan], and at most one warning for the row. [lineMbps] is what this
+     * connection was measured to sustain when a film kept stalling for want of it ([LineRate]; null: nothing measured).
+     */
+    fun fit(facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null): Pair<TvFit, String?> {
         val dv = Hdr.DOLBY_VISION in facts.hdr
         val tvDv = plan.hdrOrder.any { Hdr.DOLBY_VISION in it }
         val base = Hdr.HDR10 in facts.hdr || Hdr.HDR10_PLUS in facts.hdr
@@ -127,6 +136,9 @@ object SourceRank {
             dv && facts.dvProfile == 7 -> TvFit.LIKELY_NOT to "Dolby Vision 7: may not play here"
             dv && !tvDv && (facts.dvProfile == 5 || (facts.dvProfile == null && !base)) -> TvFit.LIKELY_NOT to "Needs a Dolby Vision TV"
             cap != null && avg != null && avg > cap -> TvFit.LIKELY_NOT to "Over your $cap Mb/s limit"
+            // Measured on this TV, not guessed: a film stalled past the limit while the download sustained this much.
+            LineRate.tooFast(avg, lineMbps) ->
+                TvFit.LIKELY_NOT to "Needs ${Math.round(avg ?: 0.0)} Mb/s · this connection brought ${Math.round(lineMbps ?: 0.0)}"
             facts.height != null && facts.height > plan.topHeight -> TvFit.LIKELY_NOT to null
             measured?.spec != null -> TvFit.MEASURED_OK to highRate(avg)
             facts.height == null -> TvFit.UNKNOWN to highRate(avg)

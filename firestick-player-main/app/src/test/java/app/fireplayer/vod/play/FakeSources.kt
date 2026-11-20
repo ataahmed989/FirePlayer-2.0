@@ -203,6 +203,14 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
 
     override fun maySwitch(now: Long) = switchAllowed
 
+    /** The lighter source the session would offer, as the test sets it, and the ceilings it was asked with. */
+    var lighterSource: PlaybackSource? = null
+    val lighterAsked = ArrayList<Double>()
+    override fun lighter(maxMbps: Double): PlaybackSource? {
+        lighterAsked += maxMbps
+        return lighterSource?.takeIf { (it.facts.avgMbps ?: Double.MAX_VALUE) <= maxMbps }
+    }
+
     override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel {
         nextAsked += next
         return Cancel { }

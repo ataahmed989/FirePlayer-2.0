@@ -5341,7 +5341,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val probes = (b?.probesAsked ?: 0) - glassProbesLogged
         glassCopiesLogged = b?.copiesAsked ?: 0
         glassProbesLogged = b?.probesAsked ?: 0
-        return "glass=${if (Glass.on) "on" else "off"} copies=$copies probes=$probes kept=${builtPlayer?.keptBehindMs?.invoke() ?: 0}ms"
+        // The film's stalls so far, the wait the last one got, and how fast the film arrives against how fast it plays.
+        val flow = builtPlayer?.flow?.invoke()
+        val arriving = flow?.fillRate?.let { String.format(java.util.Locale.US, "%.2fx", it) } ?: "?"
+        return "glass=${if (Glass.on) "on" else "off"} copies=$copies probes=$probes kept=${builtPlayer?.keptBehindMs?.invoke() ?: 0}ms" +
+            " stalls=${flow?.stalls ?: 0} stallWait=${flow?.stallWaitMs ?: 0}ms arriving=$arriving"
     }
 
     /**
@@ -5377,8 +5381,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         return "$portal|${if (NextEpisode.isEpisodeLink(uri)) "s" else "m"}|$id"
     }
 
+    // Beside the add-ons' budget: what this connection was measured to sustain, and each film's answer when it kept buffering.
+    private val sourcePrefs by lazy { getSharedPreferences(app.fireplayer.vod.sources.LineRate.FILE, MODE_PRIVATE) }
+
+    /**
+     * A film from the add-ons seen to load clearly faster than the speed remembered from one that kept stalling: that
+     * speed was the moment's, and is replaced ([app.fireplayer.vod.sources.LineRate.seen]).
+     */
+    private fun noteLineSpeed() {
+        if (source == null || !diagMade.isInitialized()) return
+        val d = diag.download
+        if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs).seen(d.sustainedMbps)
+    }
+
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
+        noteLineSpeed()
         healthFor(player?.currentMediaItem?.localConfiguration?.uri)
         keepHealth()
         val p = player ?: return
@@ -5954,6 +5973,32 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         override fun log(text: String) {
             android.util.Log.i(PlaybackDiag.TAG, "recovery $text")
+        }
+
+        override fun whenBuffering(): app.fireplayer.vod.play.WhenBuffering =
+            app.fireplayer.vod.play.WhenBuffering.named(prefs.whenBuffering)
+
+        override fun supply(): app.fireplayer.vod.play.FilmSupply.Reading? {
+            val d = diag.download
+            val line = d.sustainedMbps.takeIf { it > 0.0 && d.sustainedSeconds >= app.fireplayer.vod.play.FilmSupply.MIN_SECONDS }
+            val rate = builtPlayer?.flow?.invoke()?.fillRate
+            return if (line == null && rate == null) null else app.fireplayer.vod.play.FilmSupply.Reading(line, rate)
+        }
+
+        override fun stallChoice(): String? {
+            val key = source?.request?.target?.key ?: return null
+            return sourcePrefs.getString(STALL_CHOICE + key, null)
+        }
+
+        override fun rememberStallChoice(choice: String) {
+            val key = source?.request?.target?.key ?: return
+            sourcePrefs.edit().putString(STALL_CHOICE + key, choice).apply()
+        }
+
+        override fun lineShort(mbps: Double) {
+            app.fireplayer.vod.sources.LineRate.of(sourcePrefs).short(mbps)
+            // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
+            (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
 
         override fun playNext(next: PlayRequest) {
@@ -6828,6 +6873,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val CHIP_REFRESH_TICKS = 15
         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
         const val KEEP_QUALITY_TICKS = 150
+        /** A film's answer when it kept buffering ([app.fireplayer.vod.play.StallChoice]), by its title and episode. */
+        const val STALL_CHOICE = "stall|"
         /** The frames shown and lost are counted this often (play ticks of 200 ms: once a second; see countFrames). */
         const val FRAME_COUNT_TICKS = 5
         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */

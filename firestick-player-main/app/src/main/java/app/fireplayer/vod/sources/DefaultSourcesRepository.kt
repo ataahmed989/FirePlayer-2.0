@@ -72,6 +72,8 @@ class DefaultSourcesRepository(
     internal val elapsed: () -> Long,
     internal val wall: () -> Long,
     internal val online: () -> Boolean,
+    /** What this connection was measured to sustain when a film kept stalling for want of it ([LineRate.current]). */
+    private val lineMbps: () -> Double? = { null },
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -402,6 +404,7 @@ class DefaultSourcesRepository(
             measured = measured,
             runtimeMin = TitleDetails.runtimeMinutes(target.title.runtime),
             episode = target.episode != null,
+            lineMbps = runCatching { lineMbps() }.getOrNull(),
         )
         work.execute {
             // Always posted, so an answer never stays "looking" (a rank that throws keeps the list it had).
@@ -510,6 +513,7 @@ class DefaultSourcesRepository(
                 elapsed = SystemClock::elapsedRealtime,
                 wall = System::currentTimeMillis,
                 online = online,
+                lineMbps = LineRate.of(budgetPrefs)::current,
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.

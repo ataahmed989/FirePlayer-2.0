@@ -39,6 +39,10 @@ class ByteMeter : TransferListener {
  * [BEST_SECONDS] free seconds in a row since the film started is [bestFreeMbps]: what one connection has been seen to
  * carry. Compared on the TV with the line's own speed, it shows whether the server or the line is the limit.
  *
+ * And what the line keeps up, not only its best three seconds: every free second of the last minutes together
+ * ([sustainedMbps], over [sustainedSeconds]). A film whose own rate is close to that, or above it, can't be kept from
+ * stalling by any buffer (see [app.fireplayer.vod.play.FilmSupply]).
+ *
  * Fed once a second on the main thread ([sample]); nothing is made after it's built.
  */
 class DownloadRate {
@@ -48,6 +52,9 @@ class DownloadRate {
     private var ms = 0L
     private var freeBytes = 0L
     private var freeMs = 0L
+    // Free seconds since the film started, the older ones counting for less ([SUSTAIN_MEMORY_MS]).
+    private var longBytes = 0L
+    private var longMs = 0L
     // The latest free seconds in a row, newest last: bytes and ms of each.
     private val runBytes = LongArray(BEST_SECONDS)
     private val runMs = LongArray(BEST_SECONDS)
@@ -56,6 +63,15 @@ class DownloadRate {
     /** The fastest [BEST_SECONDS] free seconds in a row so far, in Mb/s; 0 before there were any. */
     var bestFreeMbps = 0.0
         private set
+
+    /**
+     * Mb/s over the seconds the film loaded freely, mostly the last [SUSTAIN_MEMORY_MS] of them: what this line keeps
+     * up from this server. 0 with none; [take] doesn't start it afresh, [reset] does.
+     */
+    val sustainedMbps: Double get() = rate(longBytes, longMs)
+
+    /** How many free seconds [sustainedMbps] is over. */
+    val sustainedSeconds: Int get() = ((longMs + 500) / 1000).toInt()
 
     /** Seconds loaded freely since the last [take]. */
     val freeSeconds: Int get() = ((freeMs + 500) / 1000).toInt()
@@ -69,8 +85,11 @@ class DownloadRate {
     /**
      * [bytesSoFar] have come by [nowMs] (any clock in ms that only goes forward). [free]: the film loaded all of this
      * last second with room left in its buffer, so the line and the server set the speed, not the film's own rate.
+     * [flatOut]: and with less of the film ahead than it ever stops loading at, so it loaded the whole second through
+     * (a light film near its two minutes ahead loads in short bursts, each of which looks like loading): only such
+     * seconds count for [sustainedMbps].
      */
-    fun sample(nowMs: Long, bytesSoFar: Long, free: Boolean) {
+    fun sample(nowMs: Long, bytesSoFar: Long, free: Boolean, flatOut: Boolean = free) {
         val before = lastBytes
         val since = nowMs - lastMs
         lastBytes = bytesSoFar
@@ -89,6 +108,15 @@ class DownloadRate {
         }
         freeBytes += got
         freeMs += since
+        if (flatOut) {
+            longBytes += got
+            longMs += since
+            // Mostly the last minutes, so it follows the line as the evening goes.
+            if (longMs > SUSTAIN_MEMORY_MS) {
+                longBytes /= 2
+                longMs /= 2
+            }
+        }
         if (run == BEST_SECONDS) {
             System.arraycopy(runBytes, 1, runBytes, 0, BEST_SECONDS - 1)
             System.arraycopy(runMs, 1, runMs, 0, BEST_SECONDS - 1)
@@ -120,6 +148,8 @@ class DownloadRate {
     /** A new player or film: everything afresh. */
     fun reset() {
         take()
+        longBytes = 0L
+        longMs = 0L
         lastBytes = -1L
         run = 0
         bestFreeMbps = 0.0
@@ -129,9 +159,14 @@ class DownloadRate {
         /** A stretch of this many free seconds in a row is long enough to call a speed. */
         const val BEST_SECONDS = 3
         private const val MAX_GAP_MS = 5_000L
+        /** [sustainedMbps] halves what it holds each time it holds this many free seconds. */
+        const val SUSTAIN_MEMORY_MS = 180_000L
 
         /** A buffer filled to less than this share of what it fills to still has room: loading isn't held back by it. */
         const val FREE_BELOW = 0.85
+
+        /** With less than this ahead the film loads without a pause (it stops at two minutes ahead, or a full buffer). */
+        const val FLAT_OUT_BELOW_MS = 60_000L
 
         private fun rate(bytes: Long, ms: Long): Double = if (ms <= 0L) 0.0 else bytes * 8.0 / 1_000.0 / ms
     }

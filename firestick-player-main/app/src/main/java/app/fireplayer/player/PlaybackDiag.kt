@@ -120,7 +120,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         val fill = fillBytes()
         val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
         wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
-        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free)
+        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free, free && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying
         if (!playing || !Log.isLoggable(TAG, Log.INFO)) {
@@ -145,6 +145,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             .append(" down=").append(mbps(download.mbps))
             .append(" free=").append(mbps(download.freeMbps)).append('/').append(download.freeSeconds).append('s')
             .append(" best=").append(mbps(download.bestFreeMbps))
+            .append(" sustained=").append(mbps(download.sustainedMbps)).append('/').append(download.sustainedSeconds).append('s')
             .append(' ').append(video(player.videoFormat))
             .append(" decoder=").append(decoder)
         note().takeIf { it.isNotEmpty() }?.let { line.append(' ').append(it) }

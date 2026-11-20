@@ -34,17 +34,26 @@ object BackBuffer {
     const val LEAST_KEPT_US = 2_000_000L
     /** The film's size per second is only trusted with this much of it held. */
     const val MEASURE_SPAN_US = 3_000_000L
+    /** A film that keeps stalling for want of room ahead keeps this little behind ([keepUs], tight). */
+    const val TIGHT_LEAST_KEPT_US = 1_000_000L
 
     /**
      * How long a stretch to keep behind, in µs: what [capBytes] holds of a film of which [heldBytes] are held for
      * [heldSpanUs] of it, between [LEAST_KEPT_US] and [backBufferUs] (Media3's own length). [backBufferUs] while the
      * film's size isn't known yet, or with no cap ([capBytes] 0 or less).
+     *
+     * [tight]: the film has stalled lately ([StallCount]). Where the cap already cuts what's kept behind (a film too
+     * big for this TV's memory to hold its usual length), half the cap is kept, down to [TIGHT_LEAST_KEPT_US]: what's
+     * behind and what's ahead come out of the same memory, and a film running dry needs it ahead. In an 84 Mb/s
+     * remux on a Fire TV Stick 4K Max that is 12 MiB more ahead, a second and more of a room of five. A film the cap
+     * doesn't cut (under 32 Mb/s there) keeps all it kept: memory isn't what it's short of.
      */
-    fun keepUs(capBytes: Long, heldBytes: Long, heldSpanUs: Long, backBufferUs: Long): Long {
+    fun keepUs(capBytes: Long, heldBytes: Long, heldSpanUs: Long, backBufferUs: Long, tight: Boolean = false): Long {
         if (capBytes <= 0L || backBufferUs <= LEAST_KEPT_US) return backBufferUs
         if (heldBytes <= 0L || heldSpanUs < MEASURE_SPAN_US) return backBufferUs
         val keep = (capBytes.toDouble() * heldSpanUs / heldBytes).toLong()
-        return keep.coerceIn(LEAST_KEPT_US, backBufferUs)
+        if (!tight || keep >= backBufferUs) return keep.coerceIn(LEAST_KEPT_US, backBufferUs)
+        return (keep / 2).coerceIn(TIGHT_LEAST_KEPT_US, backBufferUs)
     }
 }
 
@@ -58,6 +67,8 @@ class BackCappedSources(
     private val capBytes: Long,
     private val backBufferUs: Long,
     private val held: () -> Long,
+    /** The film has stalled lately: less is kept behind where the cap already cuts it ([BackBuffer.keepUs]). Playback thread. */
+    private val tight: () -> Boolean = { false },
 ) : MediaSource.Factory {
 
     /** How long a stretch is kept behind now, in ms: Media3's own length until the film's size is known. */
@@ -111,7 +122,7 @@ class BackCappedSources(
             if (endUs != C.TIME_END_OF_SOURCE && endUs > playingUs) {
                 // What's held runs from where it was last let go up to (when that's behind where it plays) to its end.
                 val from = keptFromUs.takeIf { it != C.TIME_UNSET && it >= positionUs && it <= playingUs } ?: positionUs
-                keepUs = BackBuffer.keepUs(capBytes, held(), endUs - maxOf(from, 0L), backBufferUs)
+                keepUs = BackBuffer.keepUs(capBytes, held(), endUs - maxOf(from, 0L), backBufferUs, tight())
                 keptBehindMs = keepUs / 1000
             }
             val to = playingUs - keepUs
