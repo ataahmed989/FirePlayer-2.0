@@ -282,6 +282,113 @@ class HeaderRotationTest {
         assertFalse(r.advanceIfDue(1_000_000L))
     }
 
+    // ---- Time on each title (Settings > Home Header) ---------------------------------------------------------------
+
+    @Test
+    fun theTimeChoicesMapToTheirMilliseconds() {
+        assertEquals(listOf(5, 8, 12, 20), VodSizes.HEADER_IDLE_SECONDS)
+        assertEquals(5_000L, HeaderIdle.ms(5))
+        assertEquals(8_000L, HeaderIdle.ms(8))
+        assertEquals(12_000L, HeaderIdle.ms(12))
+        assertEquals(20_000L, HeaderIdle.ms(20))
+        // Today's time is the default, and anything unknown falls back to it.
+        assertEquals(HeaderRotation.EVERY_MS, HeaderIdle.ms(VodSizes.HEADER_IDLE_DEFAULT_SEC))
+        assertEquals(8_000L, HeaderIdle.ms(7))
+        assertEquals(8_000L, HeaderIdle.ms(0))
+    }
+
+    @Test
+    fun aChangedTimeIsUsedFromTheNextWait() {
+        var every = 8_000L
+        val r = HeaderRotation(everyMs = { every })
+        r.setFeed(5, 0L)
+        r.resume(0L)
+        assertEquals(8_000L, r.delayFrom(0L))
+        // Changed while it shows: the wait under way stays as it was...
+        every = 20_000L
+        assertEquals(8_000L, r.delayFrom(0L))
+        assertFalse(r.advanceIfDue(7_999L))
+        assertTrue(r.advanceIfDue(8_000L))
+        // ...and the next one takes the new time.
+        assertEquals(20_000L, r.delayFrom(8_000L))
+        assertFalse(r.advanceIfDue(27_999L))
+        assertTrue(r.advanceIfDue(28_000L))
+        // Any new wait (a key on the buttons, a window closed) takes the time as it is then.
+        every = 5_000L
+        assertEquals(20_000L, r.delayFrom(28_000L))
+        r.restart(28_000L)
+        assertEquals(5_000L, r.delayFrom(28_000L))
+    }
+
+    // ---- Up on the buttons: the next title at once ----------------------------------------------------------------
+
+    private fun onButtons(count: Int, now: Long = 0L) = running(count, now).apply { focusButtons(now) }
+
+    @Test
+    fun upOnTheButtonsMovesOnAtOnceAndTheWaitStartsAgain() {
+        val r = onButtons(5)
+        assertTrue(r.step(3_000L, repeat = false))
+        assertEquals(1, r.index)
+        assertEquals(8_000L, r.delayFrom(3_000L))
+        assertFalse(r.advanceIfDue(10_999L))
+        assertTrue(r.advanceIfDue(11_000L))
+        assertEquals(2, r.index)
+        // Round the end of the feed too.
+        assertTrue(r.step(20_000L, repeat = false))
+        assertTrue(r.step(21_000L, repeat = false))
+        assertTrue(r.step(22_000L, repeat = false))
+        assertEquals(0, r.index)
+    }
+
+    @Test
+    fun aHeldUpMovesOneTitlePerChangeIgnoringRepeatsMidChange() {
+        val r = onButtons(10)
+        val change = VodSizes.HEADER_CHANGE_MS
+        assertTrue(r.step(1_000L, repeat = false))
+        assertEquals(1, r.index)
+        // Repeats every 50 ms while the change is under way: ignored.
+        var now = 1_050L
+        while (now < 1_000L + change) {
+            assertFalse(r.step(now, repeat = true))
+            now += 50L
+        }
+        assertEquals(1, r.index)
+        // The first repeat after it: the next title.
+        assertTrue(r.step(1_000L + change, repeat = true))
+        assertEquals(2, r.index)
+        // A turn of its own is a change too: a repeat right after it waits.
+        assertTrue(r.advanceIfDue(1_000L + change + 8_000L))
+        assertFalse(r.step(1_000L + change + 8_010L, repeat = true))
+        // A fresh press always goes.
+        assertTrue(r.step(1_000L + change + 8_020L, repeat = false))
+    }
+
+    @Test
+    fun upLeavesAContinueCardsTitleForTheFeedsNext() {
+        // Up from a Continue card to Watch now with Home following it there: Up shows the feed's title it left.
+        val r = onButtons(5)
+        r.jumpTo(2, 0L)
+        r.follow(1_000L)
+        assertTrue(r.step(2_000L, repeat = false))
+        assertFalse(r.following)
+        assertEquals(2, r.index)
+        // The card's own title was the feed's: one further, so it always changes.
+        r.follow(3_000L)
+        assertTrue(r.step(4_000L, repeat = false, followedIsCurrent = true))
+        assertEquals(3, r.index)
+    }
+
+    @Test
+    fun upDoesNothingWithOneTitleOrNoneOrOffTheButtons() {
+        assertFalse(onButtons(1).step(1_000L, repeat = false))
+        assertFalse(onButtons(0).step(1_000L, repeat = false))
+        val off = running(5)
+        assertFalse(off.step(1_000L, repeat = false))
+        val paused = onButtons(5).apply { pause() }
+        assertFalse(paused.step(1_000L, repeat = false))
+        assertEquals(0, paused.index)
+    }
+
     // ---- OK on the buttons: which title it acts on --------------------------------------------------------------
 
     private enum class B { WATCH, DETAILS }

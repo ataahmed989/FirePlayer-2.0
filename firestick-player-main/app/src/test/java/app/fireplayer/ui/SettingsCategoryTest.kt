@@ -59,6 +59,8 @@ class SettingsCategoryTest {
             "Home", "Movies", "TV Shows",
             // Home Header: whether Home's banner shows the focused Continue Watching title.
             "Match the focused Continue Watching title",
+            // ...and how long every tab's banner shows each title while idle.
+            "Time on each title",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
@@ -80,6 +82,7 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.ADDONS, where("MediaFusion"))
         assertEquals(SettingsCategory.THIS_TV, where("Best for this TV"))
         assertEquals(SettingsCategory.HOME_HEADER, where(SettingsCategory.HOME_HEADER_MATCH))
+        assertEquals(SettingsCategory.HOME_HEADER, where(SettingsCategory.HOME_HEADER_TIME))
     }
 
     /** The Settings tab's sizes: rows 44 dp + 8 dp, the title 34 + 16 dp, 27 dp kept clear above and below. */

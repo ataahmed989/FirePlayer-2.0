@@ -250,7 +250,7 @@ class SettingsPanels(
     /**
      * Settings › Home Header: whether Home's banner shows the Continue Watching title that has focus (on, as Movies' and
      * TV Shows' do) or always goes through its own titles while it shows. Read by Home each time focus moves, so it
-     * applies at once.
+     * applies at once. Under it, how long every tab's banner shows each title while idle, taken from its next wait.
      */
     private fun homeHeaderSection(panel: SidePanel): Unit = with(panel) {
         header(SettingsCategory.HOME_HEADER.title, SettingsCategory.HOME_HEADER.icon)
@@ -258,7 +258,13 @@ class SettingsPanels(
             prefs.homeHeaderMatchesContinue = !prefs.homeHeaderMatchesContinue
             refresh()
         }
-        message("Off: Home's banner keeps going through its titles while it shows, wherever focus is.")
+        val times = app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_SECONDS
+        val time = times.indexOf(prefs.headerIdleSec).let { if (it < 0) times.indexOf(app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_DEFAULT_SEC) else it }
+        choice(SettingsCategory.HOME_HEADER_TIME, times.map { "$it seconds" }, time) {
+            prefs.headerIdleSec = times[it]
+        }
+        message("Off: Home's banner keeps going through its titles while it shows, wherever focus is. " +
+            "Time on each title is for the banners on Home, Movies and TV Shows alike.")
     }
 
     fun lookSection(panel: SidePanel): Unit = with(panel) {
