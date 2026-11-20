@@ -263,10 +263,9 @@ but unproven cause: FramePacer flip-flopping under timing jitter (simulation 13�
 2. Steadier FramePacer: move ±1 refresh only on sustained drift (EMA), skip instead of queueing a same-refresh frame.
 3. Film buffer sized to device RAM: 128 MiB with a 6 s back buffer below 1.8 GiB (64 / 176 / 256 MiB tiers),
    stepping down on memory pressure.
-4. Keep the Glass look; during films of 70 Mb/s or more (size over running time) on low-memory Sticks lower its
-   refresh automatically (e.g. 8 → 2 a second) and probe less often; under 70 Mb/s, 4K included, the Glass refresh
-   setting applies as chosen (the user, 2026-11-20, replacing "during 4K HDR films"); find what holds the ~100 MB and
-   release it if it's the Glass look.
+4. Keep the Glass look, with no automatic lower refresh: the Glass refresh setting applies to every film, 4K and
+   70 Mb/s and up included (the user, 2026-11-20: the Stick handles it); find what holds the ~100 MB and release it
+   if it's the Glass look.
 5. No second 4K decoder for skip previews on this Stick; release the preview after 3 s.
 6. Mask HDR10+ data before decoding when the display lacks HDR10+.
 7. Lost frames count in CopyHealth (over 2% for 10 minutes = troubled); honest "Range" row on SDR screens.

@@ -565,3 +565,5 @@ Concept discrepancies are not specifications: generated miniature shows transpor
   a film averaging 70 Mb/s or more (its size over its running time; not known counts as under) plays on a TV short of
   memory; under that, 4K included, Settings › Look › Glass refresh applies as chosen. The row reads
   "8 a second · 2 at 70+ Mb/s" while it applies. The black-bar watch keeps its own slowdown for any 4K film.
+- 2026-11-20, later · The user: the Stick handles more than 70 Mb/s, so the glass's 70 Mb/s limit goes too: Settings ›
+  Look › Glass refresh applies to every film (firestick-player, "Glass: no limit for any film").
