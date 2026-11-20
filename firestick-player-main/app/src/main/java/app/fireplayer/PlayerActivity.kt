@@ -856,6 +856,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.stop()
         val releaseFrom = SystemClock.elapsedRealtime()
         releasePlayer()
+        // Whatever player comes next is built later, from the memory free then.
+        keepBudgetBytes = 0
         // For the log on the TV: how long after Back this screen was taken down, and how long letting go of the player
         // held the app's main thread (the page is on screen by then).
         if (leftAt > 0) {
@@ -1156,7 +1158,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             frameCounts = diag.counts,
             byteMeter = diag.meter,
             freshLinks = source != null,
+            keepBudgetBytes = keepBudgetBytes,
         )
+        keepBudgetBytes = 0
+        builtAt = SystemClock.elapsedRealtime()
         vsyncFix = vsync.also { it.start() }
         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
         hdr10PlusGate = hdr10Plus.also { it.start() }
@@ -1172,7 +1177,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A new player while the TV is still short of memory starts squeezed.
         if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
         // Its buffer was sized by the memory free just now; told when room made for it is back with the TV (FilmRoom).
-        FilmRoom.onMade = roomListener
+        FilmRoom.film = filmRoom
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
@@ -1291,11 +1296,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
         // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
-        if (FilmRoom.onMade === roomListener) FilmRoom.onMade = null
+        if (FilmRoom.film === filmRoom) FilmRoom.film = null
         p.release()
         // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
-        // built meanwhile (the next episode's, a rebuilt one) hears when it's there.
-        FilmRoom.made()
+        // built meanwhile (the next episode's) hears when it's there.
+        FilmRoom.made(this)
         assHandler?.release()
         assHandler = null
         builtPlayer = null
@@ -1317,24 +1322,39 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun rebuildPlayer() {
+        // The same film in a new player: its buffer is the old one's memory over again (see FilmMemory.plan).
+        keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
         releasePlayer()
         initPlayer()
     }
 
-    private val roomListener: () -> Unit = { filmRoomMade() }
+    /** The budget of the player just let go of, for the one built in its place in the same moment; 0 otherwise. */
+    private var keepBudgetBytes = 0
+    /** When the player was built (elapsedRealtime). */
+    private var builtAt = 0L
+
+    private val filmRoom = object : FilmRoom.Film {
+        override fun heldBytes(): Long = builtPlayer?.filmBytes?.invoke() ?: 0L
+        override fun roomMade(askedAt: Long, gainedBytes: Long) = filmRoomMade(askedAt, gainedBytes)
+    }
 
     /**
      * Memory let go of for this film is back with the TV ([FilmRoom]: the pages' pictures and caches, the buffer of the
      * film or episode before): a buffer held down by the memory free as the player was built is sized by what's free
-     * now, up to this TV's own size for it. Logged when it changes, to be read on the TV.
+     * now, or by what was free then with what came back since ([gainedBytes]), up to this TV's own size for it.
+     * Logged when it changes, to be read on the TV.
      */
-    private fun filmRoomMade() {
+    private fun filmRoomMade(askedAt: Long, gainedBytes: Long) {
         val built = builtPlayer ?: return
         val free = FilmMemory.freeNow(this)
-        val bytes = built.roomMade(free)
+        // What came back counts when it was let go of in this player's first moments, as room is made for a film
+        // (the page behind it, the episode before). Later, more free memory may be the film's own (after a jump).
+        val gained = if (askedAt >= builtAt && askedAt - builtAt <= ROOM_GAIN_MS) gainedBytes else 0L
+        val bytes = built.roomMade(free, gained)
         if (bytes > 0) {
             val step = memoryPressure.step
-            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free: the film's buffer is now ${bytes shr 20} MiB" +
+            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free" + (if (gained > 0L) ", ${gained shr 20} MiB came back" else "") +
+                ": the film's buffer is now ${bytes shr 20} MiB" +
                 if (step > 0) " (filling to ${built.fillBytes() shr 20} MiB while memory is short)" else "")
         }
     }
@@ -2615,7 +2635,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
         val built = builtPlayer ?: return
-        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made()
+        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made(this, forFilm = false)
     }
 
     /** Gives the film's buffer the size [memoryPressure] calls for now. */
@@ -2625,9 +2645,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val bytes = built.squeeze(step)
         android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
             ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
-        // What the smaller buffer no longer keeps for reuse is only dropped: collected now, so the TV gets it at once
-        // rather than whenever Android next collects (it loads nothing new until it's down to its new size).
-        if (step > 0) FilmRoom.made()
+        if (step > 0) {
+            // The pictures the Episodes sheet and the details windows left in memory go too (up to 12 MB; what's on
+            // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
+            // OS asks them to trim, and a film opened from Glass Home or another app has no page behind it at all.
+            app.fireplayer.ui.ImageLoader.trim()
+            // What the smaller buffer no longer keeps for reuse is only dropped, as those pictures are: collected
+            // now, so the TV gets it at once rather than whenever Android next collects (the buffer loads nothing
+            // new until it's down to its new size).
+            FilmRoom.made(this, forFilm = false)
+        }
     }
 
     /**
@@ -5841,7 +5868,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
                 return
             }
-            if (p != null) releasePlayer()
+            if (p != null) {
+                // Its buffer is this one's memory over again (see FilmMemory.plan).
+                keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
+                releasePlayer()
+            }
             entries.clear()
             val entry = Entry(uri, vodRawTitle(request), null, storeKey = vodKey(request, ready))
             entries += entry
@@ -6785,6 +6816,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_COUNT_TICKS = 5
         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
         const val MEMORY_CHECK_TICKS = 50
+        /**
+         * Memory let go of this soon after the player was built was let go of to make room for its film (the page
+         * behind it, the episode before): what came back then counts for the film's buffer (see filmRoomMade).
+         */
+        const val ROOM_GAIN_MS = 10_000L
         /** The decoders' kinds looked up ahead of the film (see warmDecoders). */
         private val WARM_MIMES = listOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_H264, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_AV1,
             MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_AAC)

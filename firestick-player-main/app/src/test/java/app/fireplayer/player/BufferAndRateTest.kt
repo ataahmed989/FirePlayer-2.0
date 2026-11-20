@@ -65,6 +65,7 @@ class BufferAndRateTest {
         // Built with 340 MiB free (80 MiB); the page then lets go of 90 MiB while the film has loaded 10 MiB.
         val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
         val after = FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, freeBytes = 420 * mib, heldBytes = 10 * mib)
+        assertTrue(started.byFreeMemory)
         assertEquals(tier128, after)
     }
 
@@ -104,6 +105,72 @@ class BufferAndRateTest {
         assertEquals(tier128, raised)
         assertEquals((96 * mib).toInt(), FilmMemory.capFor(raised, 1))
         assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
+    }
+
+    // ---- What came back since the player was built (FilmMemory.roomGained, and afterRoom with it)
+
+    @Test fun whatCameBackIsTheRiseInWhatIsFreeForTheFilm() {
+        // 330 MiB free with 10 MiB of film loaded before; 400 MiB free with 30 MiB loaded after: 90 MiB came back.
+        assertEquals(90 * mib, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 430 * mib))
+        // Less free than before (the decoder took its frames meanwhile): nothing was seen to come back.
+        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 250 * mib))
+        // Not known on either side: nothing.
+        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 0L, afterBytes = 430 * mib))
+        assertEquals(0L, FilmMemory.roomGained(beforeBytes = 340 * mib, afterBytes = 0L))
+    }
+
+    @Test fun theDecoderTakingItsFramesFirstDoesNotHoldTheBufferDown() {
+        // Built with 340 MiB free (80 MiB). The page lets go of 90 MiB, but by the time that's read the decoder has
+        // taken 150 MiB: only 270 MiB are free, with 10 MiB of film loaded. Read as it stands, nothing changes...
+        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
+        assertEquals(started.budgetBytes, FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 270 * mib, 10 * mib))
+        // ...but 90 MiB were seen to come back: free at the start, with them, is 430 MiB, as if the room had been made first.
+        assertEquals(
+            tier128,
+            FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 270 * mib, 10 * mib, startFreeBytes = 340 * mib, gainedBytes = 90 * mib),
+        )
+        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 430 * mib).budgetBytes)
+    }
+
+    @Test fun whatCameBackCountsOnlyAsFarAsItGoes() {
+        val held = (80 * mib).toInt()
+        // 20 MiB back on 340 at the start: 360 MiB, 100 MiB of buffer.
+        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 20 * mib))
+        // Nothing seen to come back, or the start's reading not known: only what's free now counts.
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 0L))
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, 200 * mib, 0L, startFreeBytes = 0L, gainedBytes = 90 * mib))
+        // The better of the two readings counts, never their sum.
+        assertEquals((110 * mib).toInt(), FilmMemory.afterRoom(held, tier128, 370 * mib, 0L, startFreeBytes = 340 * mib, gainedBytes = 20 * mib))
+        // And with nothing known at all, nothing changes.
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, 0L, 0L, startFreeBytes = 0L, gainedBytes = 0L))
+    }
+
+    // ---- A player built in the place of another keeps its budget (FilmMemory.plan's keepBytes)
+
+    @Test fun aRebuiltPlayerKeepsTheBudgetItsFilmHad() {
+        // Rebuilt in the middle of a film: 200 MiB read as free, the old player's 128 MiB not yet taken back.
+        val alone = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib)
+        assertEquals(FilmMemory.FREE_FLOOR_BYTES, alone.budgetBytes)
+        val rebuilt = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = tier128)
+        assertEquals(tier128, rebuilt.budgetBytes)
+        assertFalse(rebuilt.byFreeMemory)
+        // And what it keeps behind goes with the budget it has.
+        assertEquals(6_000, rebuilt.backBufferMs)
+        assertEquals(24 * mib, rebuilt.backCapBytes)
+    }
+
+    @Test fun aKeptBudgetNeverGoesPastTheTiersNorUnderWhatFreeMemoryGives() {
+        // The old player had 96 MiB: kept, still held down against the tier's 128.
+        val kept = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = (96 * mib).toInt())
+        assertEquals((96 * mib).toInt(), kept.budgetBytes)
+        assertTrue(kept.byFreeMemory)
+        assertEquals(tier128, kept.tierBytes)
+        // More is free than the old one had: the free memory's size, as for any player.
+        assertEquals((100 * mib).toInt(), FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 360 * mib, keepBytes = (64 * mib).toInt()).budgetBytes)
+        // A budget from a bigger tier (never happens on one TV) is still held to this one's.
+        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib, keepBytes = (256 * mib).toInt()).budgetBytes)
+        // None kept: as before.
+        assertEquals(FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib), FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib, keepBytes = 0))
     }
 
     // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)

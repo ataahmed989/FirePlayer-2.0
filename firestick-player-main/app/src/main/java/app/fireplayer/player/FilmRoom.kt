@@ -1,8 +1,10 @@
 package app.fireplayer.player
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -14,55 +16,86 @@ import java.util.concurrent.TimeUnit
  * What FirePlayer lets go of for a film (the pages' pictures and caches as the player covers them, the buffer of the
  * film or episode before) is only memory nobody points to any more: Android takes it back the next time it collects,
  * which it does when the app has made enough new things, not when something big was let go of. Until then the TV
- * counts it as in use. A film's buffer is sized by the memory free as its player is built ([FilmMemory.plan]), so one
- * built just then was held down for memory that was already on its way back: after Next episode, with the last
- * episode's buffer (up to 128 MiB on a Fire TV Stick 4K Max) not yet collected, and at every start from a page, whose
- * pictures go only once the player's screen is up.
+ * counts it as in use. A film's buffer is sized by the memory free as its player is built ([FilmMemory.plan]), and
+ * that comes first: the player is built as soon as the link is checked (about half a second after OK), the page it
+ * was started from lets go of its pictures only once the player's screen covers it. So the buffer was held down for
+ * memory that was on its way back.
  *
  * [made] has Android collect now, on a thread of its own at background priority (the app's other threads carry on;
- * they're held for a millisecond or two), and [onMade] is told a moment after, when what the pictures held outside
- * the app's own heap has been freed as well. The film's player then reads the free memory again
- * ([FilmMemory.afterRoom]).
+ * they're held for a millisecond or two), and the [film] on screen is told a moment after, when what the pictures held
+ * outside the app's own heap has been freed as well, with how much came back ([FilmMemory.roomGained]). Its player
+ * then sizes the buffer again ([FilmMemory.afterRoom]).
  *
  * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
  * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
+ *
+ * Main thread, but for the collecting itself.
  */
 object FilmRoom {
     private const val TAG = "FirePlayer"
-    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: read the free memory after it. */
-    const val SETTLE_MS = 400L
+    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: the free memory is read after it. */
+    const val SETTLE_MS = 150L
+
+    /** The film player on screen, as this needs it. */
+    interface Film {
+        /** The memory its buffer holds now, in bytes. */
+        fun heldBytes(): Long
+
+        /**
+         * Memory let go of at [askedAt] (elapsedRealtime) is back with the TV; [gainedBytes] is how much more is free
+         * for this film than just before (0 when that can't be said: it wasn't the film on screen then).
+         */
+        fun roomMade(askedAt: Long, gainedBytes: Long)
+    }
+
+    /**
+     * The film player on screen: it sets itself as its player is built and takes itself away as the player goes
+     * (only itself: the next one may be there already).
+     */
+    var film: Film? = null
 
     private val main = Handler(Looper.getMainLooper())
 
-    // One collection at a time, and at most one more waiting (asked for while the first ran: it may have let go of
-    // more since); any further ask meanwhile is covered by the one waiting.
+    // One collection at a time, and at most one more waiting (asked for while the first ran: more may have been let
+    // go of since); any further ask meanwhile is covered by the one waiting.
     private val worker = ThreadPoolExecutor(
         0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue(1),
         { r -> Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "FirePlayerRoom").apply { isDaemon = true } },
         ThreadPoolExecutor.DiscardPolicy(),
     )
 
-    private val told = Runnable { onMade?.invoke() }
-
     /**
-     * Told on the main thread once memory let go of is back with the TV. The film player on screen sets it, and takes
-     * it away again when its player goes (only its own: the next player may have set its own meanwhile).
+     * Something big was just let go of: Android collects it now, and the [film] on screen hears when it's back.
+     * [forFilm]: it was let go of to make room for the film (the pages' pictures, the player before), so what comes
+     * back is told as gained; not when it's the film's own buffer giving memory back while the TV is short of it
+     * (that is no room made: the buffer must not grow for it).
      */
-    var onMade: (() -> Unit)? = null
-
-    /** Something big was just let go of (main thread): Android collects it now, and [onMade] hears when it's back. */
-    fun made() {
+    fun made(context: Context, forFilm: Boolean = true) {
+        val app = context.applicationContext
+        val askedAt = SystemClock.elapsedRealtime()
+        val asker = if (forFilm) film else null
+        val before = if (asker != null) freeFor(app, asker) else 0L
         worker.execute {
-            val started = android.os.SystemClock.elapsedRealtime()
             try {
                 // Not System.gc(): Android's may put it off until finalizers have run.
                 Runtime.getRuntime().gc()
             } catch (e: Throwable) {
                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
             }
-            Log.i(TAG, "Memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
-            main.removeCallbacks(told)
-            main.postDelayed(told, SETTLE_MS)
+            val took = SystemClock.elapsedRealtime() - askedAt
+            main.postDelayed({
+                val now = film
+                // Another film player than the one asked about (or none then): how much came back for it can't be said.
+                val gain = if (asker != null && now === asker) FilmMemory.roomGained(before, freeFor(app, asker)) else 0L
+                Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
+                now?.roomMade(askedAt, gain)
+            }, SETTLE_MS)
         }
+    }
+
+    /** What's free for [f]'s film: the TV's free memory and what its buffer holds itself; 0 when the first isn't known. */
+    private fun freeFor(app: Context, f: Film?): Long {
+        val free = FilmMemory.freeNow(app)
+        return if (free <= 0L) 0L else free + (f?.heldBytes() ?: 0L).coerceAtLeast(0L)
     }
 }
