@@ -20,6 +20,7 @@ import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.channelButtonsRow
 import app.fireplayer.live.ui.liveBufferRow
 import app.fireplayer.player.NextEpisode
@@ -123,6 +124,9 @@ class SettingsPanels(
      */
     var onSearch: (() -> Unit)? = null
 
+    /** Settings › Picture-in-picture's first row was changed (the screen stops a picture playing when it's now off). */
+    var onPipChanged: (() -> Unit)? = null
+
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
@@ -164,6 +168,7 @@ class SettingsPanels(
     fun renderCategory(panel: SidePanel, category: SettingsCategory): Unit = with(panel) {
         when (category) {
             SettingsCategory.PLAYLISTS_EPG, SettingsCategory.LIVE_TV -> Unit
+            SettingsCategory.PICTURE_IN_PICTURE -> pipSection(this)
             SettingsCategory.PLAYBACK -> {
                 header("Playback")
                 playNextRow(this)
@@ -265,6 +270,27 @@ class SettingsPanels(
         }
         message("Off: Home's banner keeps going through its titles while it shows, wherever focus is. " +
             "Time on each title: how long every banner, on Home, Movies and TV Shows alike, shows a title before the next.")
+    }
+
+    /**
+     * Settings › Picture-in-picture: whether leaving a playing channel for Home or Search keeps it playing there (top
+     * right), and whether it starts with its sound. Read each time Live TV is left, so a change applies from the next
+     * time; switched off while the picture plays, it stops now ([onPipChanged]).
+     */
+    private fun pipSection(panel: SidePanel): Unit = with(panel) {
+        header(SettingsCategory.PICTURE_IN_PICTURE.title, SettingsCategory.PICTURE_IN_PICTURE.icon)
+        row(PipRules.KEEP_LABEL, onOff(prefs.pipKeep), twoLines = true) {
+            prefs.pipKeep = !prefs.pipKeep
+            refresh()
+            onPipChanged?.invoke()
+        }
+        row(PipRules.SOUND_LABEL, onOff(prefs.pipSound)) {
+            prefs.pipSound = !prefs.pipSound
+            refresh()
+        }
+        message("The channel playing on Live TV carries on in the top right of Home and Search. Select it for its " +
+            "sound, Full screen and Close; hold Back to watch it full screen. Movies, TV Shows, My List and Settings " +
+            "stop it. Off: leaving Live TV stops the channel.")
     }
 
     fun lookSection(panel: SidePanel): Unit = with(panel) {

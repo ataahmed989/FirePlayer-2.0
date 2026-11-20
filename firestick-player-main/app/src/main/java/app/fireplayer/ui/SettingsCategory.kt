@@ -27,6 +27,13 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
             "Multiview pictures", "Multiview with 3 or 4",
         ),
     ),
+    // The live picture on Home and Search (automatic picture-in-picture): whether leaving Live TV keeps the channel
+    // playing there, and whether it starts with its sound.
+    PICTURE_IN_PICTURE(
+        "Picture-in-picture",
+        R.drawable.ic_pip,
+        listOf(app.fireplayer.live.ui.PipRules.KEEP_LABEL, app.fireplayer.live.ui.PipRules.SOUND_LABEL),
+    ),
     PLAYBACK(
         "Playback",
         R.drawable.ic_head_play,

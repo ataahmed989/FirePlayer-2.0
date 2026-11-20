@@ -166,6 +166,9 @@ internal object VodSizes {
     /** The bar's hint words: the row's own text colour (light, or dark on the white focused row) at this alpha. */
     const val SEARCH_HINT_ALPHA = 0x8C
     fun searchBarW(): Float = tabHeaderW() - SEARCH_TRASH_GAP - SEARCH_TRASH
+    /** The bar while the live picture is in the top right ([searchPipX]): shortened so the trash button clears it. */
+    fun searchBarW(pip: Boolean): Float =
+        if (pip) searchPipX() - SEARCH_PIP_GAP - SEARCH_TRASH - SEARCH_TRASH_GAP - PAGE_X else searchBarW()
     /** The kind switch above the bar: two pills ("Movies & TV Shows", "Live TV"), the gap between them and under them. */
     const val SEARCH_KIND_H = 36f
     const val SEARCH_KIND_PAD_X = 16f
@@ -174,6 +177,35 @@ internal object VodSizes {
     /** The bar and the pills above it: what the page's column holds where a header would be. */
     fun searchTopH(): Float = SEARCH_KIND_H + SEARCH_KIND_GAP + SEARCH_BAR_H
     fun searchListTop(): Float = VIEWPORT_TOP + searchTopH() + SEARCH_GAP
+
+    // The live picture (automatic picture-in-picture, DECISIONS.md of 2026-11-19). On Home it is Recent channels' box
+    // ([WINDOW_W] x [HEADER_H] at [windowX]), the picture fitted and centred in it (a 16:9 channel leaves a band above
+    // and below it, where the strip fits). On Search it's a size smaller: about a quarter of the screen wide, 16:9, in
+    // the top right corner beside the page's name, ending above the history and results ([searchListTop]); the bar and
+    // the history are shortened to clear it ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name).
+    const val SEARCH_PIP_W = 240f
+    const val SEARCH_PIP_H = SEARCH_PIP_W * 9f / 16f
+    const val SEARCH_PIP_TOP = NAME_TOP
+    const val SEARCH_PIP_GAP = 24f
+    /** Page-local left of Search's picture: right-aligned at the page's right margin. */
+    fun searchPipX(): Float = SCREEN_W - RAIL - RIGHT_MARGIN - SEARCH_PIP_W
+    /**
+     * The slim strip, shown only while the picture has focus: a pill this tall, inset this much from the box's sides
+     * and bottom (on Home it sits in a 16:9 picture's lower band), the channel and programme ([PIP_WORDS]) and three
+     * round buttons ([PIP_BUTTON], icons [PIP_ICON]). It eases in and out ([PIP_STRIP_MS]) rising [PIP_STRIP_RISE].
+     */
+    const val PIP_STRIP_H = 28f
+    const val PIP_STRIP_INSET = 4f
+    const val PIP_STRIP_PAD_L = 12f
+    const val PIP_STRIP_PAD_R = 3f
+    const val PIP_BUTTON = 22f
+    const val PIP_ICON = 13f
+    const val PIP_BUTTON_GAP = 6f
+    const val PIP_WORDS_GAP = 8f
+    const val PIP_STRIP_MS = 180L
+    const val PIP_STRIP_RISE = 6f
+    /** Between the channel's name and the programme on the strip. */
+    const val PIP_SEPARATOR = " \u00B7 "
 
     // Live TV search's results, under the bar: a row of channel tiles (the guide's logo plate, the name beneath), then
     // a list of programme rows (logo, title, "channel · start-end", a LIVE mark while on now).
@@ -453,6 +485,8 @@ internal object VodSizes {
     val CARD_HOLDER = TextStyle(12.5f, Weight.SEMIBOLD, Ink.MUTED)
     val SEE_ALL_STYLE = TextStyle(14f, Weight.SEMIBOLD)
     val BADGE = TextStyle(10f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
+    /** The live picture's strip: the channel's name, the programme after it quieter ([app.fireplayer.ui.Buttons.quietTail]). */
+    val PIP_WORDS = TextStyle(12.5f, Weight.SEMIBOLD)
     val RECENT_HEAD = TextStyle(14f, Weight.SEMIBOLD)
     val RECENT_NAME = TextStyle(15f, Weight.SEMIBOLD)
     val RECENT_NOW = TextStyle(12f, Weight.REGULAR, Ink.MUTED)

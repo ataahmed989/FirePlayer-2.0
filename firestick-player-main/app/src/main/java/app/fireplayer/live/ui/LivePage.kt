@@ -99,6 +99,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
         fun addMultiview(board: View)
         /** Multiview shows ([on]): the one live picture and the wallpaper step aside for its pictures; or it closed. */
         fun setMultiview(on: Boolean)
+        /**
+         * The channel kept playing on Home or Search ([leave] with keepPlaying) changed (the channel buttons): the
+         * picture's strip says so.
+         */
+        fun keptChanged() {}
+        /** A line for the page the kept channel plays on (the playlist's connection limit, say). */
+        fun keptNotice(text: String) {}
+        /** The sleep timer ran out while the channel played on Home or Search: the picture closes. */
+        fun keptSleep() {}
     }
 
     private val t = host.tokens
@@ -217,6 +226,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var fullScreen = false
     private var sidebarOpen = true
     private var started = false
+    /**
+     * The tab was left with its channel playing on in the picture on Home or Search ([leave]): the stream, the channel
+     * buttons and the sleep timer carry on while the page is away; nothing of the page itself runs.
+     */
+    private var keeping = false
+    /** The channel plays for this page: the tab shows, or its channel is kept playing elsewhere. */
+    private val playsHere: Boolean get() = started || keeping
     private var backLongPressed = false
     private var focusBeforeFull: ChannelKey? = null
     private var zappedInFull = false
@@ -619,6 +635,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun start() {
         if (started) return
         started = true
+        // A channel kept playing on Home or Search comes back into the miniature, still playing.
+        keeping = false
         // Everything is read again below: an announcement heard of while away is no longer to be skipped.
         ownChanges = 0
         player.addListener(statusListener)
@@ -652,10 +670,89 @@ class LivePage(private val activity: Activity, private val host: Host) {
         more.resume()
     }
 
+    /**
+     * The tab is left for another ([keepPlaying]: its channel plays on in the picture on Home or Search). Full screen
+     * is left first, quietly, so the tab comes back to its guide (it used to come back to an empty full screen).
+     */
+    fun leave(keepPlaying: Boolean) {
+        if (!started) return
+        if (fullScreen) quitFullScreen()
+        stop(keepPlaying && player.currentKey != null)
+    }
+
+    /**
+     * The channel kept playing on Home or Search stops (Close, another tab, the screen stopping): its stream and
+     * connection go, the channel remembered, as leaving the tab always did.
+     */
+    fun letGo() {
+        if (!keeping) return
+        keeping = false
+        dropZap()
+        more.pause()
+        player.onScreenStopped(host.videoOwner)
+    }
+
+    /**
+     * The screen is back with the picture on Home or Search, as it was when the screen stopped: its channel plays on
+     * again. False when nothing came back (a film started meanwhile, or the connection is taken).
+     */
+    fun keepAgain(): Boolean {
+        if (started || released) return false
+        player.onScreenStarted()
+        // Playing again, not only remembered (the provider's connection may be taken meanwhile).
+        keeping = player.playingKey != null
+        if (keeping) more.resume() else player.onScreenStopped(host.videoOwner)
+        return keeping
+    }
+
+    /** The channel kept playing on Home or Search, for the picture's strip: its name and what's on ([then], main thread). */
+    fun keptInfo(then: (name: String, programme: String?) -> Unit) {
+        val key = ChannelKey.parse(player.currentKey) ?: return
+        val known = playingChannel?.takeIf { it.key == key }
+        val on = programmeNow()
+        if (known != null && on != null) { then(known.name, on.title); return }
+        bg {
+            val ch = known ?: db.channel(key) ?: return@bg
+            val now = System.currentTimeMillis()
+            val programme = runCatching { db.programmes(listOf(ch), now, now + 1)[ch.key]?.firstOrNull { it.isOn(now) } }.getOrNull()
+            main.post { if (!released && player.currentKey == key.toString()) then(ch.name, programme?.title) }
+        }
+    }
+
+    /**
+     * Straight to full screen on the channel kept playing (the picture's Full screen, or Back held on its page), the
+     * picture growing from where it is; just shown again, before the guide places its miniature. A channel that isn't
+     * playing any more opens as from search.
+     */
+    fun openKeptFull(key: ChannelKey) {
+        if (!started) return
+        if (player.playingKey == key.toString()) toFull() else openFromSearch(key, full = true)
+    }
+
+    /** Full screen left at once, nothing moving (the tab is being left): the guide is as Back would leave it. */
+    private fun quitFullScreen() {
+        ++motionSerial
+        dropZap()
+        fullScreen = false
+        revealKey = 0
+        shrinkPending = false
+        main.removeCallbacks(hideControls)
+        controls.hideAll()
+        filmGlass(false)
+        host.setChromeVisible(true)
+        sidebarOpen = false
+        layoutFor(columnOpen = false, animate = false)
+        guideLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        guideLayer.animate().cancel()
+        guideLayer.alpha = 1f
+        guideLayer.visibility = View.VISIBLE
+    }
+
     /** The tab is hidden or the activity stopped: the stream is released, the channel remembered. */
-    fun stop() {
+    fun stop(keepPlaying: Boolean = false) {
         if (!started) return
         started = false
+        keeping = keepPlaying
         // The selection goes back to the held row (or cell) first, quietly: a window gone while it still held focus
         // would hand it to the column's top row, whose preview would then switch the guide.
         popup.close(fade = false)
@@ -666,13 +763,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
         multiviewFrom = null
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
-        player.onScreenStopped(host.videoOwner)
+        // Kept playing on Home or Search: the stream and its connection stay.
+        if (!keepPlaying) player.onScreenStopped(host.videoOwner)
         placedAt = null
         main.removeCallbacks(idleToFull)
         main.removeCallbacks(clockTick)
         main.removeCallbacks(hideControls)
         main.removeCallbacks(hideNotice)
-        more.pause()
+        // The sleep timer carries on with a channel kept playing.
+        if (!keepPlaying) more.pause()
         // The controls' timer is gone: don't leave them up for the return.
         if (fullScreen) controls.hideAll()
         filmGlass(false)
@@ -693,6 +792,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     fun release() {
+        letGo()
         stop()
         multiview.release()
         more.release()
@@ -1105,7 +1205,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // A channel change from elsewhere closes a small window still open.
         popup.close()
         bg { db.noteRecent(channel.key, System.currentTimeMillis()) }
-        if (!fullScreen) placeMini()
+        if (started && !fullScreen) placeMini() else if (keeping && !started) host.keptChanged()
         return true
     }
 
@@ -1189,6 +1289,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** The miniature in its slot; with [dx], where the slot will be once the content has slid that much further. */
     private fun placeMini(animateMs: Long = 0L, dx: Float = 0f) {
+        // Never from a page that's away (a motion ending late): the picture may be on Home or Search now.
+        if (!started) return
         val playing = player.currentKey != null
         if (playlists.isEmpty() || !playing) {
             placedAt = null
@@ -1289,7 +1391,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // (Back in full screen by then: that leaves the guide hidden. A slide started meanwhile places the picture
         // again itself.)
         onNextFrame {
-            if (fullScreen || released) return@onNextFrame
+            if (fullScreen || released || !started) return@onNextFrame
             guideLayer.animate().alpha(1f).setDuration(SHRINK_MS).setInterpolator(EASE).withLayer().start()
             if (rectOf(videoSlot) == null) shrinkPending = true else placeMini(SHRINK_MS)
         }
@@ -1385,7 +1487,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val tunePending = Runnable {
         val ch = zapPending ?: return@Runnable
         zapPending = null
-        if (started && fullScreen == zapPendingFull && tune(ch, from = zapScope)) zapped(ch) else refreshControls()
+        if (playsHere && fullScreen == zapPendingFull && tune(ch, from = zapScope)) zapped(ch) else refreshControls()
     }
 
     /** Whether the held key's [zapPending] was reached in full screen (else in the guide): opened only there. */
@@ -1452,7 +1554,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     // Presses that came while it was read now act, from the channel playing.
                     val q = zapQueued
                     zapQueued = 0
-                    if (q != 0 && started && player.currentKey == key.toString()) zap(q)
+                    if (q != 0 && playsHere && player.currentKey == key.toString()) zap(q)
                 }
                 return@bg
             }
@@ -1513,7 +1615,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     fun channelKey(event: KeyEvent): Boolean {
         val code = event.keyCode
         if (code != KeyEvent.KEYCODE_CHANNEL_UP && code != KeyEvent.KEYCODE_CHANNEL_DOWN) return false
-        if (!started || released || !prefs.channelButtonsOnly || player.currentKey == null || multiview.active) return false
+        if (!playsHere || released || !prefs.channelButtonsOnly || player.currentKey == null || multiview.active) return false
         if (FireDialog.isShowing(activity) || activity.currentFocus is android.widget.EditText) return false
         if (event.action != KeyEvent.ACTION_DOWN) return true
         keyAt = event.eventTime
@@ -1840,6 +1942,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     private fun stopForSleep() {
         if (released) return
+        // Kept playing on Home or Search: the picture there closes, with a word to say why.
+        if (keeping && !started) {
+            host.keptSleep()
+            return
+        }
         // Multiview: every picture stops, and full screen goes back to the guide. (Its picker over full screen just
         // closes: the channel playing stops below, as usual.)
         val wasMultiview = multiview.isOpen
@@ -1857,6 +1964,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun showNotice(text: String) {
+        // Kept playing on Home or Search: said on that page (this one is hidden).
+        if (keeping && !started) {
+            host.keptNotice(text)
+            return
+        }
         notice.text = text
         notice.visibility = View.VISIBLE
         main.removeCallbacks(hideNotice)
@@ -1881,7 +1993,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private fun scheduleIdle() {
         main.removeCallbacks(idleToFull)
         val s = prefs.fullScreenAfterSec
-        if (s > 0 && !fullScreen) main.postDelayed(idleToFull, s * 1000L)
+        if (s > 0 && !fullScreen && started) main.postDelayed(idleToFull, s * 1000L)
     }
 
     private val clockTick = object : Runnable {
