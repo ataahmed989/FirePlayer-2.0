@@ -165,7 +165,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         }
 
         rail = NavRail(this, tokens)
-        findViewById<FrameLayout>(R.id.rail_host).addView(rail, FrameLayout.LayoutParams(rail.collapsedWidth, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Always as wide as the widened rail: it draws its window inside that, so widening lays nothing out.
+        findViewById<FrameLayout>(R.id.rail_host).addView(rail, FrameLayout.LayoutParams(rail.viewWidth, ViewGroup.LayoutParams.MATCH_PARENT))
         rail.onTab = { showTab(it) }
         rail.onEnterPage = { focusPage() }
         root.viewTreeObserver.addOnGlobalFocusChangeListener(focusWatcher)
@@ -252,6 +253,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onPause() {
         super.onPause()
+        // The rail's motion ends where it was heading: nothing is left half-way or moving unseen.
+        if (::rail.isInitialized) rail.finishMotion()
         filmMode.onPause()
     }
 
@@ -353,7 +356,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         rail.setSelected(tab)
         // Live TV's rail is a strip attached to the screen's edge; every other tab's a floating window. It moves from
         // one to the other as Live TV is entered or left.
-        rail.setAttached(tab == NavRail.Tab.LIVE, NavRail.ATTACH_MS)
+        rail.setAttached(tab == NavRail.Tab.LIVE, animate = true)
         pageInset(tab)
         if (tab != NavRail.Tab.LIVE) setRailShown(true, 0L)
         val isLive = tab == NavRail.Tab.LIVE
@@ -883,7 +886,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val host = findViewById<View>(R.id.rail_host)
         host.animate().cancel()
         if (shown) host.visibility = View.VISIBLE
-        val to = if (shown) 0f else -host.width.toFloat()
+        // By the strip's width (the rail's view is always the widened rail's width).
+        val to = if (shown) 0f else -rail.collapsedWidth.toFloat()
         if (animateMs <= 0) {
             host.translationX = to
             if (!shown) host.visibility = View.INVISIBLE

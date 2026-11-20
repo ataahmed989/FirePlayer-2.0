@@ -47,14 +47,14 @@
         android:layout_marginStart="58dp" />
 
     <!-- The rail (NavRail): a narrow floating window inset from the left, top and bottom on every tab but Live TV,
-         where it is a strip flush with the screen's left edge. Its view is full height either way; widened, it is
-         drawn over the page, which never moves. Its window's shadow falls outside it. -->
+         where it is a strip flush with the screen's left edge. Its view is always full height and as wide as the
+         widened rail with its shadow: it draws its window inside that, over the page, which never moves. Nothing of
+         it is drawn outside its view, so its children are clipped here (the default): a frame of its motion then
+         redraws the rail's part of the screen, not all of it. -->
     <FrameLayout
         android:id="@+id/rail_host"
         android:layout_width="wrap_content"
-        android:layout_height="match_parent"
-        android:clipChildren="false"
-        android:clipToPadding="false" />
+        android:layout_height="match_parent" />
 
     <include
         android:id="@+id/panel"
