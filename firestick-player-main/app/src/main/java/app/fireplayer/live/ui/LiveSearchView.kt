@@ -136,7 +136,10 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         LiveSearch.worker.execute {
             if (signal.isCanceled) return@execute
             val r = try {
-                LiveSearch(db).find(q, now, signal)
+                // The channels show as soon as they're found; the programmes join them when the guide has been read.
+                LiveSearch(db).find(q, now, signal) { first ->
+                    main.post { if (my == serial && !released && !answered) show(first) }
+                }
             } catch (e: OperationCanceledException) {
                 return@execute
             } catch (e: RuntimeException) {
@@ -171,6 +174,10 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
 
     private fun show(r: LiveSearch.Result?) {
         val hadFocus = hasFocus()
+        // The programmes joining channels already shown (the same search's second answer): the viewer may be among
+        // the tiles by now, so the chosen tile, the row's place and the focus stay as they are.
+        val joining = r != null && result?.query == r.query && result?.programmes.isNullOrEmpty() &&
+            result?.channels?.map { it.key } == r.channels.map { it.key } && r.channels.isNotEmpty()
         result = r
         val channels = r?.channels.orEmpty()
         val programmes = r?.programmes.orEmpty()
@@ -185,10 +192,11 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         programmesHead.visibility = if (hasProgrammes) View.VISIBLE else View.GONE
         list.visibility = if (hasProgrammes) View.VISIBLE else View.GONE
         (programmesHead.layoutParams as LinearLayout.LayoutParams).topMargin = if (hasChannels) t.dp(VodSizes.LIVE_SECTION_GAP) else 0
+        visibility = if (r == null || r.isEmpty) View.GONE else View.VISIBLE
+        if (joining) return
         chosenTile = 0
         tileSpring.snap(0f)
         pageSpring.snap(0f)
-        visibility = if (r == null || r.isEmpty) View.GONE else View.VISIBLE
         // New results under focus: the first of them keeps it; none left, the bar has it.
         if (hadFocus && !focusFirst()) onUp?.invoke()
     }

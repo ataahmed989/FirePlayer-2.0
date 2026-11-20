@@ -29,7 +29,11 @@ class LiveSearch(private val db: LiveDb) {
         val isEmpty: Boolean get() = channels.isEmpty() && programmes.isEmpty()
     }
 
-    fun find(query: String, now: Long, cancel: CancellationSignal): Result {
+    /**
+     * [early], when given, is handed the channels as soon as they are found (a quick, indexed-size read), before the
+     * guide's programmes are looked through (a slow read on a large guide): the page shows them at once.
+     */
+    fun find(query: String, now: Long, cancel: CancellationSignal, early: ((Result) -> Unit)? = null): Result {
         val q = query.trim()
         if (q.isEmpty()) return Result(query, emptyList(), emptyList())
         val like = LiveSearchRules.likePattern(q)
@@ -38,6 +42,8 @@ class LiveSearch(private val db: LiveDb) {
             CHANNEL_SELECT + "WHERE c.name LIKE ? ESCAPE '\\' AND $VISIBLE ORDER BY p.position, c.position LIMIT $READ_CAP",
             arrayOf(like), cancel,
         ).use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
+        val orderedChannels = LiveSearchRules.orderChannels(channels, q) { it.name }.take(MAX_CHANNELS)
+        if (orderedChannels.isNotEmpty()) early?.invoke(Result(query, orderedChannels, emptyList()))
 
         // Programmes: per source (the playlist whose EPG listed them), the matches still to come.
         val sources = db.sourcesWithEpg()
@@ -72,7 +78,7 @@ class LiveSearch(private val db: LiveDb) {
         }
         return Result(
             query,
-            LiveSearchRules.orderChannels(channels, q) { it.name }.take(MAX_CHANNELS),
+            orderedChannels,
             LiveSearchRules.orderProgrammes(LiveSearchRules.distinct(programmes), q, now).take(MAX_PROGRAMMES),
         )
     }
