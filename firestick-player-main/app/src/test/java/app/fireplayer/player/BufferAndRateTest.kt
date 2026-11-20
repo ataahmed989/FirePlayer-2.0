@@ -106,6 +106,30 @@ class BufferAndRateTest {
         assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
     }
 
+    // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)
+
+    @Test fun aSqueezedBufferIsCollectedWhileItHoldsMoreThanItFillsTo() {
+        // Full at 128 MiB when memory ran low: it fills to 96 now, and holds more until the film has played 32 MiB on.
+        assertTrue(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
+        assertTrue(FilmMemory.comingDown(step = 2, heldBytes = 97 * mib, fillBytes = 64 * mib, playing = true))
+        // Down to its new size (it loads again, and Android collects by itself): no more.
+        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 96 * mib, fillBytes = 96 * mib, playing = true))
+        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 40 * mib, fillBytes = 64 * mib, playing = true))
+    }
+
+    @Test fun aPausedOrWaitingFilmLetsGoOfNothingToCollect() {
+        // Paused with a full buffer while memory is low: it stays as it is, and nothing is collected every 10 s for it.
+        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = false))
+        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 128 * mib, fillBytes = 64 * mib, playing = false))
+    }
+
+    @Test fun aBufferThatIsNotSqueezedIsNeverCollectedForIt() {
+        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 128 * mib, playing = true))
+        // Held over its size for a moment without a squeeze (a size not known): not this rule's.
+        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
+        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 0L, playing = true))
+    }
+
     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
 
     private val sixSeconds = 6_000_000L

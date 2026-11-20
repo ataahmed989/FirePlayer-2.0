@@ -2608,8 +2608,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
      */
     private fun checkMemory() {
-        if (player == null) return
-        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) squeezeFilmBuffer()
+        val p = player ?: return
+        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
+            squeezeFilmBuffer()
+            return
+        }
+        // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
+        val built = builtPlayer ?: return
+        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made()
     }
 
     /** Gives the film's buffer the size [memoryPressure] calls for now. */
@@ -2619,6 +2625,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val bytes = built.squeeze(step)
         android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
             ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
+        // What the smaller buffer no longer keeps for reuse is only dropped: collected now, so the TV gets it at once
+        // rather than whenever Android next collects (it loads nothing new until it's down to its new size).
+        if (step > 0) FilmRoom.made()
     }
 
     /**

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.PixelCopy
 import android.view.View
@@ -43,6 +44,8 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private var filmStarting = false
     /** The release ran while away: the snapshot shows on return. */
     private var released = false
+    /** When the film now starting was asked for (elapsedRealtime), for the log; 0 when none is. */
+    private var filmAskedAt = 0L
     private val backgroundRelease = Runnable { releaseNow() }
 
     /**
@@ -52,6 +55,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
      */
     fun beforeFilm(go: () -> Unit) {
         filmStarting = true
+        filmAskedAt = SystemClock.elapsedRealtime()
         hooks.stopLive()
         capture(null)
         go()
@@ -78,6 +82,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
         main.removeCallbacks(backgroundRelease)
         main.removeCallbacks(trimStale)
         filmStarting = false
+        filmAskedAt = 0L
         val shot = snapshot
         if (released && shot != null) show(over, shot) else dropSnapshot()
         released = false
@@ -172,7 +177,11 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
      */
     private fun trimGraphics() {
         val trimmed = GraphicsTrim.trim()
-        Log.i(TAG, "Film mode: the pages' pictures and caches let go" + if (trimmed) ", graphics trimmed" else "")
+        // For a film: how long after OK the room was made (the film's buffer is sized again once it's there, FilmRoom).
+        val asked = filmAskedAt
+        filmAskedAt = 0L
+        val after = if (asked > 0L) " ${SystemClock.elapsedRealtime() - asked} ms after OK" else ""
+        Log.i(TAG, "Film mode: the pages' pictures and caches let go$after" + if (trimmed) ", graphics trimmed" else "")
         // Where Android only lets go of graphics unused for half a minute, the pages' go once they've been hidden that long.
         main.removeCallbacks(trimStale)
         if (GraphicsTrim.staleOnly) main.postDelayed(trimStale, GraphicsTrim.STALE_MS + 1_000L)

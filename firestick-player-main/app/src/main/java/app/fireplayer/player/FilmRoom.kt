@@ -23,6 +23,9 @@ import java.util.concurrent.TimeUnit
  * they're held for a millisecond or two), and [onMade] is told a moment after, when what the pictures held outside
  * the app's own heap has been freed as well. The film's player then reads the free memory again
  * ([FilmMemory.afterRoom]).
+ *
+ * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
+ * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
  */
 object FilmRoom {
     private const val TAG = "FirePlayer"
@@ -57,7 +60,7 @@ object FilmRoom {
             } catch (e: Throwable) {
                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
             }
-            Log.i(TAG, "Room made: memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
+            Log.i(TAG, "Memory let go of collected in ${android.os.SystemClock.elapsedRealtime() - started} ms")
             main.removeCallbacks(told)
             main.postDelayed(told, SETTLE_MS)
         }

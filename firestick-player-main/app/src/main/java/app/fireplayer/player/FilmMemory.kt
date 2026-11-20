@@ -158,6 +158,18 @@ object FilmMemory {
     }
 
     /**
+     * Whether a squeezed buffer is coming down to what it now fills to: at squeeze [step] (above 0) it holds
+     * [heldBytes], more than the [fillBytes] it stops loading at, and the film is [playing] (paused or waiting, it
+     * lets go of nothing). Until it's down, it loads nothing new, so the memory it lets go of as the film plays on is
+     * only dropped, and nothing has Android collect it (it collects when enough new things were made): the TV would
+     * stay as short of memory as before the squeeze, and half a minute on the squeeze would go a step further for it
+     * ([MemoryPressure]). So while this is true, FirePlayer has it collected at each memory check ([FilmRoom.made]).
+     * Once the buffer is down and loading again, what it loads anew makes Android collect by itself.
+     */
+    fun comingDown(step: Int, heldBytes: Long, fillBytes: Long, playing: Boolean): Boolean =
+        playing && step > 0 && fillBytes > 0L && heldBytes > fillBytes
+
+    /**
      * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], or the whole
      * [budgetBytes] while less than [MIN_AHEAD_US] is ahead.
      */
