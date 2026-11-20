@@ -2168,6 +2168,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     val isFullScreen get() = fullScreen
 
+    /** Multiview (or its channel picker) is showing. */
+    val multiviewActive get() = multiview.active
+
     // ---- Multiview ------------------------------------------------------------------------------------------------
 
     /**

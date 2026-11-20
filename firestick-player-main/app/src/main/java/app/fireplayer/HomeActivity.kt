@@ -28,6 +28,7 @@ import app.fireplayer.data.Prefs
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.ui.LivePage
+import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.LivePicture
 import app.fireplayer.live.ui.LiveSettings
 import app.fireplayer.playback.PlayerHost
@@ -158,6 +159,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.liveWindows = { liveSettings.openCategory(it) }
         // The Search bubble (Search and App Settings; Live TV's settings window): Live TV search from Live TV.
         settingsPanels.onSearch = { openSearch(if (rail.selected == NavRail.Tab.LIVE) SearchKind.LIVE else SearchKind.VOD) }
+        // Settings › Picture-in-picture switched off while the picture plays: it stops now.
+        settingsPanels.onPipChanged = { if (pipOn && !prefs.pipKeep) stopPip(closed = false) }
 
         wallpaper = WallpaperView(this).apply { glassLook = Glass.on }
         wallpaperHost.addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -192,8 +195,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         filmMode = FilmMode(this, object : FilmMode.Hooks {
             override fun stopLive() {
                 // The channel stops and its player is released: its decoders are the film's now. Multiview's pictures
-                // too, for good (they don't come back after the film).
+                // too, for good (they don't come back after the film), and the live picture on Home or Search.
                 live.endMultiview()
+                stopPip(closed = false)
+                pipResume = false
                 live.stop()
                 player.stop()
                 placeVideo(null, 0f, false)
@@ -235,6 +240,12 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
+        // The live picture on Home or Search when the screen stopped comes back with it, its sound as it was.
+        if (pipResume) {
+            pipResume = false
+            val back = PipRules.keepsPicture(pipPageOf(rail.selected)) && Prefs(this).pipKeep && live.keepAgain()
+            if (back) showPip(fresh = false, muted = pipResumeMuted) else placeVideo(null, 0f, false)
+        }
         armLiveRoom(rail.selected == NavRail.Tab.LIVE, pictureFull)
         vodPages.start()
         // The dimmer may have been changed in the VOD player meanwhile.
@@ -246,6 +257,13 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onStop() {
         armLiveRoom(false, full = false)
+        // The live picture's channel stops with the screen (remembered): it comes back with it (onStart).
+        if (pipOn) {
+            pipResume = true
+            pipResumeMuted = pipMuted
+            endPip()
+            live.letGo()
+        }
         live.stop()
         // The film pages' pictures go, and half the decoded ones kept in memory: a film may be starting in the player.
         vodPages.stop()
@@ -393,6 +411,188 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         focusPage()
     }
 
+    // ---- The live picture on Home and Search (automatic picture-in-picture, PipRules) -----------------------------
+    //
+    // The channel playing on Live TV carries on top right on Home and Search: the same player and surface as the
+    // guide's miniature and full screen (no second player), its place the page's box ([VodPage.pipSpot]). It moves up
+    // and down with the page frame by frame (translation only), and plays on unseen, under the wallpaper, while a title
+    // page, See all or the settings window covers its place. Movies, TV Shows, My List and Settings stop it; Live TV
+    // takes it back into the miniature.
+
+    /** A channel plays on in the picture on Home or Search. */
+    private var pipOn = false
+    /** Its sound is off (the strip's Volume; Settings › Picture-in-picture › Start with sound). */
+    private var pipMuted = false
+    /** The picture was on when the screen stopped: it comes back with the screen, its sound as it was. */
+    private var pipResume = false
+    private var pipResumeMuted = false
+    /** How far the page has moved the picture up from its place (px, 0 at rest). */
+    private var pipShift = 0f
+    /** Its place is covered (or not laid out yet): it plays on under the wallpaper. */
+    private var pipVeiled = false
+    /** A held Back opened the picture full screen: its release does nothing more. */
+    private var pipBackHeld = false
+    /** Whether a SurfaceView follows its view's transforms here (Android 7 and later): else the picture waits at rest. */
+    private val canFollow = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
+
+    private fun pipPageOf(tab: NavRail.Tab): PipRules.Page = when (tab) {
+        NavRail.Tab.SEARCH -> PipRules.Page.SEARCH
+        NavRail.Tab.HOME -> PipRules.Page.HOME
+        NavRail.Tab.MOVIES -> PipRules.Page.MOVIES
+        NavRail.Tab.SHOWS -> PipRules.Page.TV_SHOWS
+        NavRail.Tab.MY_LIST -> PipRules.Page.MY_LIST
+        NavRail.Tab.LIVE -> PipRules.Page.LIVE
+        NavRail.Tab.SETTINGS -> PipRules.Page.SETTINGS
+    }
+
+    /**
+     * The picture on the page shown now: [fresh] as Live TV is left (its sound as Start with sound says), otherwise
+     * moving from the other page (or back with the screen), its sound as it was.
+     */
+    private fun showPip(fresh: Boolean, muted: Boolean = pipMuted) {
+        val page = vodPages.current ?: return
+        pipOn = true
+        pipMuted = if (fresh) PipRules.mutedAtStart(Prefs(this).pipSound) else muted
+        player.setMuted(pipMuted)
+        vodPages.pipOffExcept(page)
+        page.setPip(true, pipMuted)
+        pipWords()
+        pipMoved()
+    }
+
+    /** The strip's words: the channel playing and what's on it now. */
+    private fun pipWords() {
+        live.keptInfo { name, programme -> if (pipOn) vodPages.current?.pipInfo(name, programme) }
+    }
+
+    /**
+     * The picture leaves Home and Search; the channel's stream is left as it is (Live TV takes it, or [stopPip] stops
+     * it). Where the page had moved it up, it stays there for a move that follows (full screen grows from it).
+     */
+    private fun endPip(closed: Boolean = false) {
+        if (!pipOn) return
+        pipOn = false
+        pipBackHeld = false
+        val page = vodPages.current
+        // Focus on the strip moves first (Close: the first recent channel on Home), then the boxes go.
+        page?.pipOff(closed)
+        vodPages.pipOffExcept(null)
+        if (pipShift != 0f && laidAt != null && mover == null && canFollow) {
+            // The picture is shown shifted: the next move sets off from there.
+            motion.picture.set(motion.picture.left, motion.picture.top + pipShift, motion.picture.right, motion.picture.bottom + pipShift)
+            motion.hole.set(motion.hole.left, motion.hole.top + pipShift, motion.hole.right, motion.hole.bottom + pipShift)
+        }
+        pipShift = 0f
+        pipVeiled = false
+        pipMuted = false
+        player.setMuted(false)
+    }
+
+    /**
+     * The picture's channel stops (Close; another tab; the setting switched off): its stream and connection go, the
+     * channel remembered, so Live TV carries on with it as it always did.
+     */
+    private fun stopPip(closed: Boolean) {
+        if (!pipOn) return
+        endPip(closed)
+        live.letGo()
+        placeVideo(null, 0f, false)
+    }
+
+    /** The picture full screen on Live TV (its Full screen; Back held on its page), growing from where it is. */
+    private fun pipToFull() {
+        val key = ChannelKey.parse(player.currentKey)
+        if (!pipOn || key == null) return
+        if (panel.isOpen) panel.close()
+        endPip()
+        // Remembered first, as for a channel from Live TV search.
+        live.openChannel(key)
+        showTab(NavRail.Tab.LIVE)
+        rail.focusSelected()
+        focusPage()
+        live.openKeptFull(key)
+    }
+
+    /** Puts the picture in the page's box (its place at rest, moved by the page's shift), or under the wallpaper. */
+    override fun pipMoved() {
+        if (!pipOn || videoFull) return
+        val page = vodPages.current ?: return
+        val spot = page.pipSpot()
+        pipShift = page.pipShift()
+        // Not laid out yet (the page's first showing): it waits unseen where it is, for the box's layout.
+        pipVeiled = spot == null || page.pipCovered() || panel.isOpen
+        if (spot != null) placeVideo(spot, page.pipRadius(), false) else showPipShift()
+    }
+
+    override fun pipFollow(dy: Float) {
+        if (!pipOn) return
+        pipShift = dy
+        showPipShift()
+    }
+
+    /** The picture where the page has moved its box to, by translation only (or unseen; see [PipRules.pictureShows]). */
+    private fun showPipShift() {
+        if (!pipOn || videoFull || mover != null || laidAt == null) return
+        if (canFollow && surface.translationY != pipShift) surface.translationY = pipShift
+        if (!PipRules.pictureShows(pipVeiled, pipShift, canFollow) || endHole.width <= 0f) {
+            wallpaper.setHole(null, 0f)
+            busy.away()
+            return
+        }
+        holeNow.set(endHole.left, endHole.top + pipShift, endHole.right, endHole.bottom + pipShift)
+        wallpaper.setHole(holeNow, videoRadius, full = false)
+        busy.place(holeNow.centerX(), holeNow.centerY(), 0f)
+    }
+
+    override fun pipButton(button: PipRules.Button) {
+        if (!pipOn) return
+        when (button) {
+            PipRules.Button.VOLUME -> {
+                pipMuted = !pipMuted
+                player.setMuted(pipMuted)
+                vodPages.current?.pipMuted(pipMuted)
+            }
+            PipRules.Button.FULL_SCREEN -> pipToFull()
+            PipRules.Button.CLOSE -> stopPip(closed = true)
+        }
+    }
+
+    override fun pipStripShown() = pipWords()
+
+    /** A held Back on the picture's page: full screen ([PipRules.back]); its release then does nothing more. */
+    private fun pipBack(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (!pipBackHeld) return false
+            pipBackHeld = false
+            return true
+        }
+        if (pipBackHeld) return true
+        val held = event.repeatCount >= 1
+        val page = vodPages.current
+        val inFront = page?.pipInFront() == true && !panel.isOpen
+        if (PipRules.back(held, inStrip = false, playing = pipOn, pageInFront = inFront) != PipRules.BackAct.FULL_SCREEN) return false
+        pipBackHeld = true
+        pipToFull()
+        return true
+    }
+
+    // LivePage.Host: the channel kept playing on Home or Search.
+    override fun keptChanged() {
+        if (pipOn) pipWords()
+    }
+
+    override fun keptNotice(text: String) {
+        if (pipOn) vodPages.current?.showNotice(text)
+    }
+
+    override fun keptSleep() {
+        if (!pipOn) return
+        val page = vodPages.current
+        stopPip(closed = true)
+        player.stop()
+        page?.showNotice("Sleep timer: Live TV stopped")
+    }
+
     override fun onRestart() {
         super.onRestart()
         if (lookOn == Glass.on) return
@@ -407,6 +607,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     // ---- Tabs -----------------------------------------------------------------------------------------------------
 
     private fun showTab(tab: NavRail.Tab) {
+        val from = rail.selected
         rail.setSelected(tab)
         // Live TV's rail is a strip attached to the screen's edge; every other tab's a floating window. It moves from
         // one to the other as Live TV is entered or left.
@@ -421,13 +622,22 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // Live TV in front a while: what the other tabs left in memory goes (LiveRoom).
         armLiveRoom(isLive, full = false)
         if (isLive) {
+            // The live picture on Home or Search comes back into the guide's miniature, still playing, with its sound.
+            if (pipOn) endPip()
             live.start()
         } else {
-            // Live playback doesn't follow to other tabs yet (the top-right live window is a later step). Multiview
-            // lives inside Live TV's full screen: leaving the tab closes it for good.
+            // Multiview lives inside Live TV's full screen: leaving the tab closes it for good.
             live.endMultiview()
-            live.stop()
-            placeVideo(null, 0f, false)
+            // A playing channel follows to Home and Search, top right (PipRules); other tabs stop it, remembered for
+            // Live TV, as leaving it always did.
+            val to = pipPageOf(tab)
+            val keep = if (from == NavRail.Tab.LIVE) {
+                PipRules.keepOnLeavingLive(Prefs(this).pipKeep, to, playing = player.currentKey != null, multiview = live.multiviewActive)
+            } else {
+                pipOn && PipRules.whenGoingTo(to) == PipRules.Move.KEEP
+            }
+            if (from == NavRail.Tab.LIVE) live.leave(keepPlaying = keep) else if (pipOn && !keep) stopPip(closed = false)
+            if (keep) showPip(fresh = from == NavRail.Tab.LIVE) else placeVideo(null, 0f, false)
         }
     }
 
@@ -472,9 +682,18 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         }
     }
 
+    /** The settings window was open over the live picture when last looked (focus goes in and out with it). */
+    private var pipUnderPanel = false
+
     private val focusWatcher = ViewTreeObserver.OnGlobalFocusChangeListener { _, now ->
         val inRail = now != null && isInside(now, rail)
         rail.setExpanded(inRail)
+        // The settings window opened over the live picture's page, or closed: it plays on unseen under it meanwhile
+        // (the window's glass would show it through its blur).
+        if (pipOn && panel.isOpen != pipUnderPanel) {
+            pipUnderPanel = panel.isOpen
+            pipMoved()
+        }
     }
 
     private fun isInside(v: View, parent: View): Boolean {
@@ -816,6 +1035,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         surface.visibility = View.VISIBLE
         wallpaper.setHole(target, radius, full = videoFull)
         busy.place(target.centerX(), target.centerY(), if (videoFull) 1f else 0f)
+        // The live picture on Home or Search: where the page has moved its box, or unseen while it's covered.
+        if (pipOn && !videoFull) showPipShift()
         pictureFull = videoFull
         // Full screen a moment: what's out of sight lets go of its memory (LiveRoom); back in the guide, the tab's wait.
         if (videoFull != roomFull && rail.selected == NavRail.Tab.LIVE) armLiveRoom(true, videoFull)
@@ -1011,8 +1232,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             return true
         }
         if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
-        // Channel ▲ / ▼ change the playing channel wherever it plays ("Channel buttons only"; a dialog keeps them).
-        if (rail.selected == NavRail.Tab.LIVE && live.channelKey(event)) return true
+        // Channel ▲ / ▼ change the playing channel wherever it plays ("Channel buttons only"; a dialog keeps them): on
+        // Live TV, and in the live picture on Home and Search.
+        if ((rail.selected == NavRail.Tab.LIVE || pipOn) && live.channelKey(event)) return true
+        // Back held on the live picture's page (or its rail): the picture full screen on Live TV.
+        if (isBack && pipOn && pipBack(event)) return true
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
         // A film page's own Back (its small window, See all) before the shell's.

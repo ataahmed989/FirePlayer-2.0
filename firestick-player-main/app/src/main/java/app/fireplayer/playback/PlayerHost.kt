@@ -267,7 +267,17 @@ class PlayerHost private constructor(context: Context) {
         return back
     }
 
-    fun setMuted(muted: Boolean) { player?.volume = if (muted) 0f else 1f }
+    /**
+     * The live picture's sound off ([muted]; its Volume on Home and Search), kept for the players built after (another
+     * channel's may be a new one); Live TV's own pages always play with it on.
+     */
+    var muted = false
+        private set
+
+    fun setMuted(muted: Boolean) {
+        this.muted = muted
+        player?.volume = if (muted) 0f else 1f
+    }
 
     /** Paused by the viewer (not by the app going to the background, which closes the stream). */
     var paused = false
@@ -515,6 +525,7 @@ class PlayerHost private constructor(context: Context) {
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)
         surface?.let { p.setVideoSurfaceView(it) }
+        if (muted) p.volume = 0f
         player = p
         builtHeaders = headers
         builtBuffer = buffer

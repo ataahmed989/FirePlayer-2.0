@@ -2,6 +2,7 @@ package app.fireplayer.vod.ui
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,6 +22,7 @@ import app.fireplayer.live.LiveDb
 import app.fireplayer.live.LiveSearch
 import app.fireplayer.live.ui.LiveSearchView
 import app.fireplayer.live.ui.HoldPopup
+import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
@@ -99,6 +101,14 @@ class VodPage(
         fun backToLive() {}
         /** Assign favorites on a channel's group, the channel selected (a channel's small window in Live TV search). */
         fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?) {}
+        /** OK on one of the live picture's buttons (Volume, Full screen, Close; [PipRules]). */
+        fun pipButton(button: PipRules.Button) {}
+        /** The live picture's box was laid out, covered or uncovered: the picture is put there again ([pipSpot]). */
+        fun pipMoved() {}
+        /** The page glides: the live picture moves with its box by [dy] px (0 at rest, less while the rows are up). */
+        fun pipFollow(dy: Float) {}
+        /** The live picture's strip is showing (focus came to it): what's on is read again for it. */
+        fun pipStripShown() {}
     }
 
     private val t = host.tokens
@@ -175,7 +185,23 @@ class VodPage(
         column.translationY = -it
         // The banner's words keep clear of its top while the page hides a little of it (My List's holds still).
         if (!myList && !search) header.setHiddenTop(it)
+        // The live picture goes up and down with the banner (or the bar), frame by frame (translations only).
+        if (pipOn) {
+            pipBox?.translationY = -it
+            host.pipFollow(-it)
+        }
     }
+
+    /**
+     * The live picture's box ([PipRules]): on Home in Recent channels' place, on Search in the top right beside the
+     * page's name; shown while a channel plays on in it ([setPip]). The picture is the shell's (behind the window).
+     */
+    private val pipBox: PipBox? = if (page == Page.HOME || search) PipBox(ctx, t) else null
+    /** The live picture is on this page. */
+    private var pipOn = false
+    /** Where focus was when it came to the picture's strip: Back (and Left from Volume) go back there. */
+    private var pipFrom: View? = null
+    private var pipBackDown = false
 
     /** Where the open title pages were opened from: focus goes back there when the last one closes. */
     private sealed class Origin {
@@ -277,6 +303,23 @@ class VodPage(
         root.addView(viewport, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             topMargin = t.dp(if (myList) VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_TOP)
         })
+        // The live picture's box, over the rows (which never reach it) and under the page's windows. Laid out while
+        // hidden, so the picture's place is known the moment it comes.
+        pipBox?.let { box ->
+            box.visibility = View.INVISIBLE
+            val w = if (search) VodSizes.SEARCH_PIP_W else VodSizes.WINDOW_W
+            val h = if (search) VodSizes.SEARCH_PIP_H else VodSizes.HEADER_H
+            root.addView(box, FrameLayout.LayoutParams(t.dp(w), t.dp(h)).apply {
+                leftMargin = t.dp(if (search) VodSizes.searchPipX() else VodSizes.windowX())
+                topMargin = t.dp(if (search) VodSizes.SEARCH_PIP_TOP else VodSizes.VIEWPORT_TOP)
+            })
+            box.onButton = { host.pipButton(it) }
+            box.onOut = { pipOut(it) }
+            box.onStripShown = { host.pipStripShown() }
+            box.addOnLayoutChangeListener { _, l, tp, r, b, ol, ot, or, ob ->
+                if (pipOn && (l != ol || tp != ot || r != or || b != ob)) host.pipMoved()
+            }
+        }
         historyList?.let { list ->
             root.addView(list, FrameLayout.LayoutParams(t.dp(VodSizes.searchBarW()), ViewGroup.LayoutParams.MATCH_PARENT).apply {
                 leftMargin = pageX
@@ -362,6 +405,9 @@ class VodPage(
         shown = false
         focusPending = false
         pendingFrom = null
+        // A Back held to full screen went with its release unseen here.
+        pipBackDown = false
+        searchBackDown = false
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
         titles.closeAll(focusBack = false)
         closeSeeAll(focusBack = false)
@@ -455,6 +501,7 @@ class VodPage(
     fun applyLook() {
         header.applyLook()
         window?.applyLook()
+        pipBox?.applyLook()
         searchBar?.applyLook()
         historyList?.applyLook()
         pills?.applyLook()
@@ -533,6 +580,17 @@ class VodPage(
     /** The page's Back: closes the small window, then the title pages ([TitleStack]), then See all. False when it's the shell's (to the rail). */
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_BACK) return false
+        // The live picture's strip: Back goes back to where focus was on the page (held, the shell opens full screen).
+        val inStrip = pipBox?.hasFocus() == true
+        if (pipBackDown || PipRules.back(held = false, inStrip = inStrip, playing = pipOn, pageInFront = true) == PipRules.BackAct.RETURN_FOCUS) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                pipBackDown = true
+            } else if (event.action == KeyEvent.ACTION_UP && pipBackDown) {
+                pipBackDown = false
+                if (!event.isCanceled) focusBackFromPip()
+            }
+            return true
+        }
         if (hold.isOpen || backClosedPopup) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 hold.close()
@@ -708,7 +766,8 @@ class VodPage(
         val watch = button == VodHeader.Button.WATCH
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> if (watch) host.focusRail() else header.focusButton(VodHeader.Button.WATCH)
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) header.focusButton(VodHeader.Button.DETAILS) else window?.takeFocus()
+            // Right from Details: the live picture when it plays here (its strip, on Volume), else Recent channels.
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) header.focusButton(VodHeader.Button.DETAILS) else if (!focusPip()) window?.takeFocus()
             KeyEvent.KEYCODE_DPAD_DOWN -> firstRowWithItems()?.focusChosen()
             // The banner moves on to its next title (a held Up: one per change, never mid-change).
             KeyEvent.KEYCODE_DPAD_UP -> header.stepUp(repeat = event.repeatCount > 0)
@@ -837,6 +896,8 @@ class VodPage(
         if (empty.visibility != View.GONE) empty.visibility = v
         updateListHeader()
         updateSearchView()
+        // A title page covers the live picture's place: it plays on unseen until the page is back.
+        syncPip()
     }
 
     override fun restoreOrigin(focusBack: Boolean) {
@@ -910,6 +971,8 @@ class VodPage(
         updateHeaderPause()
         // Only the grid's pictures (and the row it came from, for coming back).
         for (other in rows) if (other !== row) other.releaseImages()
+        // The grid covers the live picture's place: it plays on unseen until the grid closes.
+        syncPip()
     }
 
     private fun closeSeeAll(focusBack: Boolean) {
@@ -933,6 +996,7 @@ class VodPage(
         updateListHeader()
         updateHeaderPause()
         updateImages()
+        syncPip()
     }
 
     override fun focusRail() = host.focusRail()
@@ -1591,7 +1655,8 @@ class VodPage(
         val bar = searchBar ?: return
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> if (fromTrash) bar.focusBar() else host.focusRail()
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (!fromTrash) bar.focusTrash()
+            // Right from the bin: the live picture when it plays here (its strip, on Volume).
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (!fromTrash) bar.focusTrash() else focusPip()
             KeyEvent.KEYCODE_DPAD_UP -> pills?.focus(kind)
             KeyEvent.KEYCODE_DPAD_DOWN -> {
                 if (kind == SearchKind.LIVE) {
@@ -1649,6 +1714,151 @@ class VodPage(
             ),
             focus = 1,
         )
+    }
+
+    // ---- The live picture (automatic picture-in-picture, PipRules) -------------------------------------------------
+
+    /**
+     * The live picture comes to this page ([on]: a channel plays on in it) or goes; [muted]: its sound is off. On Home it
+     * takes Recent channels' place; on Search the bar and the history shorten to clear it. Going, focus on its strip
+     * goes back to where it came from first ([pipOff]).
+     */
+    fun setPip(on: Boolean, muted: Boolean) {
+        val box = pipBox ?: return
+        box.setMuted(muted)
+        if (!on) return pipOff(closed = false)
+        if (pipOn) return syncPip()
+        pipOn = true
+        // Recent channels makes way (focus in it first goes to the banner's Details: a hidden row can't keep it).
+        window?.let { w ->
+            if (w.hasFocus() && !header.focusButton(VodHeader.Button.DETAILS)) firstRowWithItems()?.focusChosen()
+            w.visibility = View.INVISIBLE
+        }
+        narrowSearch(true)
+        box.translationY = -pageSpring.value
+        syncPip()
+    }
+
+    /**
+     * The live picture leaves this page: Recent channels (Home) or the full bar (Search) come back. Focus on its strip
+     * moves first, never left to fall anywhere: [closed] (its Close) as [PipRules.focusAfterClose] says (Home: the first
+     * recent channel), otherwise back to where it came from.
+     */
+    fun pipOff(closed: Boolean) {
+        val box = pipBox ?: return
+        if (!pipOn) return
+        pipOn = false
+        pipBackDown = false
+        val inStrip = box.hasFocus()
+        val w = window
+        w?.visibility = View.VISIBLE
+        narrowSearch(false)
+        val page = if (search) PipRules.Page.SEARCH else PipRules.Page.HOME
+        if (closed && w != null && PipRules.focusAfterClose(page) == PipRules.AfterClose.FIRST_RECENT) {
+            // With no channel listed yet, focus waits on the banner's Details and comes to the first once read.
+            w.focusFirst { focusBackFromPip() }
+        } else if (inStrip) {
+            focusBackFromPip()
+        }
+        pipFrom = null
+        box.hideStrip()
+        box.visibility = View.INVISIBLE
+        box.translationY = 0f
+    }
+
+    /** The strip's Volume shows the picture's sound off ([muted]) or on. */
+    fun pipMuted(muted: Boolean) {
+        pipBox?.setMuted(muted)
+    }
+
+    /** The channel's [name] and what's on it now on the picture's strip. */
+    fun pipInfo(name: String, programme: String?) {
+        pipBox?.setInfo(name, programme)
+    }
+
+    /**
+     * Where the live picture goes: its box on screen with the page at rest (the shell moves it with the page itself,
+     * [pipShift]), in the window's coordinates; null while it isn't on this page or not laid out yet.
+     */
+    fun pipSpot(): RectF? {
+        val box = pipBox ?: return null
+        if (!pipOn || box.width == 0 || box.height == 0) return null
+        val at = IntArray(2)
+        box.getLocationInWindow(at)
+        val base = IntArray(2)
+        root.rootView.getLocationInWindow(base)
+        val x = (at[0] - base[0]).toFloat()
+        val y = at[1] - base[1] - box.translationY
+        return RectF(x, y, x + box.width, y + box.height)
+    }
+
+    /** The picture's corners: the box's (Recent channels' window shape). */
+    fun pipRadius(): Float = pipBox?.let { Glass.cornerRadius(ctx, Glass.Kind.PANEL, it.width, it.height) } ?: 0f
+
+    /** How far the page has moved the picture's box from its place now (px, 0 at rest, less while the rows are up). */
+    fun pipShift(): Float = if (pipOn) -pageSpring.value else 0f
+
+    /** Something covers the picture's place (a title page, See all), or the page is hidden: it plays on unseen. */
+    fun pipCovered(): Boolean = !shown || covered || seeAll?.isOpen == true
+
+    /**
+     * Whether a held Back here is the picture's (full screen): the page itself is in front, with no small window, title
+     * page or See all over it, and the press didn't just close one.
+     */
+    fun pipInFront(): Boolean = pipOn && shown && !covered && seeAll?.isOpen != true && !hold.isOpen && !backClosedPopup
+
+    /** Focus to the picture's strip, on Volume (Right from the banner's Details, or from Search's bin). */
+    private fun focusPip(): Boolean {
+        val box = pipBox ?: return false
+        if (!pipOn || box.visibility != View.VISIBLE) return false
+        val from = root.findFocus()
+        if (!box.takeFocus()) return false
+        if (from != null && !box.owns(from)) pipFrom = from
+        return true
+    }
+
+    /** An arrow out of the strip: Left back to where focus came from, Down into the page under the picture. */
+    private fun pipOut(step: PipRules.Step) {
+        when (step) {
+            PipRules.Step.OutLeft -> focusBackFromPip()
+            PipRules.Step.OutDown -> if (search) onBarArrow(KeyEvent.KEYCODE_DPAD_DOWN, fromTrash = true) else firstRowWithItems()?.focusChosen()
+            else -> Unit
+        }
+    }
+
+    /** Back to where focus was before the strip; else the banner's Details (Home) or the bin (Search). */
+    private fun focusBackFromPip() {
+        val from = pipFrom?.takeIf { it.isShown && it.isFocusable }
+        if (from != null && from.requestFocus()) return
+        when {
+            searchBar != null -> if (!searchBar.focusTrash()) searchBar.focusBar()
+            header.focusButton(VodHeader.Button.DETAILS) -> Unit
+            else -> if (firstRowWithItems()?.focusChosen() != true) focusFallback()
+        }
+    }
+
+    /** The box shows while the picture is on this page and nothing covers its place; the shell is told either way. */
+    private fun syncPip() {
+        val box = pipBox ?: return
+        if (!pipOn) return
+        val show = !pipCovered()
+        if (!show && box.hasFocus()) focusBackFromPip()
+        if (!show) box.hideStrip()
+        box.visibility = if (show) View.VISIBLE else View.INVISIBLE
+        host.pipMoved()
+    }
+
+    /** Search: the bar and the history shortened to clear the picture in the top right ([pip]), or full width again. */
+    private fun narrowSearch(pip: Boolean) {
+        searchBar?.setNarrow(pip)
+        historyList?.let { list ->
+            val lp = list.layoutParams ?: return@let
+            val w = t.dp(VodSizes.searchBarW(pip))
+            if (lp.width != w) {
+                lp.width = w
+                list.layoutParams = lp
+            }
+        }
     }
 
     companion object {
