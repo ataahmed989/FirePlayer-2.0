@@ -5,9 +5,10 @@ package app.fireplayer.playback
  * apart from one that is only slow or down for a moment (5xx, a network error: those stay "Reconnecting...").
  *
  * Measured on the user's TV: a channel answered 404 seven times in a row and the screen only showed the buffering
- * symbol for minutes. So a refusal on a channel that hasn't played since it was opened, or a second refusal in a row
- * on one that had, is said in plain words ([message]) and the channel is then tried again slowly ([waitMs]) for as
- * long as the viewer stays on it. Anything that plays clears it at once ([playing]). Pure: no Android, no Media3.
+ * symbol for minutes. So a second refusal in a row (the first is tried again after a second: a provider that allows
+ * one connection can refuse for a moment while it closes the last channel's, and that must not flash a message on
+ * every channel change) is said in plain words ([message]) and the channel is then tried again slowly ([waitMs]) for
+ * as long as the viewer stays on it. Anything that plays clears it at once ([playing]). Pure: no Android, no Media3.
  */
 class LiveRefusal {
     /** The provider's answer being shown (0: none, the channel is only reconnecting or fine). */
@@ -44,7 +45,7 @@ class LiveRefusal {
             return false
         }
         streak++
-        if (!played || streak >= REFUSALS_AFTER_PLAYING) code = httpCode
+        if (streak >= REFUSALS_TO_SAY) code = httpCode
         return shown
     }
 
@@ -57,8 +58,8 @@ class LiveRefusal {
 
     companion object {
         const val NOT_AVAILABLE = "This channel isn't available right now"
-        /** A channel that had played is only called refused after this many refusals in a row. */
-        const val REFUSALS_AFTER_PLAYING = 2
+        /** A channel is only called refused after this many refusals in a row. */
+        const val REFUSALS_TO_SAY = 2
         val REFUSED_WAITS_MS = longArrayOf(1_000, 5_000, 15_000, 30_000)
 
         /**

@@ -13,9 +13,12 @@ class LiveRefusalTest {
         for (c in listOf(0, 200, 302, 408, 429, 500, 502, 503, 509)) assertFalse("$c", LiveRefusal.refuses(c))
     }
 
-    @Test fun aChannelThatNeverPlayedIsSaidAtTheFirstRefusal() {
+    @Test fun aChannelThatNeverPlayedIsSaidAtTheSecondRefusalNotTheFirst() {
         val r = LiveRefusal()
         r.opened()
+        // A provider closing the last channel's connection can refuse once: no message flashes on a channel change.
+        assertFalse(r.failed(404))
+        assertNull(r.message())
         assertTrue(r.failed(404))
         assertEquals("This channel isn't available right now\nThe provider answered 404", r.message())
     }
@@ -25,7 +28,8 @@ class LiveRefusalTest {
         r.opened()
         assertFalse(r.failed(0)) // connect timeout: still "Reconnecting..."
         assertNull(r.message())
-        repeat(7) { assertTrue(r.failed(404)) }
+        assertFalse(r.failed(404))
+        repeat(6) { assertTrue(r.failed(404)) }
     }
 
     @Test fun aChannelThatPlayedNeedsTwoRefusalsInARow() {
@@ -40,6 +44,7 @@ class LiveRefusalTest {
     @Test fun aServerOrNetworkErrorGoesBackToReconnecting() {
         val r = LiveRefusal()
         r.opened()
+        assertFalse(r.failed(404))
         assertTrue(r.failed(404))
         assertFalse(r.failed(503))
         assertFalse(r.shown)
@@ -51,9 +56,11 @@ class LiveRefusalTest {
         val r = LiveRefusal()
         r.opened()
         r.failed(410)
+        r.failed(410)
         r.playing()
         assertNull(r.message())
         r.opened()
+        assertFalse(r.failed(401))
         assertTrue(r.failed(401))
     }
 
