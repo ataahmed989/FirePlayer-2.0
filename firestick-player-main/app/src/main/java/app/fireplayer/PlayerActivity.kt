@@ -86,6 +86,7 @@ import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
 import app.fireplayer.player.FilmMemory
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MemoryPressure
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
@@ -855,6 +856,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.stop()
         val releaseFrom = SystemClock.elapsedRealtime()
         releasePlayer()
+        // Whatever player comes next is built later, from the memory free then.
+        keepBudgetBytes = 0
         // For the log on the TV: how long after Back this screen was taken down, and how long letting go of the player
         // held the app's main thread (the page is on screen by then).
         if (leftAt > 0) {
@@ -919,6 +922,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onDestroy() {
         super.onDestroy()
+        // Never left pointing at a screen that's gone (onStop's releasePlayer normally takes it away first).
+        if (FilmRoom.film === filmRoom) FilmRoom.film = null
         barWatch?.release()
         liveSettings?.release()
         if (diagMade.isInitialized()) diag.release()
@@ -1155,7 +1160,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             frameCounts = diag.counts,
             byteMeter = diag.meter,
             freshLinks = source != null,
+            keepBudgetBytes = keepBudgetBytes,
         )
+        keepBudgetBytes = 0
+        builtAt = SystemClock.elapsedRealtime()
+        // A new buffer holds nothing yet: what it gives back under a squeeze is counted from there (checkMemory).
+        heldAtCollect = 0L
         vsyncFix = vsync.also { it.start() }
         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
         hdr10PlusGate = hdr10Plus.also { it.start() }
@@ -1170,6 +1180,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         builtPlayer = built
         // A new player while the TV is still short of memory starts squeezed.
         if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
+        // Its buffer was sized by the memory free just now; told when room made for it is back with the TV (FilmRoom).
+        FilmRoom.film = filmRoom
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
@@ -1287,7 +1299,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (diagMade.isInitialized()) diag.playerGone()
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
+        // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
+        if (FilmRoom.film === filmRoom) FilmRoom.film = null
         p.release()
+        // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
+        // built meanwhile (the next episode's) hears when it's there.
+        FilmRoom.made(this)
         assHandler?.release()
         assHandler = null
         builtPlayer = null
@@ -1309,8 +1326,41 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun rebuildPlayer() {
+        // The same film in a new player: its buffer is the old one's memory over again (see FilmMemory.plan).
+        keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
         releasePlayer()
         initPlayer()
+    }
+
+    /** The budget of the player just let go of, for the one built in its place in the same moment; 0 otherwise. */
+    private var keepBudgetBytes = 0
+    /** When the player was built (elapsedRealtime). */
+    private var builtAt = 0L
+
+    private val filmRoom = object : FilmRoom.Film {
+        override fun heldBytes(): Long = builtPlayer?.filmBytes?.invoke() ?: 0L
+        override fun roomMade(askedAt: Long, gainedBytes: Long) = filmRoomMade(askedAt, gainedBytes)
+    }
+
+    /**
+     * Memory let go of for this film is back with the TV ([FilmRoom]: the pages' pictures and caches, the buffer of the
+     * film or episode before): a buffer held down by the memory free as the player was built is sized by what's free
+     * now, or by what was free then with what came back since ([gainedBytes]), up to this TV's own size for it.
+     * Logged when it changes, to be read on the TV.
+     */
+    private fun filmRoomMade(askedAt: Long, gainedBytes: Long) {
+        val built = builtPlayer ?: return
+        val free = FilmMemory.freeNow(this)
+        // What came back counts when it was let go of in this player's first moments, as room is made for a film
+        // (the page behind it, the episode before). Later, more free memory may be the film's own (after a jump).
+        val gained = if (askedAt >= builtAt && askedAt - builtAt <= ROOM_GAIN_MS) gainedBytes else 0L
+        val bytes = built.roomMade(free, gained)
+        if (bytes > 0) {
+            val step = memoryPressure.step
+            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free" + (if (gained > 0L) ", ${gained shr 20} MiB came back" else "") +
+                ": the film's buffer is now ${bytes shr 20} MiB" +
+                if (step > 0) " (filling to ${built.fillBytes() shr 20} MiB while memory is short)" else "")
+        }
     }
 
     /** The decoder service hasn't answered: say so once, instead of a spinner that never ends. */
@@ -2583,8 +2633,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun checkMemory() {
         if (player == null) return
-        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) squeezeFilmBuffer()
+        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
+            squeezeFilmBuffer()
+            return
+        }
+        // Squeezed and coming down to its new size: what it has let go of meanwhile goes back to the TV, a good
+        // piece at a time (see FilmMemory.givenBack).
+        val built = builtPlayer ?: return
+        val held = built.filmBytes()
+        if (FilmMemory.givenBack(memoryPressure.step, held, heldAtCollect)) {
+            heldAtCollect = held
+            FilmRoom.made(this, forFilm = false)
+        } else if (held > heldAtCollect) {
+            // Loading again: counted from the most it holds.
+            heldAtCollect = held
+        }
     }
+
+    /** What the film's buffer held when its memory was last collected for a squeeze, or when it was squeezed (bytes). */
+    private var heldAtCollect = 0L
 
     /** Gives the film's buffer the size [memoryPressure] calls for now. */
     private fun squeezeFilmBuffer() {
@@ -2593,6 +2660,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val bytes = built.squeeze(step)
         android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
             ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
+        if (step > 0) {
+            // The pictures the Episodes sheet and the details windows left in memory go too (up to 12 MB; what's on
+            // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
+            // OS asks them to trim, and a film opened from Glass Home or another app has no page behind it at all.
+            app.fireplayer.ui.ImageLoader.trim()
+            // What the smaller buffer lets go of as it comes down is only dropped, as those pictures are: collected
+            // from the next memory check on, as it goes (checkMemory), counted from what it holds now.
+            heldAtCollect = built.filmBytes()
+        }
     }
 
     /**
@@ -5806,7 +5882,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
                 return
             }
-            if (p != null) releasePlayer()
+            if (p != null) {
+                // Its buffer is this one's memory over again (see FilmMemory.plan).
+                keepBudgetBytes = builtPlayer?.budgetBytes?.invoke() ?: 0
+                releasePlayer()
+            }
             entries.clear()
             val entry = Entry(uri, vodRawTitle(request), null, storeKey = vodKey(request, ready))
             entries += entry
@@ -5814,7 +5894,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Explicit either way: FirePlayer's own plays never ask "Resume from?".
             startPositionMs = startMs
             attachSaved(entry, chooseOn = true)
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer()
+            // Built now, or at onStart from the memory free then (the old player's budget is kept for this moment only).
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer() else keepBudgetBytes = 0
         }
 
         override fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
@@ -6750,6 +6831,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_COUNT_TICKS = 5
         /** Fire OS is asked whether memory is low this often (play ticks of 200 ms: 10 s). */
         const val MEMORY_CHECK_TICKS = 50
+        /**
+         * Memory let go of this soon after the player was built was let go of to make room for its film (the page
+         * behind it, the episode before): what came back then counts for the film's buffer (see filmRoomMade).
+         */
+        const val ROOM_GAIN_MS = 10_000L
         /** The decoders' kinds looked up ahead of the film (see warmDecoders). */
         private val WARM_MIMES = listOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_H264, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_AV1,
             MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_AAC)

@@ -59,7 +59,8 @@ enum class RamTier(
 /**
  * What the film's buffer gets on this TV (see [FilmMemory.plan]): [budgetBytes] in all, [backBufferMs] of it behind
  * where the film plays, held to [backCapBytes] (0: no limit). [byFreeMemory]: the budget is below the tier's because
- * little memory was free when the film started.
+ * little memory was free when the film started; [tierBytes] is what it would be with enough free (the most it can be
+ * raised to once room has been made, [FilmMemory.afterRoom]).
  */
 data class FilmBufferPlan(
     val tier: RamTier,
@@ -67,6 +68,7 @@ data class FilmBufferPlan(
     val backBufferMs: Int,
     val backCapBytes: Long = 0L,
     val byFreeMemory: Boolean = false,
+    val tierBytes: Int = budgetBytes,
 )
 
 /**
@@ -107,20 +109,69 @@ object FilmMemory {
      * The buffer never takes more of it than leaves [RESERVE_BYTES], down to [FREE_FLOOR_BYTES]: the tier says what the
      * TV can spare at best, the free memory what it can spare now (seen: a 260 MB buffer and up to 198 MB of decoder
      * frames on a 1.7 GB Stick, with 76 kB of swap left).
+     *
+     * [keepBytes] is the budget of the player this one takes the place of, in the same moment (the same film in a
+     * rebuilt player, another source in a new one; 0: none). That player's buffer has just been let go of, and
+     * Android hasn't taken it back yet, so the free memory still reads as if it were held: this player gets at least
+     * the budget that one had (never past the tier's), which is that same memory again.
      */
-    fun plan(tier: RamTier, maxHeapBytes: Long, freeBytes: Long = 0L): FilmBufferPlan {
+    fun plan(tier: RamTier, maxHeapBytes: Long, freeBytes: Long = 0L, keepBytes: Int = 0): FilmBufferPlan {
         val byTier = minOf(tier.budgetMiB.toLong() shl 20, (maxHeapBytes * HEAP_SHARE).toLong(), CEILING_BYTES.toLong())
             .coerceAtLeast(FLOOR_BYTES.toLong())
         val byFree = if (freeBytes > 0L) (freeBytes - RESERVE_BYTES).coerceAtLeast(minOf(FREE_FLOOR_BYTES.toLong(), byTier)) else byTier
-        val budget = minOf(byTier, byFree).toInt()
+        val budget = maxOf(minOf(byTier, byFree), minOf(byTier, keepBytes.toLong())).toInt()
         val fits = RamTier.entries.lastOrNull { (it.budgetMiB.toLong() shl 20) <= budget } ?: RamTier.TINY
         return FilmBufferPlan(
             tier, budget, minOf(tier.backBufferMs, fits.backBufferMs),
             // What's kept behind is held to the smaller of the two tiers' sizes, as its length is.
             backCapBytes = listOf(tier.backCapMiB, fits.backCapMiB).filter { it > 0 }.minOrNull()?.let { it.toLong() shl 20 } ?: 0L,
             byFreeMemory = budget < byTier,
+            tierBytes = byTier.toInt(),
         )
     }
+
+    /**
+     * The film's budget once room has been made for it: [budgetBytes] is what it got when its player was built, held
+     * under [tierBytes] by the memory free at that moment. That moment comes before the room is made: the player is
+     * built as soon as the link is checked (about half a second after OK), while the page it was started from lets go
+     * of its pictures and caches only once the player's screen covers it, and the film or episode before (Next
+     * episode, a rebuilt player) has only just let go of its own buffer, which Android hasn't taken back yet. So the
+     * free memory is read again when that memory is back ([FilmRoom]), by the same rule as at the start ([plan]: all
+     * but [RESERVE_BYTES]), in two ways, the better of which counts:
+     * - [freeBytes] free now, plus [heldBytes] the film's buffer already holds itself. Right until the film's decoder
+     *   has taken its frames (they come out of the same memory, and the reserve is there for them), too low after.
+     * - [startFreeBytes] free when the player was built, plus [gainedBytes] seen to come back since ([roomGained]):
+     *   what would have been free then, had the room been made first. The decoder taking its frames before or after
+     *   the room is made doesn't change it.
+     *
+     * Only ever more, and never past [tierBytes]: a reading that comes out lower changes nothing, and memory running
+     * short later is [MemoryPressure]'s to answer. Gives back the budget from now on ([budgetBytes] when nothing
+     * changes, or nothing is known).
+     */
+    fun afterRoom(
+        budgetBytes: Int,
+        tierBytes: Int,
+        freeBytes: Long,
+        heldBytes: Long,
+        startFreeBytes: Long = 0L,
+        gainedBytes: Long = 0L,
+    ): Int {
+        if (budgetBytes >= tierBytes) return budgetBytes
+        val now = if (freeBytes > 0L) freeBytes + heldBytes.coerceAtLeast(0L) else 0L
+        val atStart = if (startFreeBytes > 0L && gainedBytes > 0L) startFreeBytes + gainedBytes else 0L
+        val free = maxOf(now, atStart)
+        if (free <= 0L) return budgetBytes
+        return minOf(tierBytes.toLong(), free - RESERVE_BYTES).toInt().coerceAtLeast(budgetBytes)
+    }
+
+    /**
+     * How much more is free for a film once memory let go of was collected: what's free for it after
+     * ([afterBytes]: the TV's free memory and what its own buffer holds) less the same before ([beforeBytes]). 0 when
+     * either isn't known, or when less is free (something else took memory meanwhile: the film's decoder, another
+     * app): only what was seen to come back counts.
+     */
+    fun roomGained(beforeBytes: Long, afterBytes: Long): Long =
+        if (beforeBytes <= 0L || afterBytes <= 0L) 0L else (afterBytes - beforeBytes).coerceAtLeast(0L)
 
     /**
      * What the buffer fills to at squeeze [step]: 0 is the whole [budgetBytes], 1 three quarters (Fire OS says memory
@@ -134,6 +185,24 @@ object FilmMemory {
         }
         return cap.coerceAtLeast(FLOOR_BYTES).coerceAtMost(budgetBytes)
     }
+
+    /**
+     * Whether what a squeezed buffer has given back should be collected now: at squeeze [step] (above 0) it holds
+     * [heldBytes], [COLLECT_STEP_BYTES] or more under what it held when memory was last collected for it, or when it
+     * was squeezed ([heldAtCollectBytes]).
+     *
+     * A buffer coming down to a smaller size loads nothing new, so the memory it lets go of as the film plays on is
+     * only dropped, and nothing has Android collect it (it collects when enough new things were made): the TV would
+     * stay as short of memory as before the squeeze, and half a minute on the squeeze would go a step further for it
+     * ([MemoryPressure]). So FirePlayer has it collected itself ([FilmRoom.made]), a good piece at a time rather than
+     * at every check: collecting looks at everything the app holds, which is work a TV short of memory is short of
+     * too. Once the buffer is down and loading again, what it loads anew makes Android collect by itself.
+     */
+    fun givenBack(step: Int, heldBytes: Long, heldAtCollectBytes: Long): Boolean =
+        step > 0 && heldAtCollectBytes - heldBytes >= COLLECT_STEP_BYTES
+
+    /** A squeezed buffer's memory is collected each time it holds this much less ([givenBack]). */
+    const val COLLECT_STEP_BYTES = 16L shl 20
 
     /**
      * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], or the whole
