@@ -21,3 +21,15 @@ Photos (TiviMate, guides only; FirePlayer keeps its own look):
 3. `3-search-over-playback-small-picture.jpg` — a see-through search page over playback, the picture small.
 4. `4-fullscreen-left-channel-list-programmes.jpg` — full screen, Left: the group's channel list, the focused
    channel's programmes to its right with its logo and name as the column's header, details at the top right.
+
+## The user's answers (asked the same day)
+
+1. **Groups key:** Left again. Full screen: Left opens the playing channel's group (channels, with the focused
+   channel's programmes to the right, its logo and name as that column's header); Left again opens the groups column
+   with the channels to its right (the programmes column goes). Right goes back towards the picture; Back closes.
+2. **Multiview start:** the playing picture shrinks to the top right (Multiview is ready for a second screen) and the
+   groups-and-channels list opens on the left to pick one. A Search option at the top of the list opens the
+   see-through search page over playback; with nothing searched, channel history shows under the bar, and the bar
+   must be pressed to type.
+3. **Hold windows:** a narrow list beside the item held, "but also make it look more optimal and less open space and
+   better spacing".
