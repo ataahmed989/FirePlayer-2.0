@@ -85,3 +85,7 @@ and continue from the first unfinished step. Update the status lines here as ste
   NOTHING: Glass Home already stops its timers and lets go of what it can when another app is in front, and under the
   hard rule (quick return) nothing sizeable more can be released; its branch is unchanged at 7244638. Next: at the
   07:00 UTC reset relaunch the two Fable audits (step 1), then step 4.
+- 07:35 UTC: on the TV (fp-next-58): search order right ("breaking bad": TV Shows first; "dune": Movies first);
+  Up on a banner button moves to the next title; the Home Header window shows the switch and "Time on each title";
+  with the switch Off (the user turned it off themselves: leave it) the banner keeps idling on a Continue card.
+  Steps 2, 3 and 3b are done. Waiting for the two Fable audits (run wf_8061bd2f-d97), then 1b, then step 4.
