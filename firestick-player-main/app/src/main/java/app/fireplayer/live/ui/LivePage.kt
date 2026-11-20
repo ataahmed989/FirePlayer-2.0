@@ -541,20 +541,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** When the tab last started showing (uptime ms), until its guide is listed: for the log of how long that took. */
     private var openedAt = 0L
-    /** The same for its stages, each logged once per opening: the playlists and groups, and the first listings. */
+    /**
+     * The same for its stages, each logged once per opening: the playlists and groups, the first listings and the
+     * first logos. A stage that comes long after ([OPENING_MS]: nothing was read at the opening, and this is a later
+     * scroll's) says nothing.
+     */
     private var openGroupsAt = 0L
     private var openProgrammesAt = 0L
     private var openLogosAt = 0L
     /** The logo cache's counts (kept on disk, fetched, without one) as they stood when the tab opened. */
     private val logosAtOpen = IntArray(3)
+    /** The listings last asked for when the tab opened: still the last when its list shows, none were needed. */
+    private var askAtOpening: Any? = null
+
+    /** How long after the tab opened at [at] it is now, for a stage's line; null when that's no longer an opening's. */
+    private fun sinceOpening(at: Long): Long? =
+        if (at == 0L) null else (android.os.SystemClock.uptimeMillis() - at).takeIf { it <= OPENING_MS }
 
     /** Once per opening, when the first logos asked for have all landed: how long they took and where they came from. */
     private fun logLogos() {
         if (openLogosAt == 0L || logos.pendingCount > 0) return
-        Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
-            "${logos.failedCount - logosAtOpen[2]} without one) ${android.os.SystemClock.uptimeMillis() - openLogosAt} ms after opening")
+        sinceOpening(openLogosAt)?.let { ms ->
+            Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
+                "${logos.failedCount - logosAtOpen[2]} without one) $ms ms after opening")
+        }
         openLogosAt = 0L
     }
+
     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
     private var keyAt = 0L
 
@@ -572,6 +585,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         openGroupsAt = openedAt
         openProgrammesAt = openedAt
         openLogosAt = openedAt
+        askAtOpening = programmeAsk
         logosAtOpen[0] = logos.fromDisk
         logosAtOpen[1] = logos.fromNetwork
         logosAtOpen[2] = logos.failedCount
@@ -687,10 +701,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
                     sidebar.setData(pls, groups, scope)
                     groupNames = groups.values.flatten().associate { (it.playlistId to it.id) to it.name }
-                    if (openGroupsAt != 0L) {
-                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) ${android.os.SystemClock.uptimeMillis() - openGroupsAt} ms after opening (read $readMs ms)")
-                        openGroupsAt = 0L
+                    sinceOpening(openGroupsAt)?.let { ms ->
+                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) $ms ms after opening (read $readMs ms)")
                     }
+                    openGroupsAt = 0L
                     loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
                 }
                 // The playlists changed (or the tab came back): the playing group's order is read again, behind the
@@ -758,7 +772,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val kept = if (shownScope == s && shownLists == version) guide.channelList() else lists.get(s, version)
         if (kept != null) {
             showChannels(s, kept, version, focus, enterGrid)
-            logListed(kept.size, "kept in memory")
+            logListed(kept.size, "kept in memory", kept = true)
             return
         }
         loadingScope = s
@@ -792,10 +806,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     /** The line for opening the guide, once per opening: how long until its list showed, and how it came. */
-    private fun logListed(channels: Int, how: String) {
+    private fun logListed(channels: Int, how: String, kept: Boolean = false) {
         if (openedAt == 0L) return
-        Log.i(TAG, "Live TV: guide listed ($channels channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening ($how)")
+        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: guide listed ($channels channels) $ms ms after opening ($how)") }
         openedAt = 0L
+        // The list was the one already showing and it asked for no listings: its rows still had them.
+        if (kept && openProgrammesAt != 0L && programmeAsk === askAtOpening) {
+            sinceOpening(openProgrammesAt)?.let { ms -> Log.i(TAG, "Live TV: programmes shown (kept in memory) $ms ms after opening") }
+            openProgrammesAt = 0L
+        }
     }
 
     /** Listings loaded before the lists or the guide were last written are forgotten; otherwise they stay as loaded. */
@@ -818,9 +837,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         firstScreenOf = s
         forgetStaleRows()
         guide.showFirstScreen(part, focus)
-        if (openedAt != 0L) {
-            Log.i(TAG, "Live TV: first channels shown (${part.size}) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening (read $readMs ms)")
-        }
+        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: first channels shown (${part.size}) $ms ms after opening (read $readMs ms)") }
     }
 
     /**
@@ -857,7 +874,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     /** The listings asked for last, until they're read: an older ask still waiting then has nothing left to do. */
-    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int, val from: Long, val to: Long)
+    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int)
     @Volatile private var programmeAsk: ProgrammeAsk? = null
 
     /**
@@ -866,7 +883,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      * read (it covers what shows now), and one overtaken half-way stops after the rows on screen.
      */
     private fun loadProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) {
-        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size), from, to)
+        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size))
         programmeAsk = ask
         bg {
             if (programmeAsk !== ask) return@bg
@@ -878,10 +895,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post {
                 if (released) return@post
                 guide.putProgrammes(first, map, from, to)
-                if (openProgrammesAt != 0L) {
-                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) ${android.os.SystemClock.uptimeMillis() - openProgrammesAt} ms after opening (read $readMs ms)")
-                    openProgrammesAt = 0L
+                sinceOpening(openProgrammesAt)?.let { ms ->
+                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) $ms ms after opening (read $readMs ms)")
                 }
+                openProgrammesAt = 0L
             }
             if (first.size == ask.channels.size || programmeAsk !== ask) return@bg
             val rest = ask.channels.subList(ask.onScreen, ask.channels.size)
@@ -1991,6 +2008,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
          */
         private const val FIRST_BEFORE = 16
         private const val FIRST_AFTER = 24
+        /** A stage of opening the tab is logged as such only this soon after it. */
+        private const val OPENING_MS = 30_000L
         /** Column and rail sliding in and out. */
         private const val SLIDE_MS = 220L
         /** The miniature growing to full screen, and shrinking back. */

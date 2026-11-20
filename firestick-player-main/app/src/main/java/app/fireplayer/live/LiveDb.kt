@@ -31,11 +31,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     /**
-     * How often what the guide lists was written (playlists, groups, channels, the viewer's stars and group choices),
-     * and how often its listings were (programmes, which import the guide reads). A screen notes them before a read
-     * and keeps what it read for as long as they stand: a visit to Live TV with nothing written since reads nothing
-     * again. Each write counts once it's stored (after its transaction), so a count read before a read is never
-     * newer than what that read sees. This process only (the database has no other).
+     * How often what the guide lists was written (playlists and their order, groups, channels, the viewer's stars and
+     * group choices), and how often its listings were (programmes, which import the guide reads). A screen notes them
+     * before a read and keeps what it read for as long as they stand: a visit to Live TV with nothing written since
+     * reads no channel list or listing again. Each write counts once it's stored (after its transaction), so a count
+     * read before a read is never newer than what that read sees. A playlist's update status and account details
+     * ([setPlaylistStatus]) are in no channel list and count for neither. This process only (the database has no other).
      */
     val listChanges = AtomicInteger()
     val epgChanges = AtomicInteger()
@@ -167,7 +168,6 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             playlistEpgUrl?.let { put("playlist_epg_url", it) }
         }
         writableDatabase.update("playlist", v, "id = ?", arrayOf(id))
-        listChanges.incrementAndGet()
     }
 
     /** The EPG link a playlist's guide comes from: the viewer's own, else the one the playlist names. */
