@@ -32,14 +32,17 @@ and continue from the first unfinished step. Update the status lines here as ste
    Branches: `audit/vod`, `audit/live` (Fable), Glass Home memory in `/home/user/glass-home-firetv`.
    Status: started.
 2. **Movies & TV Shows search:** the row holding the best match comes first (a show: TV Shows first; a film: Movies).
-   Branch `feat/home-header` (with step 3). Status: started.
+   Branch `feat/home-header` (with step 3). Status: MERGED (2850d18), tests pass; NOT yet tried on the TV (search a
+   show, e.g. "breaking bad": TV Shows first; a film, e.g. "dune": Movies first).
 3. **Home banner:** slightly larger and wider, using the free space between it and the rail, and taller if it reads
    well; Recent channels may move right and need not match its height; the dark gradient of the Movies / TV Shows
    banner is allowed; buttons further to the bottom left, title further to the top left, with pleasing spacing. It
    idles (rotates) whenever focus is not on a Continue Watching title. New "Home Header" category in the all-settings
    page: turn off "match the focused Continue Watching title" so it always idles while in view.
    The user's message ended with "For the genre row," and nothing after it: unknown, nothing done for it; ask.
-   Status: started.
+   Status: MERGED (2850d18) and on the TV as fp-next-57. Seen on the TV: the wider, taller banner (x 70-630, 228
+   tall, the Movies look), Recent channels narrower at the right, it idles with focus in the rail, the Home Header
+   category and its switch. Not yet tried: the switch turned Off; Up from a Continue card to the buttons.
 4. **Multiview and the live picture (PiP), without glitches**, plus a settings category to turn automatic PiP on or
    off and whatever else deserves a preference. Designs: `player-fixes-wip/MULTIVIEW-NOTES.md` (2-4 side by side; OK
    on one makes it larger with the others underneath; holding a picture: remove, add (search), change (search), full
@@ -63,3 +66,7 @@ and continue from the first unfinished step. Update the status lines here as ste
   with the script `overnight-1-playback-audit-wf_19260f83-8c4.js` (they continue their branches). The Home banner /
   search-order and Glass Home agents (Opus) keep running (workflow run wf_6bdb89dc-ee8, branch `feat/home-header`
   and Glass Home's `claude/blissful-mayer-2nf8z9`).
+- 06:45 UTC: steps 2-3 merged and installed (fp-next-57), 1,131 tests. Glass Home memory: the agent changed
+  NOTHING: Glass Home already stops its timers and lets go of what it can when another app is in front, and under the
+  hard rule (quick return) nothing sizeable more can be released; its branch is unchanged at 7244638. Next: at the
+  07:00 UTC reset relaunch the two Fable audits (step 1), then step 4.
