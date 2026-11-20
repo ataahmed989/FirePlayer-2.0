@@ -133,3 +133,10 @@ and continue from the first unfinished step. Update the status lines here as ste
   MediaFusion best (4K DV REMUX) played ("... MediaFusion · cached · streams from torbox.app (TorBox)", first frame
   3.3 s). StremThru Torz not checked (no link entered yet). Seen in the log: one EPG source fails to parse
   ("EPG for kytv.xyz failed: XmlPullParserException") - tell the user.
+- 16:25 UTC: MERGED and INSTALLED (fp-next-62, 1,279 tests): film stalls fix (Fable; longer waits after stalls,
+  lighter source offered, "When a film keeps buffering" setting), Multiview, the live picture on Home and Search
+  with its "Picture-in-picture" settings category (after an independent review). Not yet tried on the TV.
+  Running: workflow wf_0493c7bd-a59 (feat/sources-list: no SD, 4K IMAX header, clear Best row; audit/throughput:
+  whether the app limits the download). Voice search: a Fire OS bug ("Voice input is disabled since user's locale =
+  en_US is not supported"); the user fixed it by setting English (Australia). Nothing to change in the app.
+  Remaining after this: step 5 (release + data reset), only after these are checked on the TV.
