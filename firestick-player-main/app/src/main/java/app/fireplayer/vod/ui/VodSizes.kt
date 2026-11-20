@@ -222,7 +222,7 @@ internal object VodSizes {
     const val HEADER_TITLE_SP = 28f
     const val HEADER_TITLE_LONG_SP = 21f
     const val HEADER_TITLE_LINES = 2
-    /** The logo: at most this share of the column, and never wider than this (210 dp on Home, 240 on the wide cards). */
+    /** The logo: at most this share of the column, and never wider than this (205 dp on Home, 240 on the wide cards). */
     const val HEADER_LOGO_SHARE = 0.7f
     const val HEADER_LOGO_MAX = 240f
     /**
@@ -236,7 +236,7 @@ internal object VodSizes {
     const val HEADER_STORY_SP = 13f
     /**
      * The words' column: never wider than [HEADER_STORY_MAX], and ending at least [HEADER_CLEAR] from the card's right
-     * edge, where the picture's subject is (300 dp on Home, 400 on the wide cards).
+     * edge, where the picture's subject is, and on the dark side ([storyW]: 293 dp on Home, 400 on the wide cards).
      */
     const val HEADER_STORY_MAX = 400f
     const val HEADER_CLEAR = 172f

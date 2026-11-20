@@ -27,7 +27,8 @@ import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
 
 /**
- * A page's banner (216 dp; My List's 186): the title's picture, sharp ([HeaderArt]), under a separate dark shading
+ * A page's banner ([VodSizes.HEADER_H]; My List's 186): the title's picture, sharp ([HeaderArt]), in a box at the
+ * card's right with its left edge eased into the dark side ([VodSizes.backdropW]), under a separate dark shading
  * ([Shade]: round the words at the top left and down behind the buttons, the rest of the picture left clear), and on
  * it, at the top left, the title as its logo ([HeaderTitle]; its name where it has none), a facts line (12.5 sp: year,
  * genres, rating, length) and two lines of story; at the bottom left the Watch now and Details buttons ([actions]);
@@ -35,9 +36,9 @@ import app.fireplayer.vod.Title
  *
  * While idle it goes through the page's feed (Top 10, or Popular's first 10) about every 8 s ([HeaderRotation]), the
  * words and the logo fading out and in together and the picture crossfading; while focus is in the page's Continue row
- * it shows the chosen card's title instead: the words at once, the picture half a second later (so a held D-pad
- * decodes nothing). With focus on one of its buttons it goes on turning once no key has been pressed for that long
- * (from a Continue card's title too); the buttons act on the title whose words are showing ([shownCard],
+ * it shows the chosen card's title instead (only there: [HeaderFollow]; the page decides): the words at once, the
+ * picture half a second later (so a held D-pad decodes nothing). With focus on one of its buttons it goes on turning
+ * once no key has been pressed for that long; the buttons act on the title whose words are showing ([shownCard],
  * [HeaderPress]). Its words have fixed boxes, so new ones only redraw them. The buttons' keys go to the page
  * ([Listener]).
  */
@@ -73,7 +74,7 @@ class VodHeader(
     /** Whether anything else (a window, the settings window) asks it to hold still; asked at each turn. */
     var blocked: () -> Boolean = { false }
 
-    /** The picture fills the card (Home), or is a box at its right whose left edge is eased away (the wider cards). */
+    /** The picture fills the card, or is a box at its right whose left edge is eased away (every page's card now). */
     private val whole = VodSizes.backdropW(cardW) >= cardW
     private val art = HeaderArt(context, HeaderArt.ArtSpec.BANNER).apply { if (!whole) leftFade = VodSizes.BANNER_FADE_LEFT_TO }
     private val shade = Shade(context, t, cardW)

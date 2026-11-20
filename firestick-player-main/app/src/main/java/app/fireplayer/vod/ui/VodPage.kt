@@ -1120,6 +1120,9 @@ class VodPage(
         val first = if (SearchRules.showsFirst(names(moviesRow), names(showsRow), query)) showsRow else moviesRow
         if (rows[0] === first) return
         rows.reverse()
+        // Focus is on the bar: the page stays where it is (at the bar), not following a row it was in before.
+        anchorRow = null
+        anchorTop = -1
         // In the new order, after the bar (the column's first child).
         rows.forEachIndexed { i, r ->
             if (column.indexOfChild(r) == i + 1) return@forEachIndexed
