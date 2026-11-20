@@ -133,6 +133,17 @@ object GuideCells {
     }
 
     /**
+     * The first row shown once a list's first screenful has become the whole list: the focused row, [oldFocus] in the
+     * part and [newFocus] in the whole, stays on the row of the screen it was on ([oldTop] was the part's first row
+     * shown), so nothing moves on screen as the rest arrives. Never past either end of the [count] rows.
+     */
+    fun topKeeping(oldTop: Int, oldFocus: Int, newFocus: Int, visible: Int, count: Int): Int =
+        (newFocus - (oldFocus - oldTop)).coerceIn(0, (count - visible).coerceAtLeast(0))
+
+    /** Whether a step from row [from] to row [to] ([down] or up) went round the list's end rather than to the row beside. */
+    fun wentRound(from: Int, to: Int, down: Boolean): Boolean = if (down) to < from else to > from
+
+    /**
      * Where the rows scroll from to reach [to] (pixels) from [from]: from where they are, unless that's further than
      * [longest] (round from the last channel to the first in a long list); then from [glide] short of [to]. The rows
      * jump there and glide the rest, rather than every row between flicking past (and asking for its logo).

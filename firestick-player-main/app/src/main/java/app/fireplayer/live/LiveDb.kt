@@ -6,10 +6,12 @@ import android.database.AbstractWindowedCursor
 import android.database.Cursor
 import android.database.CursorWindow
 import android.os.Build
+import android.os.CancellationSignal
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Live TV storage (`live.db`): playlists, groups, channels, favorites, recent channels and EPG programmes.
@@ -27,6 +29,16 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     init {
         setWriteAheadLoggingEnabled(true)
     }
+
+    /**
+     * How often what the guide lists was written (playlists, groups, channels, the viewer's stars and group choices),
+     * and how often its listings were (programmes, which import the guide reads). A screen notes them before a read
+     * and keeps what it read for as long as they stand: a visit to Live TV with nothing written since reads nothing
+     * again. Each write counts once it's stored (after its transaction), so a count read before a read is never
+     * newer than what that read sees. This process only (the database has no other).
+     */
+    val listChanges = AtomicInteger()
+    val epgChanges = AtomicInteger()
 
     override fun onConfigure(db: SQLiteDatabase) {
         // Android turns auto-vacuum on (FULL) by default: every EPG swap then moved pages around to shrink the file,
@@ -126,6 +138,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             v.put("id", p.id)
             db.insertOrThrow("playlist", null, v)
         }
+        listChanges.incrementAndGet()
     }
 
     fun deletePlaylist(id: String) {
@@ -141,6 +154,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         } finally {
             db.endTransaction()
         }
+        listChanges.incrementAndGet()
+        epgChanges.incrementAndGet()
     }
 
     fun setPlaylistStatus(id: String, status: String, syncedAt: Long?, expiresAt: Long? = null, maxConnections: Int? = null, playlistEpgUrl: String? = null) {
@@ -152,6 +167,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             playlistEpgUrl?.let { put("playlist_epg_url", it) }
         }
         writableDatabase.update("playlist", v, "id = ?", arrayOf(id))
+        listChanges.incrementAndGet()
     }
 
     /** The EPG link a playlist's guide comes from: the viewer's own, else the one the playlist names. */
@@ -239,6 +255,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             return removed
         } finally {
             db.endTransaction()
+            // Counted whether or not it was stored: a count too many only has a list read once more.
+            listChanges.incrementAndGet()
         }
     }
 
@@ -306,6 +324,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             }
             db.insertWithOnConflict("epg_status", null, v, SQLiteDatabase.CONFLICT_REPLACE)
             switched = true
+            epgChanges.incrementAndGet()
             val t2 = SystemClock.elapsedRealtime()
             // A failure here only leaves rows behind (removed at the next import), never the ones now read.
             runCatching { deleteRows(physical(source, oldGen)) }
@@ -368,6 +387,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             v.put("source", source); v.put("programmes", 0); v.put("url", url); if (syncedAt == null) v.put("last_sync", 0L)
             writableDatabase.insert("epg_status", null, v)
         }
+        epgChanges.incrementAndGet()
     }
 
     class EpgStatus(val source: String, val url: String, val lastSync: Long, val status: String, val programmes: Int)
@@ -381,10 +401,12 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val db = writableDatabase
         db.delete("program", null, null)
         db.delete("epg_status", null, null)
+        epgChanges.incrementAndGet()
     }
 
     fun pruneProgrammes(keepFrom: Long) {
-        writableDatabase.delete("program", "stop < ?", arrayOf(keepFrom.toString()))
+        // Counted only when something went: the guide shows from about now on, but a row it holds may reach back.
+        if (writableDatabase.delete("program", "stop < ?", arrayOf(keepFrom.toString())) > 0) epgChanges.incrementAndGet()
     }
 
     // ---- Guide reads ---------------------------------------------------------------------------------------------
@@ -412,6 +434,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             v.put("playlist_id", playlistId); v.put("group_id", groupId)
             db.insertWithOnConflict("group_pref", null, v, SQLiteDatabase.CONFLICT_IGNORE)
         }
+        listChanges.incrementAndGet()
     }
 
     /** Hide all / Show all: every group of the playlist, including ones the provider isn't listing just now. */
@@ -425,6 +448,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         } finally {
             db.endTransaction()
         }
+        listChanges.incrementAndGet()
     }
 
     /** The viewer's order for [groupIds] (the shown groups, top first); groups not listed keep theirs. */
@@ -444,6 +468,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         } finally {
             db.endTransaction()
         }
+        listChanges.incrementAndGet()
     }
 
     /** Playlists in the viewer's order (top first). */
@@ -456,26 +481,89 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         } finally {
             db.endTransaction()
         }
+        listChanges.incrementAndGet()
     }
 
-    /** The channels a guide scope lists, in guide order. Blocked channels are left out. */
-    fun channels(scope: GuideScope): List<Channel> {
-        val select = "SELECT c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position, " +
-            "f.channel_id IS NOT NULL, c.blocked FROM channel c LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
+    /**
+     * The channels a guide scope lists, in guide order. Blocked channels are left out. [cancel]: the read is given up
+     * when it's cancelled (the list is no longer wanted), with an OperationCanceledException.
+     */
+    fun channels(scope: GuideScope, cancel: CancellationSignal? = null): List<Channel> {
         // Every playlist: each one's channels in turn, in playlist order (read in index order, never sorted whole).
-        if (scope == GuideScope.AllPlaylists) return playlists().flatMap { channels(GuideScope.AllChannels(it.id)) }
+        if (scope == GuideScope.AllPlaylists) return playlists().flatMap { channels(GuideScope.AllChannels(it.id), cancel) }
         val (sql, args) = when (scope) {
             GuideScope.AllPlaylists -> error("handled above")
             is GuideScope.AllChannels ->
                 // Channels of hidden groups are left out (Manage groups).
-                (select + "WHERE c.playlist_id = ? AND c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
-                    "(SELECT group_id FROM group_pref WHERE playlist_id = ? AND hidden = 1)) ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
+                (CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN ORDER BY c.position") to arrayOf(scope.playlistId, scope.playlistId)
             is GuideScope.Favorites ->
-                (select + "WHERE c.playlist_id = ? AND f.channel_id IS NOT NULL AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
+                // From the stars to their channels (CROSS JOIN keeps that order on every SQLite): a lookup by key for
+                // each star. Joined from the channels, every channel of the playlist was looked up among the stars
+                // (30,000 lookups for a list of 31, checked with EXPLAIN QUERY PLAN).
+                ("SELECT $CHANNEL_COLS, 1, c.blocked FROM favorite f CROSS JOIN channel c ON c.playlist_id = f.playlist_id AND c.id = f.channel_id " +
+                    "WHERE f.playlist_id = ? AND c.blocked = 0 ORDER BY f.added, c.position") to arrayOf(scope.playlistId)
             is GuideScope.Group ->
-                (select + "WHERE c.playlist_id = ? AND c.group_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId, scope.groupId)
+                (CHANNEL_SELECT + "WHERE c.playlist_id = ? AND c.group_id = ? AND c.blocked = 0 ORDER BY c.position") to arrayOf(scope.playlistId, scope.groupId)
         }
-        return readableDatabase.rawQuery(sql, args).wholeWindow().use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
+        return readableDatabase.rawQuery(sql, args, cancel).wholeWindow().use { c -> channelsOf(c, cancel) }
+    }
+
+    /**
+     * The first screenful of a long list (All channels of a playlist, or of every playlist): the channels around
+     * [around] when the list holds it, [before] of them before it and [after] from it on; otherwise (or with none
+     * given) the list's first [after]. Read through the position index: a few dozen rows however long the list, in
+     * the order and with the channels left out that [channels] gives. Any other scope is read whole.
+     */
+    fun channelsNear(scope: GuideScope, around: ChannelKey?, before: Int, after: Int): List<Channel> {
+        val ids = when (scope) {
+            GuideScope.AllPlaylists -> playlists().map { it.id }
+            is GuideScope.AllChannels -> listOf(scope.playlistId)
+            else -> return channels(scope)
+        }
+        val db = readableDatabase
+        if (around != null && around.playlistId in ids) {
+            val id = around.playlistId
+            val at = db.rawQuery("SELECT c.position FROM channel c WHERE c.playlist_id = ? AND c.id = ? AND $SHOWN", arrayOf(id, around.channelId, id))
+                .use { c -> if (c.moveToFirst()) c.getInt(0) else null }
+            if (at != null) {
+                val head = db.rawQuery(
+                    CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN AND c.position < ? ORDER BY c.position DESC LIMIT $before",
+                    arrayOf(id, id, at.toString()),
+                ).use { c -> channelsOf(c, null) }
+                return head.asReversed() + channelsFrom(id, at, after)
+            }
+        }
+        // Not in the list: its start (the first playlist that has channels to show).
+        for (id in ids) channelsFrom(id, Int.MIN_VALUE, after).let { if (it.isNotEmpty()) return it }
+        return emptyList()
+    }
+
+    /** A playlist's All channels from [position] on, [limit] at most. */
+    private fun channelsFrom(playlistId: String, position: Int, limit: Int): List<Channel> =
+        readableDatabase.rawQuery(
+            CHANNEL_SELECT + "WHERE c.playlist_id = ? AND $SHOWN AND c.position >= ? ORDER BY c.position LIMIT $limit",
+            arrayOf(playlistId, playlistId, position.toString()),
+        ).use { c -> channelsOf(c, null) }
+
+    /**
+     * The rows of [c] as channels. A playlist's id and a group's id are kept once for the whole list, not once a row:
+     * tens of thousands of copies of the same two texts were megabytes of a big playlist's list.
+     */
+    private fun channelsOf(c: Cursor, cancel: CancellationSignal?): List<Channel> {
+        val same = HashMap<String, String>()
+        val out = ArrayList<Channel>(c.count)
+        while (c.moveToNext()) {
+            // Every few hundred rows: a list no longer wanted stops being read.
+            if (cancel != null && (out.size and 0x1FF) == 0) cancel.throwIfCanceled()
+            val playlist = c.getString(0).let { same.getOrPut(it) { it } }
+            val group = c.getString(5)?.let { same.getOrPut(it) { it } }
+            out += Channel(
+                playlistId = playlist, id = c.getString(1), number = c.getInt(2), name = c.getString(3),
+                logo = c.getString(4), groupId = group, url = c.getString(6), epgRef = c.getString(7),
+                archiveDays = c.getInt(8), position = c.getInt(9), favorite = c.getInt(10) != 0, blocked = c.getInt(11) != 0,
+            )
+        }
+        return out
     }
 
     /**
@@ -488,12 +576,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     fun channel(key: ChannelKey): Channel? =
-        readableDatabase.rawQuery(
-            "SELECT c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position, " +
-                "f.channel_id IS NOT NULL, c.blocked FROM channel c LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id " +
-                "WHERE c.playlist_id = ? AND c.id = ?",
-            arrayOf(key.playlistId, key.channelId),
-        ).use { c -> if (c.moveToFirst()) channelAt(c) else null }
+        readableDatabase.rawQuery(CHANNEL_SELECT + "WHERE c.playlist_id = ? AND c.id = ?", arrayOf(key.playlistId, key.channelId))
+            .use { c -> if (c.moveToFirst()) channelAt(c) else null }
 
     fun channelCount(playlistId: String): Int =
         readableDatabase.rawQuery("SELECT COUNT(*) FROM channel WHERE playlist_id = ?", arrayOf(playlistId)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
@@ -535,11 +619,17 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     // ---- The viewer's own data ---------------------------------------------------------------------------------
 
     fun setFavorite(key: ChannelKey, favorite: Boolean, now: Long) {
-        if (favorite) {
-            val v = ContentValues().apply { put("playlist_id", key.playlistId); put("channel_id", key.channelId); put("added", now) }
-            writableDatabase.insertWithOnConflict("favorite", null, v, SQLiteDatabase.CONFLICT_IGNORE)
-        } else {
-            writableDatabase.delete("favorite", "playlist_id = ? AND channel_id = ?", arrayOf(key.playlistId, key.channelId))
+        try {
+            if (favorite) {
+                val v = ContentValues().apply { put("playlist_id", key.playlistId); put("channel_id", key.channelId); put("added", now) }
+                writableDatabase.insertWithOnConflict("favorite", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+            } else {
+                writableDatabase.delete("favorite", "playlist_id = ? AND channel_id = ?", arrayOf(key.playlistId, key.channelId))
+            }
+        } finally {
+            // Counted even when it couldn't be stored: the star was shown at once, so a list on screen may not be
+            // what's stored, and is read again rather than taken as unchanged.
+            listChanges.incrementAndGet()
         }
     }
 
@@ -598,6 +688,13 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         const val RECENT_KEEP = 11
         private const val STAGING = "#new"
         private const val BATCH = 2_000
+        private const val CHANNEL_COLS = "c.playlist_id, c.id, c.number, c.name, c.logo, c.group_id, c.url, c.epg_ref, c.archive_days, c.position"
+        /** A channel with its star; each list adds what it holds and its order. */
+        private const val CHANNEL_SELECT = "SELECT $CHANNEL_COLS, f.channel_id IS NOT NULL, c.blocked FROM channel c " +
+            "LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
+        /** What a playlist's All channels shows: not blocked, nor in a hidden group (Manage groups). Takes the playlist's id. */
+        private const val SHOWN = "c.blocked = 0 AND (c.group_id IS NULL OR c.group_id NOT IN " +
+            "(SELECT group_id FROM group_pref WHERE playlist_id = ? AND hidden = 1))"
         private const val PLAYLIST_COLS = "id, name, kind, url, username, password, epg_url, output, include_live, include_vod, " +
             "position, update_hours, last_sync, last_status, expires_at, max_connections, hide_new_groups"
 
