@@ -43,6 +43,14 @@ class PageColumn(
             requestLayout()
         }
 
+    /** More room between the header and the first row, px: Search's results start under the live picture. */
+    var headerExtra = 0
+        set(v) {
+            if (field == v) return
+            field = v
+            requestLayout()
+        }
+
     private val headerH = t.dp(headerHDp)
     private val headerGap = t.dp(headerGapDp)
     private var tops = IntArray(0)
@@ -66,7 +74,7 @@ class PageColumn(
             if (c.visibility == GONE) continue
             val ch = if (c === header) headerH else (c as? TitleRow)?.bandHeight ?: c.layoutParams.height.coerceAtLeast(0)
             c.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
-            h += ch + if (c === header) headerGap else 0
+            h += ch + if (c === header) headerGap + headerExtra else 0
         }
         // Taller than the viewport it sits in: the parent's limit doesn't apply.
         setMeasuredDimension(w, maxOf(h, headerH + roomUnderHeader))
@@ -80,7 +88,7 @@ class PageColumn(
             if (c.visibility == GONE) continue
             c.layout(0, y, c.measuredWidth, y + c.measuredHeight)
             now[i] = y
-            y += c.measuredHeight + if (c === header) headerGap else 0
+            y += c.measuredHeight + if (c === header) headerGap + headerExtra else 0
         }
         val moved = !now.contentEquals(tops)
         tops = now
