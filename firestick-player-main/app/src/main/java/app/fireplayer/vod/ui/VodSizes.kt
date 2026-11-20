@@ -161,6 +161,8 @@ internal object VodSizes {
     /** The history list's room at the screen's bottom. */
     const val SEARCH_LIST_BOTTOM = 16f
     const val SEARCH_WAIT_MS = 500L
+    /** Movies & TV Shows search: how long one kind's answer waits for the other's, so the two show together in order. */
+    const val SEARCH_OTHER_KIND_WAIT_MS = 1200L
     /** The bar's hint words: the row's own text colour (light, or dark on the white focused row) at this alpha. */
     const val SEARCH_HINT_ALPHA = 0x8C
     fun searchBarW(): Float = tabHeaderW() - SEARCH_TRASH_GAP - SEARCH_TRASH

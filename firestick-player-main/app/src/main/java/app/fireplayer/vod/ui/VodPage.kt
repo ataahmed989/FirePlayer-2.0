@@ -157,6 +157,8 @@ class VodPage(
     private var seeAllFrom: Pair<TitleRow, Int>? = null
     /** Search: each row's answer for the words now, until both have come ([holdSearchAnswer]). */
     private val heldAnswers = HashMap<TitleRow, Pair<List<Card>, Boolean>>()
+    /** Search: the rows' order for the words searched now has been decided (answers that come later don't move them). */
+    private var searchOrderSettled = false
     private val prefs by lazy { Prefs(ctx) }
 
     private val empty = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
@@ -617,7 +619,9 @@ class VodPage(
         // New cards held back while the viewer was in the row.
         row.pending?.let { (cards, seeAll) -> showCards(row, cards, seeAll) }
         // Anywhere but another Continue card (the banner's buttons too): the banner goes back to its feed.
-        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true) header.unfollow()
+        // Up to the banner's own buttons keeps the card's title, so Watch now and Details act on the title the viewer
+        // came from; the banner idles on from it after the usual wait. Anywhere else, it goes back to its feed at once.
+        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true && !header.hasButtonFocus) header.unfollow()
         return true
     }
 
@@ -1029,6 +1033,8 @@ class VodPage(
         headerCancel = page?.let { p -> r.header(p) { feed -> if (!released) header.setFeed(feed.titles) } }
         // Search: every row waits for its new answer before any shows ([holdSearchAnswer]).
         heldAnswers.clear()
+        searchOrderSettled = false
+        main.removeCallbacks(showHeldAnswers)
         if (!search || query.isNotEmpty()) for (row in rows) row.answered = false
         for (row in rows) {
             if (search && query.isEmpty()) continue
@@ -1096,8 +1102,22 @@ class VodPage(
      * these words ([orderSearchRows]) and both show together.
      */
     private fun holdSearchAnswer(row: TitleRow, cards: List<Card>, seeAll: Boolean) {
+        // The order for these words is settled already (the other kind was too slow to wait for): shown as it comes.
+        if (searchOrderSettled) {
+            applyAnswer(row, cards, seeAll)
+            return
+        }
         heldAnswers[row] = cards to seeAll
-        if (!rows.all { it.answered && heldAnswers.containsKey(it) }) return
+        main.removeCallbacks(showHeldAnswers)
+        if (rows.all { it.answered && heldAnswers.containsKey(it) }) showHeldAnswers.run()
+        // One kind answered: the other gets a moment, no more (a slow or failing request must not hold these back).
+        else main.postDelayed(showHeldAnswers, VodSizes.SEARCH_OTHER_KIND_WAIT_MS)
+    }
+
+    /** Search: the answers held so far take their order and show; a later one is then shown as it comes. */
+    private val showHeldAnswers = Runnable {
+        if (heldAnswers.isEmpty()) return@Runnable
+        searchOrderSettled = true
         orderSearchRows()
         // In the rows' order now: the first shown takes focus asked for, as before.
         for (r in ArrayList(rows)) {
@@ -1488,6 +1508,8 @@ class VodPage(
         query = q
         noticeFor = null
         heldAnswers.clear()
+        searchOrderSettled = false
+        main.removeCallbacks(showHeldAnswers)
         val specs = TabRows.search(q)
         rows.forEachIndexed { i, row ->
             row.cancel?.cancel()
