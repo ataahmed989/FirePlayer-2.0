@@ -31,9 +31,9 @@ import java.util.EnumSet
  * One play of a film or episode, stages 1-4 (design-brief §6.5). Picks the source (the release played last, then the
  * same release from the other add-on, then the closest match "Resumed near"; a row chosen in Sources; the same kind as
  * the previous episode; else "Best for this TV"), checks its link ([LinkCheck]), and on a failure follows the table
- * ([failed]): skip the file and its copies in both add-ons, refresh an expired link once, decode the sound on the Stick,
+ * ([failed]): skip the file and its copies in every add-on, refresh an expired link once, decode the sound on the Stick,
  * use the other add-on, or stop and say why. Limits: 3 start tries and 2 automatic switches per film or episode, at
- * least 3 minutes apart; a source not on Real-Debrid is never opened without [fetch], asked once. Main thread.
+ * least 3 minutes apart; a source not cached is never opened without [fetch], asked once. Main thread.
  */
 internal class DefaultSourceSession(
     override val request: PlayRequest,
@@ -271,7 +271,7 @@ internal class DefaultSourceSession(
     /** The file [o] opens: its own, else its row's. */
     private fun releaseOf(s: PlaybackSource, o: Offer) = o.release ?: s.release
 
-    /** [o] may be opened: its add-on isn't down, and it's on Real-Debrid unless the user agreed to fetch [s] (§6.5). */
+    /** [o] may be opened: its add-on isn't down, and it's cached unless the user agreed to fetch [s] (§6.5). */
     private fun openable(s: PlaybackSource, o: Offer): Boolean =
         o.addon !in downAddons && (o.readiness != Readiness.NOT_READY || s.key in fetchAgreed)
 
@@ -343,7 +343,7 @@ internal class DefaultSourceSession(
 
     private fun blankList() = SourceList(target, Addon.entries.associateWith { AddonState.NotAsked }, emptyList(), null)
 
-    /** The row holding the release played last, while it plays without asking (on Real-Debrid, not skipped). */
+    /** The row holding the release played last, while it plays without asking (cached, not skipped). */
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
         val row = repo.rowKeyOf(target, p.release)
@@ -409,7 +409,7 @@ internal class DefaultSourceSession(
                     val same = ordered.offers.firstOrNull { openable(ordered, it) }?.let { releaseOf(ordered, it) == p.release } == true
                     return ordered to (near && !same)
                 }
-                // Gone, or no longer on Real-Debrid: the closest ready match, "Resumed near …".
+                // Gone, or no longer cached: the closest ready match, "Resumed near …".
                 val sameAddon = auto.firstOrNull { p.addon in it.addons }
                 return (sameAddon ?: auto.firstOrNull()) to near
             }
@@ -424,7 +424,7 @@ internal class DefaultSourceSession(
     private fun preferAddon(s: PlaybackSource, addon: Addon): PlaybackSource =
         s.copy(offers = s.offers.sortedBy { if (it.addon == addon) 0 else 1 })
 
-    /** No ready source left: ask once whether Real-Debrid should fetch one (most seeded, a single episode), else say so. */
+    /** No ready source left: ask once whether the debrid service should fetch one (most seeded, a single episode), else say so. */
     private fun askFetchOrNone(op: Op, l: SourceList) {
         if (!accountProblem && target.key !in repo.fetchAsked) {
             val candidates = l.sources.filter {
@@ -465,7 +465,7 @@ internal class DefaultSourceSession(
             if (!startedOnce && why != OpenWhy.USER) startTries++
         }
         currentWhy = why
-        // An offer not on Real-Debrid is never opened without asking, even in a row that is ready (§6.5).
+        // An offer not cached is never opened without asking, even in a row that is ready (§6.5).
         val offers = source.offers.filter { openable(source, it) }
         if (offers.isEmpty()) {
             skip(source, hash = false)
@@ -570,7 +570,7 @@ internal class DefaultSourceSession(
         const val SWITCH_GAP_MS = 3 * 60_000L
         const val MAX_WRONG_GUESSES = 2
         const val JUST_ADDED_WAIT_MS = 30_000L
-        /** A "copyright" refusal this soon after FirePlayer opened another link may be Real-Debrid's add pause. */
+        /** A "copyright" refusal this soon after FirePlayer opened another link may be the debrid service's add pause. */
         const val JUST_ADDED_WINDOW_MS = 5 * 60_000L
         const val RATE_WAIT_MS = 30_000L
         const val UNKNOWN_WAIT_MS = 2_000L

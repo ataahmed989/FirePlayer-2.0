@@ -20,8 +20,8 @@ import java.util.Date
  * title page's Sources button and from the player (Picture & sound › Sources). Answers arriving later redraw it in place
  * ([update]); focus stays on its row (rows are keyed).
  *
- * OK on a row plays it ([onPick], from the resume point); a row not on Real-Debrid asks first. Hold OK: Play from
- * beginning or Details. "Show N" opens a group in place. Back closes Details, then the panel.
+ * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Hold OK:
+ * Play from beginning or Details. "Show N" opens a group in place. Back closes Details, then the panel.
  */
 class SourcesPanel(private val activity: Activity, private val panel: SidePanel) {
 
@@ -120,7 +120,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         }
     }
 
-    /** OK on a row: it plays; one not on Real-Debrid asks first (it would use a download slot). */
+    /** OK on a row: it plays; one not cached by the debrid service asks first (it would use a download slot). */
     private fun play(s: PlaybackSource, beginning: Boolean) {
         if (!SourcesModel.asksFirst(s)) {
             onPick?.invoke(s, beginning)
@@ -128,9 +128,9 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         }
         FireDialog.ask(
             activity,
-            "Real-Debrid has to download this file first. It can take a while and uses a download slot.",
+            "Your debrid service (Real-Debrid, TorBox...) has to download this file first. It can take a while and uses a download slot.",
             listOf(
-                "Ask Real-Debrid to fetch it" to { onPick?.invoke(s, beginning) },
+                "Ask the debrid service to fetch it" to { onPick?.invoke(s, beginning) },
                 "Not now" to {},
             ),
             focus = 1,

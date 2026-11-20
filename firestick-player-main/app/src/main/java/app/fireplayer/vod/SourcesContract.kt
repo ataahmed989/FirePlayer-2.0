@@ -15,8 +15,8 @@ import java.util.UUID
  * [SourcesRepository], [SourceSession], [ThisTv], [AddonSettings] and [PlaybackLibrary]; the pages and the player use
  * them. Until the engine lands, [Sources.get] answers with a stub that knows no add-ons.
  *
- * Privacy (hard rule): an add-on's link carries the user's Real-Debrid key or config, and a checked link is a
- * Real-Debrid download. Both live only in memory, inside [SecretUrl], whose toString shows the host and nothing else.
+ * Privacy (hard rule): an add-on's link carries the user's debrid key (Real-Debrid, TorBox…) or config, and a checked
+ * link is a debrid download. Both live only in memory, inside [SecretUrl], whose toString shows the host and nothing else.
  * Neither is ever logged, printed, stored, put in an Intent or a test fixture, or shown in full; error text goes
  * through [redactLinks]. What is stored about a release is its [ReleaseKey] (info hash + file index) and add-on name.
  *
@@ -26,14 +26,19 @@ import java.util.UUID
 
 // ---- Add-ons (Settings › Add-ons) -----------------------------------------------------------------------------------
 
-/** The two playback add-ons (both with Real-Debrid), with stage 1's answer limit counted from the first ask (§6.5). */
+/**
+ * The playback add-ons (each with the user's debrid service: Real-Debrid, TorBox…), with stage 1's answer limit counted
+ * from the first ask (§6.5). StremThru Torz searches its own database and, for at most 10 s, its indexers, then asks
+ * the debrid service what it holds: 15 s.
+ */
 enum class Addon(val label: String, val answerLimitMs: Long) {
     TORRENTIO("Torrentio", 10_000L),
     MEDIAFUSION("MediaFusion", 25_000L),
+    TORZ("StremThru Torz", 15_000L),
 }
 
 /**
- * A link holding a secret: an add-on's base link (Real-Debrid key or encrypted config in its path) or a checked
+ * A link holding a secret: an add-on's base link (debrid key or encrypted config in its path) or a checked
  * playback link. [toString] shows only the host; [reveal] is for the one place that opens it (the HTTP call, the
  * player's MediaItem) and its result must never reach a log, a preference, a database, an Intent or the screen.
  */
@@ -124,7 +129,10 @@ interface AddonSettings {
  * single-file torrent). The only thing stored about a source (last release used, measured facts, health).
  */
 data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
-    /** The key of what FirePlayer measured about this file ("quality_seen", CopyHealth): "rd|<hash>|<idx or -1>". */
+    /**
+     * The key of what FirePlayer measured about this file ("quality_seen", CopyHealth): "rd|<hash>|<idx or -1>". The
+     * "rd" is only a label (any debrid service): it stays, so what was measured before is still found.
+     */
     val storeKey: String get() = "rd|$infoHash|${fileIdx ?: -1}"
 
     companion object {
@@ -155,11 +163,14 @@ enum class SoundFormat(val label: String) {
     TRUEHD("Dolby TrueHD"), DTS("DTS"), DTS_HD("DTS-HD"),
 }
 
-/** Whether Real-Debrid probably has the file. Both add-ons' marks are guesses (§6.5: "probably on Real-Debrid"). */
+/**
+ * Whether the debrid service (Real-Debrid, TorBox…) probably has the file cached. The add-ons' marks are guesses
+ * (§6.5: "probably on Real-Debrid").
+ */
 enum class Readiness {
-    /** Torrentio `[RD+]`, MediaFusion ⚡: probably on Real-Debrid. */
+    /** Torrentio `[RD+]` / `[TB+]` (any service's "+"), MediaFusion's and StremThru Torz's ⚡: probably cached. */
     PROBABLY_READY,
-    /** Torrentio `[RD download]`, MediaFusion ⏳, or "uncached" words: never picked automatically. */
+    /** Torrentio `[RD download]` / `[TB download]`, MediaFusion ⏳, Torz without ⚡, or "uncached" words: never picked automatically. */
     NOT_READY,
     UNKNOWN,
 }
@@ -173,7 +184,8 @@ enum class SourceGroup(val label: String, val startsOpen: Boolean) {
     OTHER("Other", false),
     /** CAM, TeleSync, TeleCine, screener: never picked automatically. */
     CINEMA("Cinema recordings", false),
-    NOT_ON_RD("Not on Real-Debrid yet", false),
+    /** Not cached by the debrid service yet (the name stays: it is only an id). */
+    NOT_ON_RD("Not cached yet", false),
 }
 
 /** How likely a source plays well on this TV under its [TvPlan] (ranked first). */
@@ -250,7 +262,7 @@ data class PlaybackSource(
     val addons: List<Addon> get() = offers.map { it.addon }.distinct()
     val bothAddons: Boolean get() = addons.size > 1
 
-    /** Never picked by itself: not on Real-Debrid yet, or a cinema recording (§6.5). */
+    /** Never picked by itself: not cached by the debrid service yet, or a cinema recording (§6.5). */
     val automatic: Boolean get() = readiness != Readiness.NOT_READY && group != SourceGroup.CINEMA
 }
 
@@ -326,7 +338,7 @@ enum class LookupWhy(val automatic: Boolean) {
 
 /**
  * The sources engine. One per process ([Sources.get]). Lists are kept in memory only (10 min, 6 titles; an empty
- * answer 60 s) and dropped on a network change, an add-on change or a Real-Debrid account stop. Links are never
+ * answer 60 s) and dropped on a network change, an add-on change or a debrid account stop. Links are never
  * opened ahead of Play.
  */
 interface SourcesRepository {
@@ -350,7 +362,7 @@ interface SourcesRepository {
     /** The engine for one play of a film or episode (stages 1-4), handed to the player in [PlayRequest]. */
     fun session(request: PlayRequest): SourceSession
 
-    /** Drops every kept list (the add-ons changed, a Real-Debrid account problem). */
+    /** Drops every kept list (the add-ons changed, a debrid account problem). */
     fun forget()
 }
 
@@ -439,7 +451,7 @@ object PlayHandoff {
     /**
      * Starts [request]'s play now, before the player's screen exists: its session picks the source and checks its
      * link (stage 2) while the page makes room and the player comes up, which is half a second or so on a Fire TV
-     * Stick. The player takes it over with [takeEarly]. Not for a row chosen in Sources that isn't on Real-Debrid
+     * Stick. The player takes it over with [takeEarly]. Not for a row chosen in Sources that isn't cached
      * (that one is fetched, which the player starts itself). Main thread.
      */
     fun startEarly(token: String, request: PlayRequest, sources: SourcesRepository, now: Long) {
@@ -542,7 +554,7 @@ sealed class Opened {
         val resumedNear: Boolean,
     ) : Opened()
 
-    /** No ready source worked: ask once whether Real-Debrid should fetch [source] ([SourceSession.fetch]). */
+    /** No ready source worked: ask once whether the debrid service should fetch [source] ([SourceSession.fetch]). */
     data class AskFetch(val source: PlaybackSource) : Opened()
 
     /** Stop and tell the user ([message], plain words, no links). */
@@ -556,7 +568,7 @@ sealed class Opened {
 enum class FailureKind {
     /** About the file (dead, archive, too big, refused for copyright): skip it and its copies in both add-ons. */
     FILE,
-    /** Real-Debrid is fetching it ("being downloaded" notice): skip, don't come back this session. */
+    /** The debrid service is fetching it ("being downloaded" notice): skip, don't come back this session. */
     NOT_READY,
     /** This device can't decode it: another format. */
     FORMAT,
@@ -616,7 +628,7 @@ interface StallWatch {
 /**
  * The engine for one play of a film or episode. The player drives it: [open], then [started] at the first frame or
  * [failed]; stage 3 uses [firstLoadLimitMs]; stage 4 uses [stalls] and [maySwitch]. Limits: 3 start tries and 2
- * automatic switches per film or episode, switches at least 3 minutes apart; a source not on Real-Debrid is never
+ * automatic switches per film or episode, switches at least 3 minutes apart; a source not cached is never
  * opened without [fetch].
  */
 interface SourceSession {
@@ -639,7 +651,7 @@ interface SourceSession {
      */
     fun open(source: PlaybackSource? = null, why: OpenWhy = OpenWhy.START, onOpened: (Opened) -> Unit): Cancel
 
-    /** The user agreed Real-Debrid may fetch [source] (asked once): adds it, never plays it automatically. */
+    /** The user agreed the debrid service may fetch [source] (asked once): adds it, never plays it automatically. */
     fun fetch(source: PlaybackSource, onOpened: (Opened) -> Unit): Cancel
 
     /** Stage 3's limit for [source]: [firstLoadLimitMs] by its data rate. */

@@ -26,8 +26,9 @@ class RankInput(
 )
 
 /**
- * "Best for this TV" (r3_sources-organize §4.4), the same order in every group: plays on this TV (measured here > likely
- * > unknown > likely not), Real-Debrid state (played here > probably ready > unknown), the sound wanted
+ * "Best for this TV" (r3_sources-organize §4.4), the same order in every group: first a 4K IMAX or open-matte release
+ * this TV plays ([imaxFirst], the user's wish), then plays on this TV (measured here > likely > unknown > likely not),
+ * the debrid service's state (played here > probably cached > unknown), the sound wanted
  * ([CopyLanguage]), the picture ([CopyRank]'s data per pixel with codec efficiency, starved and full limits, and the HDR
  * the [TvPlan] prefers), then width, bit depth, source, sound for this TV's receiver, size. Pure.
  */
@@ -54,6 +55,7 @@ object SourceRank {
     fun best(ranked: List<PlaybackSource>): PlaybackSource? = ranked.firstOrNull { it.automatic }
 
     private class Key(
+        val imax: Int,
         val fit: Int,
         val ready: Int,
         val language: Int,
@@ -69,7 +71,8 @@ object SourceRank {
 
     private class Scored(val source: PlaybackSource, val index: Int, val key: Key)
 
-    private val ORDER: Comparator<Scored> = compareByDescending<Scored> { it.key.fit }
+    private val ORDER: Comparator<Scored> = compareByDescending<Scored> { it.key.imax }
+        .thenByDescending { it.key.fit }
         .thenByDescending { it.key.ready }
         .thenByDescending { it.key.language }
         .thenByDescending { it.key.picture }
@@ -92,6 +95,7 @@ object SourceRank {
         }
         val hdr = hdrRank(f, input.plan)
         return Key(
+            imax = if (imaxFirst(s)) 1 else 0,
             fit = when (s.fit) {
                 TvFit.MEASURED_OK -> 3
                 TvFit.LIKELY -> 2
@@ -131,6 +135,24 @@ object SourceRank {
     }
 
     private fun highRate(avg: Double?) = if (avg != null && avg > HIGH_MBPS) "High data rate" else null
+
+    /** IMAX, IMX or open matte as a word ("Film.2023.IMAX.2160p", "Open.Matte", "OpenMatte"), any case. */
+    private val IMAX = Regex("""(?<![a-z0-9])(imax|imx|open[ ._-]?matte)(?![a-z0-9])""", RegexOption.IGNORE_CASE)
+
+    /** Whether a release's name or file name ([text]) says IMAX, IMX or Open Matte. */
+    fun isImax(text: String?): Boolean = text != null && IMAX.containsMatchIn(text)
+
+    /**
+     * The user's wish ("4K IMAX (open matte) files at the top of the sources list"): a 2160p source whose name or file
+     * name says IMAX, IMX or Open Matte ranks above every other source, only when this TV plays it by the usual rules
+     * ([fit] measured or likely, never "likely not") and it isn't marked as troubled here. [s] has its [fit] set.
+     */
+    fun imaxFirst(s: PlaybackSource): Boolean {
+        if ((s.facts.height ?: 0) < 2160) return false
+        if (s.fit != TvFit.MEASURED_OK && s.fit != TvFit.LIKELY) return false
+        if (s.measured?.health?.troubled == true) return false
+        return s.offers.any { isImax(it.text) || isImax(it.filename) }
+    }
 
     /**
      * How well the source's HDR suits the plan: the plan's first tier highest. Dolby Vision with an HDR10 base (or

@@ -23,20 +23,21 @@ class ParsedStream(
     /** CAM, TeleSync, TeleCine, screener. */
     val cinema: Boolean,
     val threeD: Boolean,
-    /** MediaFusion's exact size (behaviorHints.videoSize) rather than a rounded "💾 29.26 GB". */
+    /** MediaFusion's or Torz's exact size (behaviorHints.videoSize) rather than a rounded "💾 29.26 GB". */
     val exactSize: Boolean = false,
 )
 
 /**
  * An add-on's answer, read: its streams, and what it said instead of them ([notice]: an error row such as "Invalid
- * RealDebrid ApiKey"; [busy]: ElfHosted's 🐢 "rate-limit exceeded" row).
+ * RealDebrid ApiKey" (or another debrid service's); [busy]: ElfHosted's 🐢 "rate-limit exceeded" row).
  */
 class ParsedAnswer(val streams: List<ParsedStream>, val notice: Failure? = null, val busy: Boolean = false)
 
 /**
- * Reads Torrentio's and MediaFusion's stream lists (Stremio add-on protocol) as r3_sources-organize §1.3 plans: the
- * add-on's structured fields first (MediaFusion's bingeGroup, videoSize and fileIdx; Torrentio's name line 2 and movie
- * bingeGroup), then the release name through a token parser. What isn't stated stays null, never guessed. The info hash
+ * Reads Torrentio's, MediaFusion's and StremThru Torz's stream lists (Stremio add-on protocol) as r3_sources-organize
+ * §1.3 plans: the add-on's structured fields first (MediaFusion's bingeGroup, videoSize and fileIdx; Torrentio's name
+ * line 2 and movie bingeGroup; Torz's emoji-keyed description), then the release name through a token parser. What
+ * isn't stated stays null, never guessed. Cached marks work for any debrid service (Real-Debrid, TorBox…). The info hash
  * and file index are read from the link in memory; the link itself goes only into [Offer.link].
  */
 object StreamParser {
@@ -68,6 +69,7 @@ object StreamParser {
             out += when (addon) {
                 Addon.TORRENTIO -> torrentio(s, name, text, link, runtimeMin)
                 Addon.MEDIAFUSION -> mediaFusion(s, name, text, link, runtimeMin)
+                Addon.TORZ -> torz(s, name, text, link, runtimeMin)
             } ?: continue
         }
         return ParsedAnswer(out, notice, busy && out.isEmpty())
@@ -89,9 +91,10 @@ object StreamParser {
         val langLine = if (stats >= 0) lines.drop(stats + 1).joinToString(" ") else ""
         val bingeGroup = hints?.optString("bingeGroup")?.takeIf { it.isNotBlank() }
         val release = releaseOf(link, s)
+        // "[RD+]" / "[TB+]" (any debrid service's "+"): cached; "[RD download]" / "[TB download]": not yet.
         val readiness = when {
-            name.startsWith("[RD+]") -> Readiness.PROBABLY_READY
-            name.startsWith("[RD download]") || NOT_READY_WORDS.containsMatchIn(name) -> Readiness.NOT_READY
+            TIO_READY.containsMatchIn(name) -> Readiness.PROBABLY_READY
+            TIO_DOWNLOAD.containsMatchIn(name) || NOT_READY_WORDS.containsMatchIn(name) -> Readiness.NOT_READY
             else -> Readiness.UNKNOWN
         }
         val releaseName = filename ?: torrent
@@ -167,6 +170,70 @@ object StreamParser {
             fromName.threeD || textFacts.threeD, exactSize = exact != null)
     }
 
+    // ---- StremThru Torz ----
+
+    /**
+     * StremThru Torz, as its default stream template writes (internal/stremio/transformer/stream_template_default.go in
+     * StremThru's source): the name is "[✨ ][⚡️ ][TB][ 🔑]", the indexer (or "Torz"), the resolution, one per line, ⚡
+     * when the debrid service has the file cached and a store code without ⚡ when it would have to download it; the
+     * description is "💿 quality 🎞️ codec", "📺 HDR 🎧 audio | channels", "💾 file size 📦 size 〽️ rate 👤 seeders",
+     * "🌐 flags", "🏷️ edition ⚙️ group 🔍 indexer", "📄 file" (or "📁 torrent"). The play link holds the hash and file
+     * index ([releaseOf]); a template it doesn't know still gives the standard fields (behaviorHints, the name's words).
+     */
+    private fun torz(s: JSONObject, name: String, text: String, link: SecretUrl, runtimeMin: Int?): ParsedStream? {
+        val hints = s.optJSONObject("behaviorHints")
+        val file = torzField(text, "📄")
+        val torrent = torzField(text, "📁")
+        val filename = hints?.optString("filename")?.takeIf { it.isNotBlank() } ?: file
+        val releaseName = filename ?: torrent
+        val bingeGroup = hints?.optString("bingeGroup")?.takeIf { it.isNotBlank() }
+        val release = releaseOf(link, s)
+        val nameLines = name.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        val readiness = when {
+            name.contains("⚡") -> Readiness.PROBABLY_READY
+            STORE_CODE.containsMatchIn(nameLines.firstOrNull().orEmpty()) || NOT_READY_WORDS.containsMatchIn(name) ||
+                NOT_READY_WORDS.containsMatchIn(text) -> Readiness.NOT_READY
+            else -> Readiness.UNKNOWN
+        }
+        // The name's last line is the resolution ("2160p", "4k") when there is more than one line.
+        val fromRes = Words.read(if (nameLines.size >= 2) nameLines.last() else "", quality = true)
+        val fields = listOfNotNull(torzField(text, "💿"), torzField(text, "🎞"), torzField(text, "📺"))
+        val fromFields = Words.read(fields.joinToString(" "), quality = true)
+        val sound = torzSound(torzField(text, "🎧"))
+        val fromName = Words.read(releaseName.orEmpty())
+        val exact = hints?.optLong("videoSize", 0L)?.takeIf { it > 0 }
+        val size = exact ?: Words.size(text)
+        val facts = SourceFacts(
+            height = fromRes.height ?: fromFields.height ?: fromName.height,
+            hdr = fromFields.hdr + fromName.hdr,
+            dvProfile = fromName.dvProfile,
+            origin = fromFields.origin ?: fromName.origin,
+            codec = fromFields.codec ?: fromName.codec,
+            bitDepth = fromName.bitDepth,
+            audio = sound?.audio ?: fromName.audio,
+            channels = sound?.channels ?: fromName.channels,
+            sizeBytes = size,
+            avgMbps = avgMbps(size, runtimeMin),
+            group = releaseName?.let { Words.group(it) } ?: torzField(text, "⚙"),
+            languages = Words.languages(torzField(text, "🌐") ?: torzField(text, "🎙").orEmpty()),
+            seeders = Words.seeders(text),
+            pack = false,
+        )
+        val offer = Offer(Addon.TORZ, readiness, text.lines().filter { it.isNotBlank() }.joinToString("\n"),
+            filename, bingeGroup, link)
+        return ParsedStream(offer, release, facts, releaseName?.let { Words.sameName(it) }, fromFields.cinema || fromName.cinema,
+            fromFields.threeD || fromName.threeD, exactSize = exact != null)
+    }
+
+    private fun torzField(text: String, marker: String): String? = Words.field(text, marker, Words.TORZ_MARKERS)
+
+    /** Torz's "🎧 DDP, Atmos | 5.1" (go-ptt's words: "DTS Lossless", "DTS Lossy") read as FirePlayer's sound. */
+    private fun torzSound(field: String?): Words.Read? {
+        if (field.isNullOrBlank()) return null
+        val t = field.replace(DTS_LOSSLESS, "DTS-HD MA").replace(DTS_LOSSY, "DTS").replace(',', ' ').replace('|', ' ')
+        return Words.read(t)
+    }
+
     /** MediaFusion's emoji-keyed fields: 🎨 HDR, 📺 source, 🎞 codec, 🎵 audio, 🔊 channels. */
     private fun fields(text: String): Words.Read {
         val hdr = Words.field(text, "🎨")
@@ -191,8 +258,8 @@ object StreamParser {
 
     /**
      * The release a stream plays: Torrentio's `/resolve/<debrid>/<key>/<hash>/<name>/<fileIdx>/<file>`, MediaFusion's
-     * `/playback/<debrid>/<hash>/…` plus its top-level fileIdx, or a top-level infoHash; else any 40-hex part after the
-     * secret. Null when none.
+     * `/playback/<debrid>/<hash>/…` plus its top-level fileIdx, StremThru's `/_/strem/<id>/<store>/<hash>/<fileIdx>/…`,
+     * or a top-level infoHash; else any 40-hex part after the secret. Null when none.
      */
     fun releaseOf(link: SecretUrl, stream: JSONObject?): ReleaseKey? {
         val path = parseLink(link.reveal())?.rawPath.orEmpty()
@@ -208,6 +275,12 @@ object StreamParser {
         if (playback >= 0 && parts.size > playback + 2) {
             ReleaseKey.of(parts[playback + 2], topIdx)?.let { return it }
         }
+        // StremThru Torz clears infoHash and fileIdx: its link holds them (a private torrent's hash has "-<link>" after it).
+        val strem = parts.indices.firstOrNull { parts[it] == "_" && parts.getOrNull(it + 1) == "strem" }
+        if (strem != null && parts.size > strem + 4) {
+            val idx = parts.getOrNull(strem + 5)?.toIntOrNull()
+            ReleaseKey.of(parts[strem + 4].substringBefore('-'), idx ?: topIdx)?.let { return it }
+        }
         // Past the secret's own place (the first part after the add-on's base can't be a hash we trust).
         val hash = parts.drop(1).firstOrNull { HEX40.matches(it.lowercase(Locale.ROOT)) } ?: return null
         return ReleaseKey.of(hash, topIdx)
@@ -221,7 +294,20 @@ object StreamParser {
 
     private val HEX40 = Regex("[0-9a-fA-F]{40}")
     private val BUSY = Regex("""🐢|rate[- ]?limit(ed)? exceeded""", RegexOption.IGNORE_CASE)
-    private val NOT_READY_WORDS = Regex("""\buncached\b|\bnot cached\b|\[download\]|\bRD download\b""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Torrentio's short names of the debrid services: Real-Debrid, TorBox, AllDebrid, Premiumize, Debrid-Link,
+     * EasyDebrid, Offcloud, Put.io.
+     */
+    private const val DEBRIDS = "RD|TB|AD|PM|DL|ED|OC|Putio"
+    private val NOT_READY_WORDS = Regex("""\buncached\b|\bnot cached\b|\[download\]|\b(?:$DEBRIDS) download\b""", RegexOption.IGNORE_CASE)
+    private val TIO_READY = Regex("""^\[(?:$DEBRIDS)\+]""", RegexOption.IGNORE_CASE)
+    private val TIO_DOWNLOAD = Regex("""^\[(?:$DEBRIDS) download]""", RegexOption.IGNORE_CASE)
+
+    /** Torz's store code on the name's first line ("[TB]", "⚡️ [RD]"). */
+    private val STORE_CODE = Regex("""\[[A-Za-z0-9]{2,6}]""")
+    private val DTS_LOSSLESS = Regex("""dts[ ._-]?lossless""", RegexOption.IGNORE_CASE)
+    private val DTS_LOSSY = Regex("""dts[ ._-]?lossy""", RegexOption.IGNORE_CASE)
 }
 
 /** The release-name token parser (r3_sources-organize §1.3): a small vocabulary, word-bounded, case-blind. */
@@ -391,12 +477,12 @@ internal object Words {
     /**
      * The text after an emoji marker, up to the next marker or line end ("🎨 DV|HDR 📺 WEB-DL" → "DV|HDR" for 🎨).
      */
-    fun field(text: String, marker: String): String? {
+    fun field(text: String, marker: String, markers: List<String> = MARKERS): String? {
         val i = text.indexOf(marker)
         if (i < 0) return null
         val start = i + marker.length
         var end = text.length
-        for (m in MARKERS) {
+        for (m in markers) {
             val j = text.indexOf(m, start)
             if (j in start until end) end = j
         }
@@ -406,6 +492,11 @@ internal object Words {
     }
 
     private val MARKERS = listOf("🎨", "📺", "🎞", "🎵", "🔊", "📦", "💾", "👤", "🌐", "🔗", "🧑", "⚙", "📂", "⚡", "⏳", "🧲")
+
+    /** StremThru Torz's markers (its default stream template). */
+    val TORZ_MARKERS = listOf(
+        "✨", "⚡", "🔑", "💿", "🎞", "📺", "🎧", "💾", "📦", "〽", "👤", "⏱", "🌐", "🎙", "💬", "🏷", "⚙", "🔍", "🔗", "📄", "📁",
+    )
 
     private val TAGS = Regex("""\[[^\]]*\]|\{[^\}]*\}""")
     private val SITE = Regex("""^\s*(www\.)?[a-z0-9-]+\.(com|org|net|to|se|me|ru|xyz|in|cc)\s*[-–]\s*""", RegexOption.IGNORE_CASE)

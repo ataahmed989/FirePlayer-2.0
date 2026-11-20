@@ -11,6 +11,7 @@ import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.SecretUrl
+import app.fireplayer.vod.parseLink
 import java.math.BigInteger
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -116,13 +117,24 @@ class AddonVault(private val store: Store, private val sealer: Sealer, private v
             return "$host · …$tail"
         }
 
-        /** A link that is plainly the other add-on's (its name in the host). */
+        /**
+         * A link that is plainly another add-on's: its name in the host, or StremThru Torz's path (".../stremio/torz/...").
+         * Torz's link must have that path: StremThru serves other add-ons too.
+         */
         private fun looksLikeOther(addon: Addon, link: String): Boolean {
             val host = SecretUrl.of(link)?.host?.lowercase(Locale.ROOT) ?: return false
+            val torz = isTorzPath(parseLink(link)?.rawPath)
             return when (addon) {
-                Addon.TORRENTIO -> "mediafusion" in host
-                Addon.MEDIAFUSION -> "torrentio" in host
+                Addon.TORRENTIO -> "mediafusion" in host || torz
+                Addon.MEDIAFUSION -> "torrentio" in host || torz
+                Addon.TORZ -> !torz || "torrentio" in host || "mediafusion" in host
             }
+        }
+
+        /** Whether [path] is StremThru Torz's: ".../stremio/torz" followed by its settings, or nothing. */
+        fun isTorzPath(path: String?): Boolean {
+            val parts = path?.lowercase(Locale.ROOT)?.split('/')?.filter { it.isNotEmpty() } ?: return false
+            return (0 until parts.size - 1).any { parts[it] == "stremio" && parts[it + 1] == "torz" }
         }
 
         fun hex(bytes: ByteArray): String {

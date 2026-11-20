@@ -9,10 +9,10 @@ import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
 
 /**
- * Settings › Add-ons (design-brief.md §6.1): the Torrentio and MediaFusion links, entered on the TV the way a playlist's
- * link is (the TV keyboard, an empty box with "Saved · type a new one to replace it"), changed or removed. A saved link
- * shows only where it points and its last 4 characters ([AddonSettings.summary]); it is stored encrypted, and the text
- * typed is handed straight to [AddonSettings.save], never logged, kept or shown.
+ * Settings › Add-ons (design-brief.md §6.1): the Torrentio, MediaFusion and StremThru Torz links, entered on the TV the
+ * way a playlist's link is (the TV keyboard, an empty box with "Saved · type a new one to replace it"), changed or
+ * removed. A saved link shows only where it points and its last 4 characters ([AddonSettings.summary]); it is stored
+ * encrypted, and the text typed is handed straight to [AddonSettings.save], never logged, kept or shown.
  */
 object AddonsSettings {
 
@@ -22,7 +22,7 @@ object AddonsSettings {
         for (a in Addon.entries) {
             row(a.label, addons.summary(a) ?: NOT_SET) { openSub(a.label) { renderAddon(this, activity, addons, a) } }
         }
-        message("Sources come from these two add-ons, with your Real-Debrid account. Their links carry your Real-Debrid key or settings, so FirePlayer keeps them encrypted on this TV and never shows them in full.")
+        message("Sources come from these add-ons, with your debrid service (Real-Debrid, TorBox...). Their links carry your debrid key or settings, so FirePlayer keeps them encrypted on this TV and never shows them in full.")
     }
 
     /** One add-on's window: its link (enter or replace), and Remove. */
@@ -35,7 +35,7 @@ object AddonsSettings {
                 activity, "${a.label} link", "",
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
                 hint = if (set) SAVED_HINT else hintFor(a),
-                // The link carries the Real-Debrid key: kept only encrypted, never in the keyboard's memory.
+                // The link carries the debrid key: kept only encrypted, never in the keyboard's memory.
                 unlearned = true,
             ) { typed ->
                 if (typed.isBlank()) return@prompt
@@ -69,11 +69,13 @@ object AddonsSettings {
     private fun hintFor(a: Addon): String = when (a) {
         Addon.TORRENTIO -> "https://torrentio.strem.fun/…"
         Addon.MEDIAFUSION -> "https://mediafusion…/…"
+        Addon.TORZ -> "https://stremthru…/stremio/torz/…/manifest.json"
     }
 
     private fun whereFrom(a: Addon): String = when (a) {
-        Addon.TORRENTIO -> "Torrentio: configure it with your Real-Debrid key on its website, then copy the link it gives to install it."
-        Addon.MEDIAFUSION -> "MediaFusion: set it up with Real-Debrid on its website (the public ElfHosted one), then copy the link it gives to install it."
+        Addon.TORRENTIO -> "Torrentio: configure it with your debrid service's key (Real-Debrid, TorBox...) on its website, then copy the link it gives to install it."
+        Addon.MEDIAFUSION -> "MediaFusion: set it up with your debrid service (Real-Debrid, TorBox...) on its website (the public ElfHosted one), then copy the link it gives to install it."
+        Addon.TORZ -> "StremThru Torz: configure it with your debrid service (Real-Debrid, TorBox...) on its StremThru page, then copy the link it gives to install it."
     }
 
     const val NOT_SET = "Not set"

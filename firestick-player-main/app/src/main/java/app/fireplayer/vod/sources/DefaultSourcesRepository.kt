@@ -48,7 +48,7 @@ interface MainLoop {
 }
 
 /**
- * The sources engine (design-brief §6.4-6.5, r3_prefetch §2): asks both add-ons for a film's or episode's streams,
+ * The sources engine (design-brief §6.4-6.5, r3_prefetch §2): asks the add-ons for a film's or episode's streams,
  * reads, merges and ranks them ("Best for this TV"), keeps them in memory (10 minutes, 6 titles; an empty answer 60 s)
  * and hands plays to [DefaultSourceSession]. Automatic look-ups wait first (1.5 s, 0.5 s) and keep to [Budget]; one
  * request per add-on per title at a time, joined by later asks; a newer automatic look-up cancels an older automatic
@@ -109,10 +109,10 @@ class DefaultSourcesRepository(
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
     private val automaticCalls = EnumMap<Addon, Call>(Addon::class.java)
 
-    /** Titles (IMDb id) where the user was already asked whether Real-Debrid should fetch a source (once per title). */
+    /** Titles (IMDb id) where the user was already asked whether the debrid service should fetch a source (once per title). */
     internal val fetchAsked = HashSet<String>()
 
-    /** When FirePlayer last opened a link (it may have added a torrent to Real-Debrid): the "just added" rule. */
+    /** When FirePlayer last opened a link (it may have added a torrent to the debrid service): the "just added" rule. */
     internal var lastAddAt = Long.MIN_VALUE / 2
 
     // ---- SourcesRepository ----
