@@ -165,7 +165,11 @@ class VodSizesTitleTest {
         val cut = r - kotlin.math.sqrt(r * r - below * below)
         assertTrue(VodSizes.PILL_PROGRESS_SIDE >= r && cut + 12f < VodSizes.PILL_PROGRESS_SIDE)
         assertTrue(VodSizes.ACTIONS_W - 2 * VodSizes.PILL_PROGRESS_SIDE >= 0.75f * VodSizes.ACTIONS_W)
-        assertTrue(r + VodSizes.BUTTON.lineSp / 2f + 2f <= VodSizes.BUTTON_H - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H)
+        val lineTop = VodSizes.BUTTON_H - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H
+        val wordsBottom = r + VodSizes.BUTTON.lineSp / 2f
+        assertTrue(wordsBottom + 4f <= lineTop)
+        // The gap over the line and the room under it are alike (within a dp).
+        near(VodSizes.PILL_PROGRESS_BOTTOM, lineTop - wordsBottom, 1f)
     }
 
     /**

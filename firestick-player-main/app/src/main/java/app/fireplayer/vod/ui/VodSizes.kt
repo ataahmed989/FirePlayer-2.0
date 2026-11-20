@@ -392,11 +392,12 @@ internal object VodSizes {
     const val BUTTON_ICON_GAP = 7f
     const val CIRCLE_ICON = 18f
     /**
-     * A resuming pill's progress line: its height, how far it is above the pill's bottom, and from the pill's ends (in
-     * the pill's straight part: its ends are round, half its height in radius).
+     * A resuming pill's progress line: its height, how far it is above the pill's bottom (the words' line then has
+     * about as much room under it as the line has under itself), and from the pill's ends (in the pill's straight
+     * part: its ends are round, half its height in radius).
      */
     const val PILL_PROGRESS_H = 2f
-    const val PILL_PROGRESS_BOTTOM = 6f
+    const val PILL_PROGRESS_BOTTOM = 5f
     const val PILL_PROGRESS_SIDE = 20f
     /** The circles' names hang under them while one is chosen: their room under the column. */
     const val CIRCLE_NAME_ROOM = 20f
