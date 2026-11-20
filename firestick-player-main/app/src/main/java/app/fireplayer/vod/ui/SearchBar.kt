@@ -181,6 +181,15 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
         input.hint = kind.hint
     }
 
+    /** The bar shortened to clear the live picture in the top right ([pip]), or its full width (laid out once each). */
+    fun setNarrow(pip: Boolean) {
+        val lp = bar.layoutParams ?: return
+        val w = t.dp(VodSizes.searchBarW(pip))
+        if (lp.width == w) return
+        lp.width = w
+        bar.layoutParams = lp
+    }
+
     /** Whether [v] is the bar's or the trash button's focusable. */
     fun owns(v: View?): Boolean = v === input || v === trash.button
 

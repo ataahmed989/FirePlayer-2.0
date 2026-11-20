@@ -71,6 +71,11 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
     /** The shown page's keys (Back for its small window, its title pages and See all). */
     fun dispatchKey(event: KeyEvent): Boolean = current?.dispatchKey(event) ?: false
 
+    /** The live picture leaves every page but [keep] (Home and Search have one; a hidden page holds no focus). */
+    fun pipOffExcept(keep: VodPage?) {
+        for (page in pages.values) if (page !== keep) page.setPip(false, muted = false)
+    }
+
     /** Whether a title page is open over the shown page. */
     fun hasTitle(): Boolean = current?.hasTitle() == true
 

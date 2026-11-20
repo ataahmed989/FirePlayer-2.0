@@ -9,7 +9,7 @@ class SettingsCategoryTest {
     @Test fun theCategoriesAreInTheApprovedOrder() {
         assertEquals(
             listOf(
-                "Playlists & EPG", "Live TV", "Playback", "Remote & skipping", "Subtitles & audio", "Look",
+                "Playlists & EPG", "Live TV", "Picture-in-picture", "Playback", "Remote & skipping", "Subtitles & audio", "Look",
                 "Accounts & services", "Rows", "Home Header", "Add-ons", "This TV", "TiviMate titles", "App",
             ),
             SettingsCategory.entries.map { it.title },
@@ -67,6 +67,10 @@ class SettingsCategoryTest {
             "Time on each title",
             // Playback: what a film from the add-ons does when it keeps stopping to load.
             "When a film keeps buffering",
+            // Multiview: how many pictures at most, and how 3 or 4 open.
+            "Multiview pictures", "Multiview with 3 or 4",
+            // Picture-in-picture: the live picture on Home and Search, and whether it starts with its sound.
+            "Keep live TV playing on Home and Search", "Start with sound",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
@@ -90,17 +94,19 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.THIS_TV, where("Best for this TV"))
         assertEquals(SettingsCategory.HOME_HEADER, where(SettingsCategory.HOME_HEADER_MATCH))
         assertEquals(SettingsCategory.HOME_HEADER, where(SettingsCategory.HOME_HEADER_TIME))
+        assertEquals(SettingsCategory.PICTURE_IN_PICTURE, where("Keep live TV playing on Home and Search"))
+        assertEquals(SettingsCategory.PICTURE_IN_PICTURE, where("Start with sound"))
     }
 
     /** The Settings tab's sizes: rows 44 dp + 8 dp, the title 34 + 16 dp, 27 dp kept clear above and below. */
     private fun columns(rows: Int, screenDp: Int) =
         SettingsCategory.columnsFor(rows, screenDp, rowDp = 44, gapDp = 8, titleDp = 50, edgeDp = 27)
 
-    @Test fun theSettingsTabStillTakesTwoColumnsWithHomeHeader() {
-        // Thirteen categories and Open a link: two columns of seven, eight to a column at most on the Fire TV.
-        assertEquals(14, SettingsCategory.entries.size + 1)
-        assertEquals(2, columns(14, 540))
-        assertEquals(listOf(7, 7), SettingsCategory.inColumns((1..14).toList(), 2).map { it.size })
+    @Test fun theSettingsTabStillTakesTwoColumnsWithPictureInPicture() {
+        // Fourteen categories and Open a link: two columns, eight and seven, eight to a column at most on the Fire TV.
+        assertEquals(15, SettingsCategory.entries.size + 1)
+        assertEquals(2, columns(15, 540))
+        assertEquals(listOf(8, 7), SettingsCategory.inColumns((1..15).toList(), 2).map { it.size })
     }
 
     @Test fun tenRowsTakeTwoColumnsOnTheFireTv() {

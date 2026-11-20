@@ -64,4 +64,30 @@ internal object LiveWidths {
 
     /** The minutes of programmes a guide [guide] wide shows beside a channel column [channels] wide. */
     fun minutesShown(guide: Int, channels: Int): Float = (guide - channels) / DP_PER_MIN
+
+    // ---- Multiview (inside the full-screen Live TV player; the layout itself is [MultiviewLayout]) ---------------------
+
+    /** Screen height, for Multiview's layout on the 960 x 540 dp screen. */
+    const val SCREEN_H = 540
+    /** Between the pictures and round the screen's edge: room for the selected picture's white ring (VodSizes.RING). */
+    const val MV_GAP = 8f
+    /** A picture's channel name: on the logos' neutral dark plate (Tokens.LOGO_BADGE_PLATE) at its bottom left. */
+    const val MV_NAME_SP = 13f
+    const val MV_NAME_PAD_X = 8
+    const val MV_NAME_PAD_Y = 4
+    const val MV_NAME_INSET = 8
+    const val MV_NAME_RADIUS = 7f
+    /** A picture that can't play: its plain message, in its middle, shadowed as the buffering symbol's words are. */
+    const val MV_MESSAGE_SP = 14f
+    const val MV_MESSAGE_PAD_X = 16
+    const val MV_MESSAGE_SHADOW = 4f
+    const val MV_MESSAGE_SHADOW_COLOR = 0xCC000000.toInt()
+    /** "Add a channel" in the grid's free cell, under its + (the guide's empty miniature panel). */
+    const val MV_ADD_SP = 15f
+    const val MV_ADD_ICON = 30
+    const val MV_ADD_GAP = 10
+    /** The pictures moving to a new layout (translation and scale only), and the channel picker's dark backdrop. */
+    const val MV_MOVE_MS = 260L
+    const val MV_PICKER_SCRIM = 0xEB06080B.toInt()
+    const val MV_PICKER_TITLE_SP = 18f
 }

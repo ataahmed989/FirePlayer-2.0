@@ -267,7 +267,17 @@ class PlayerHost private constructor(context: Context) {
         return back
     }
 
-    fun setMuted(muted: Boolean) { player?.volume = if (muted) 0f else 1f }
+    /**
+     * The live picture's sound off ([muted]; its Volume on Home and Search), kept for the players built after (another
+     * channel's may be a new one); Live TV's own pages always play with it on.
+     */
+    var muted = false
+        private set
+
+    fun setMuted(muted: Boolean) {
+        this.muted = muted
+        player?.volume = if (muted) 0f else 1f
+    }
 
     /** Paused by the viewer (not by the app going to the background, which closes the stream). */
     var paused = false
@@ -515,26 +525,14 @@ class PlayerHost private constructor(context: Context) {
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)
         surface?.let { p.setVideoSurfaceView(it) }
+        if (muted) p.volume = 0f
         player = p
         builtHeaders = headers
         builtBuffer = buffer
         return p
     }
 
-    private fun mediaItem(source: LiveSession.Source): MediaItem {
-        val uri = Uri.parse(source.url)
-        val path = uri.lastPathSegment?.lowercase() ?: ""
-        val b = MediaItem.Builder().setUri(uri).setMediaId(source.key)
-            // A live window (HLS/DASH) is never played faster than it arrives to close in on the live edge: Media3's
-            // default speeds up to 1.03x until it sits at its target offset, eating the cushion that rides out a late
-            // segment. It still slows down (to 0.97x) to back away from the edge after a stall.
-            .setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1f).build())
-        when {
-            path.endsWith(".m3u8") || path.endsWith(".m3u") -> b.setMimeType(MimeTypes.APPLICATION_M3U8)
-            path.endsWith(".mpd") -> b.setMimeType(MimeTypes.APPLICATION_MPD)
-        }
-        return b.build()
-    }
+    private fun mediaItem(source: LiveSession.Source): MediaItem = liveMediaItem(source)
 
     /** Reconnects after an error or a dropped stream: back to the live edge, prepared again. */
     private val retry = Runnable {
@@ -798,18 +796,36 @@ class PlayerHost private constructor(context: Context) {
     companion object {
         private const val TAG = "FirePlayerLive"
         /** Errors that say this TV can't decode the channel's picture, and how often such a channel is tried again. */
-        private val CANT_DECODE = setOf(
+        internal val CANT_DECODE = setOf(
             PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
             PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
             PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
             PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
         )
-        private const val CANT_DECODE_TRIES = 2
+        internal const val CANT_DECODE_TRIES = 2
         /** Within this of the live edge counts as live again (the player itself sits a few seconds back). */
         private const val LIVE_EDGE_SLACK_MS = 20_000L
 
         /** Every stream the app opens counts here, per provider account. */
         val budget = ConnectionBudget()
+
+        /**
+         * A channel's stream as Media3 opens it (the live player and Multiview's pictures alike). A live window (HLS/DASH)
+         * is never played faster than it arrives to close in on the live edge: Media3's default speeds up to 1.03x until
+         * it sits at its target offset, eating the cushion that rides out a late segment. It still slows down (to 0.97x)
+         * to back away from the edge after a stall.
+         */
+        fun liveMediaItem(source: LiveSession.Source): MediaItem {
+            val uri = Uri.parse(source.url)
+            val path = uri.lastPathSegment?.lowercase() ?: ""
+            val b = MediaItem.Builder().setUri(uri).setMediaId(source.key)
+                .setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1f).build())
+            when {
+                path.endsWith(".m3u8") || path.endsWith(".m3u") -> b.setMimeType(MimeTypes.APPLICATION_M3U8)
+                path.endsWith(".mpd") -> b.setMimeType(MimeTypes.APPLICATION_MPD)
+            }
+            return b.build()
+        }
 
         @Volatile private var instance: PlayerHost? = null
 

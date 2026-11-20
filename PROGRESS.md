@@ -242,8 +242,19 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       a Movies & TV Shows / Live TV switch, reached from the rail and from the "Search and App Settings" / Live TV
       settings windows; Live mode searches channels (logo tiles) and programmes (list with LIVE marks). Built after
       the look redesign so it is made in the new look.
-- [ ] **Automatic live picture-in-picture** (user, 2026-11-19): the playing channel continues in the top-right mini
-      player on Home / Search; after the pages and the mini player's size are redesigned.
+- [x] **Automatic live picture-in-picture** (user, 2026-11-19; built 2026-11-20 on `feat/pip`, as
+      `Design-References/search-pip-2026-11-19/DECISIONS.md` says): leaving a playing channel for Home or Search keeps
+      it playing top right (Home: Recent channels' box, the picture fitted and centred; Search: 240 x 135 dp beside the
+      page's name, the bar and history shortened). The one live player and surface move there (no second player or
+      connection); the picture glides with the page (translation only) and plays on unseen while a title page, See all
+      or the settings window covers it. The slim strip (channel · programme, Volume, Full screen, Close) eases in only
+      while it has focus (Right from Details; Right from the bin), landing on Volume; OK on Volume mutes; Back returns
+      to where focus was; Back held anywhere on the page opens it full screen; Close stops it (Home: Recent channels,
+      first channel focused). Movies, TV Shows, My List, Settings and a film stop it; Live TV takes it back. The
+      channel buttons (Channel buttons only) and the sleep timer work on it. Settings › Picture-in-picture: "Keep live
+      TV playing on Home and Search" (On) and "Start with sound" (On). Leaving Live TV from full screen now returns
+      to its guide next time (it came back to an empty full screen). A channel paused on Live TV doesn't follow (it
+      would sit still in the corner with nothing there to start it): it stops, remembered, as before (review, 2026-11-20).
 - [x] Glass Home integration (2026-11-19): FirePlayer 2.0 serves its Films & Shows Continue Watching to Glass Home and
       resumes straight from it (verified on the Max: cold start to first frame in ~5 s, resumed at the saved point,
       Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when

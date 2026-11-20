@@ -22,7 +22,17 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
     LIVE_TV(
         "Live TV",
         R.drawable.ic_live,
-        listOf("Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Play the last channel on opening", "Live TV buffer"),
+        listOf(
+            "Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Play the last channel on opening", "Live TV buffer",
+            "Multiview pictures", "Multiview with 3 or 4",
+        ),
+    ),
+    // The live picture on Home and Search (automatic picture-in-picture): whether leaving Live TV keeps the channel
+    // playing there, and whether it starts with its sound.
+    PICTURE_IN_PICTURE(
+        "Picture-in-picture",
+        R.drawable.ic_pip,
+        listOf(app.fireplayer.live.ui.PipRules.KEEP_LABEL, app.fireplayer.live.ui.PipRules.SOUND_LABEL),
     ),
     PLAYBACK(
         "Playback",

@@ -18,6 +18,19 @@ class Prefs(context: Context) {
 
     enum class Resume(val label: String) { ASK("Ask"), ALWAYS("Always"), NEVER("Never") }
 
+    /**
+     * Settings › Picture-in-picture: leaving a playing channel on Live TV for Home or Search keeps it playing there, top
+     * right ([app.fireplayer.live.ui.PipRules]); off, leaving Live TV stops the channel, as it always did.
+     */
+    var pipKeep: Boolean
+        get() = sp.getBoolean("pip_keep", app.fireplayer.live.ui.PipRules.KEEP_DEFAULT)
+        set(v) = sp.edit().putBoolean("pip_keep", v).apply()
+
+    /** Settings › Picture-in-picture: the picture starts with its sound (off: muted until Volume is pressed). */
+    var pipSound: Boolean
+        get() = sp.getBoolean("pip_sound", app.fireplayer.live.ui.PipRules.SOUND_DEFAULT)
+        set(v) = sp.edit().putBoolean("pip_sound", v).apply()
+
     var dpadStepSec: Int
         get() = sp.getInt("dpad_step", 10)
         set(v) = sp.edit().putInt("dpad_step", v).apply()

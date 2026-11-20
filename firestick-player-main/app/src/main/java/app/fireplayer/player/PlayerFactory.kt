@@ -237,6 +237,12 @@ object PlayerFactory {
         buffer: LiveBuffer = LiveBuffer.MEDIUM,
         /** The live session's own buffer rules (PlayerHost's LiveLoadControl); [buffer] through Media3's alone when null. */
         liveLoadControl: LoadControl? = null,
+        /**
+         * The player asks for the TV's sound itself, and pauses when the sound's way out goes (the one live player).
+         * Multiview's pictures don't: several players asking would take the sound from one another (the loser pauses),
+         * so Multiview holds it once for all of them and only the selected picture is heard.
+         */
+        audioFocus: Boolean = true,
     ): ExoPlayer {
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val http = DefaultHttpDataSource.Factory()
@@ -263,8 +269,8 @@ object PlayerFactory {
             .setMediaSourceFactory(mediaSources)
             .setRenderersFactory(if (delays == null) renderers else LiveDelayRenderersFactory(renderers, delays))
             .setLoadControl(loadControl)
-            .setAudioAttributes(MEDIA_AUDIO, /* handleAudioFocus = */ true)
-            .setHandleAudioBecomingNoisy(true)
+            .setAudioAttributes(MEDIA_AUDIO, /* handleAudioFocus = */ audioFocus)
+            .setHandleAudioBecomingNoisy(audioFocus)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()

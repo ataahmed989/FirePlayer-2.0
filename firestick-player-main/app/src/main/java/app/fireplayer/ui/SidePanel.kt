@@ -1080,6 +1080,7 @@ class SidePanel(private val activity: Activity) {
             "Storage" to R.drawable.ic_head_download,
             // The Settings tab's Live TV window, beside its Remote and Playback.
             "Full screen" to R.drawable.ic_fullscreen,
+            "Multiview" to R.drawable.ic_multiview,
             // A line icon like the others (the rail's filled guide glyph looks heavier at this size).
             "Guide" to R.drawable.ic_epg,
             "Customs" to R.drawable.ic_head_star,

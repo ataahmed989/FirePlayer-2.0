@@ -61,3 +61,25 @@ provider allows; the build starts only after Search and these Live TV updates ar
 4. Layout in the Live TV player: 2-4 side by side; OK makes one larger with the others underneath; hold opens
    remove / add (search) / change (search) / full screen. Small buffer and size-capped video per small tile.
 5. Memory: one shared byte ceiling, `LiveRoom` and onTrimMemory across tiles; check on the Stick with 4 tiles.
+
+## 5. What was built (branch feat/multiview)
+
+- Entry: full screen's extra row, Multiview (no longer dimmed). The channel playing becomes the first picture and the
+  channel picker (Live TV search's bar and results, `live/ui/ChannelPicker.kt`) opens for the second; Back from it
+  leaves full screen as it was. The one live player (`PlayerHost`) is stopped only once the second channel is picked,
+  and is used unchanged otherwise.
+- Layouts and moves are pure and unit-tested (`live/ui/MultiviewRules.kt`): 2 side by side, 3-4 in a 2 x 2 grid (with 3
+  the free cell is "Add a channel"), OK makes a picture large on top with the others in a row under it, OK on it again
+  goes back. Pictures move by translation and scale, laid out once at the end (`MultiviewBoard`).
+- Held OK (or Menu) on a picture: Remove, Add channel, Change channel, Full screen (`HoldPopup`). Back, Full screen, or
+  removing down to one picture: full screen on that channel in the one live player.
+- Players: one `MultiviewPlayer` per picture (Small buffer, memory step from the start, sound decoded and muted unless
+  selected, no audio focus of its own; Multiview holds the focus once), its own `SurfaceView`, one `ConnectionBudget`
+  lease each (`MultiviewLeases`); a channel the allowance has no room for is said so and not opened. A picture the TV
+  can't decode says so after two tries and lets go of its player. Everything is released when Multiview closes or the
+  screen stops; the pictures come back with the screen. Leaving the Live TV tab, a film starting or the sleep timer
+  ends Multiview.
+- Settings › Live TV › Multiview: "Multiview pictures" (up to 2, 3 or 4; default 4) and "Multiview with 3 or 4" (in a
+  grid, default, or one large on top).
+- Still to check on the Stick: 4 pictures at once (decoders, memory, `dumpsys meminfo`), the move's smoothness, the
+  keyboard over the picker.

@@ -183,6 +183,30 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         return lines[chosen].requestFocus()
     }
 
+    /** Focus wanted on the first channel once the list is read again ([focusFirst]). */
+    private var firstWanted = false
+    /** Where focus waits meanwhile when there was no channel to take it ([focusFirst]'s fallback). */
+    private var firstFallback: android.view.View? = null
+
+    /**
+     * Focus to the first channel (after the live picture's Close, which this window replaces): read again, as the
+     * channel just watched is first now. With none listed yet, focus waits on [fallback] and comes here once they're
+     * read, unless the viewer has moved on meanwhile.
+     */
+    fun focusFirst(fallback: () -> Unit) {
+        firstWanted = true
+        firstFallback = null
+        refresh()
+        if (shown.isEmpty()) {
+            fallback()
+            firstFallback = rootView.findFocus()
+            return
+        }
+        chosen = 0
+        scrollTo(0, animate = false)
+        lines[0].requestFocus()
+    }
+
     private fun onRowFocused(line: Line) {
         val i = lines.indexOf(line)
         if (i < 0) return
@@ -269,6 +293,7 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
 
     fun release() {
         released = true
+        firstFallback = null
         list.animate().cancel()
         logos.onChange = null
         logos.clear()
@@ -319,6 +344,18 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         scrollTo(VodSizes.recentFirstShown(at, first, channels.size), animate = false)
         refreshLogos()
         invalidate()
+        // After the live picture's Close: on the first channel, unless the viewer has moved on from the window.
+        if (firstWanted) {
+            firstWanted = false
+            val waiting = firstFallback
+            firstFallback = null
+            val here = lines.firstOrNull()?.isFocused == true || waiting?.isFocused == true
+            if (here && channels.isNotEmpty()) {
+                chosen = 0
+                scrollTo(0, animate = false)
+                lines[0].requestFocus()
+            }
+        }
     }
 
     private fun refreshLogos() {

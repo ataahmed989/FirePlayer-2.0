@@ -13,6 +13,12 @@ class LivePrefsRowTest {
         assertEquals(listOf(SettingsCategory.LIVE_TV), where)
     }
 
+    @Test fun multiviewsRowsAreLiveTvSettings() {
+        for (row in listOf(MULTIVIEW_PICTURES, MULTIVIEW_LAYOUT)) {
+            assertEquals(listOf(SettingsCategory.LIVE_TV), SettingsCategory.entries.filter { row in it.settings })
+        }
+    }
+
     @Test fun itSitsWithLiveTvsPlaybackRowsBeforeTheBuffer() {
         // The window lists it under Playback, just before Live TV buffer: the category names them in that order.
         val rows = SettingsCategory.LIVE_TV.settings
