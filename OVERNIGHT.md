@@ -119,3 +119,8 @@ and continue from the first unfinished step. Update the status lines here as ste
   exploration, final build + tests + report within about 20 minutes. Then merge, check on the idle TV, and go on with
   1b, 1c, 1d, step 4, step 5. Budget: one window did not cover the audits, so steps 4-5 will not all fit before the
   user is up; do not rush or skip checks to make it fit, and never release unverified work.
+- 12:35 UTC: step 1 audits finished and MERGED (1,178 tests): films (buffer grows back once the page lets go of
+  memory) and Live TV (guide opens quicker: lists kept in memory, first screenful first, logos on disk, per-stage
+  timing lines; a pause the player makes itself is shown; new setting Live TV > Playback > "Play the last channel on
+  opening", On by default). The film audit only finished its memory part (steps 2-6 of its brief not started).
+  Built as fp-next-59; install when the TV is idle. Next: 1b+1c+1d.
