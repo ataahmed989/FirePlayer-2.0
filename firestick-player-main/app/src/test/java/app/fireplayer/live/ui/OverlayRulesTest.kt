@@ -164,4 +164,14 @@ class OverlayRulesTest {
         assertFalse(OverlayRules.showsHistory("cnn"))
         assertFalse(OverlayRules.KEYBOARD_ON_OPEN)
     }
+
+    @Test fun theSearchPagesHistoryLeavesOutTheChannelsOnScreen() {
+        val recent = listOf("playing", "a", "b", "tile2", "c", "d")
+        // Multiview's start: the one playing is picture 1, so the selection starts on a channel that can be added.
+        assertEquals(listOf("a", "b", "tile2"), OverlayRules.history(recent, setOf("playing"), 3) { it })
+        assertEquals(listOf("a", "b", "c", "d"), OverlayRules.history(recent, setOf("playing", "tile2"), 10) { it })
+        assertEquals(recent.take(2), OverlayRules.history(recent, emptySet(), 2) { it })
+        assertTrue(OverlayRules.history(listOf("playing"), setOf("playing"), 10) { it }.isEmpty())
+        assertTrue(OverlayRules.history(recent, emptySet<String>(), 0) { it }.isEmpty())
+    }
 }

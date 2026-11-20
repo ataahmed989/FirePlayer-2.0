@@ -85,9 +85,10 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
 
     /**
      * Opens with [heading] ("Add a channel to Multiview"…), the bar selected without the keyboard (OK on it brings
-     * it); the channel history comes under it as soon as it's read, and the selection goes to it.
+     * it); the channel history comes under it as soon as it's read, and the selection goes to it. The channels in
+     * [shown] (Multiview's pictures) are left out of the history: picking one would only say it's there already.
      */
-    fun open(heading: String) {
+    fun open(heading: String, shown: Set<ChannelKey> = emptySet()) {
         title.text = heading
         bar.setText("")
         results?.clear()
@@ -102,7 +103,7 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
         val s = ++serial
         LiveSearch.worker.execute {
             val recent = try {
-                db.recent().take(LivePage.HISTORY_SIZE)
+                OverlayRules.history(db.recent(), shown, LivePage.HISTORY_SIZE) { it.key }
             } catch (e: RuntimeException) {
                 emptyList()
             }

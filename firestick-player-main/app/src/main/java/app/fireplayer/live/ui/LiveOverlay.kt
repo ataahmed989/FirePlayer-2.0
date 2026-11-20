@@ -261,14 +261,20 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         io.groups(playlist.id) { groups ->
             if (s != serial) return@groups
             entries = OverlayRules.entries(picking, playlist.id, groups)
+            // The groups' rows are made again: a name scrolling over one of them goes (it starts again on the new row).
+            val scrolling = marqueeCol === groupsCol
+            if (scrolling) stopMarquee()
             groupsCol.setGroups(entries.map { it.label }, OverlayRules.rowOf(entries, shownScope))
             groupsCol.mark = shownScope?.let { sc -> entries.indexOfFirst { it.scope == sc } } ?: -1
             shownScope?.let { channelsCol.setHeader(headerOf(it)) }
+            if (scrolling || level == Level.GROUPS) scheduleMarquee()
         }
         val ls = listSerial
         io.groupOf(channel) { scope, list ->
             // A group picked meanwhile wins.
             if (s != serial || ls != listSerial || shownScope != null) return@groupOf
+            // The groups' selection moves to it below: a group's name scrolling goes (showList asks again).
+            if (marqueeCol === groupsCol) stopMarquee()
             showList(scope, list, channel.key)
             groupsCol.place(OverlayRules.rowOf(entries, scope))
         }
@@ -280,6 +286,9 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         animate().alpha(1f).translationX(0f).setDuration(LiveWidths.OV_SLIDE_MS).setInterpolator(ease).withLayer().withEndAction(null).start()
         removeCallbacks(tick)
         postDelayed(tick, LiveWidths.OV_TICK_MS)
+        // The group may have been answered at once (the list Channel ▲ / ▼ move through): layoutLevel has just stopped
+        // the scroll it asked for, so the selected long name is asked to scroll again here.
+        scheduleMarquee()
     }
 
     /** Closes (fading away with [animate]); nothing more is read or answered. */
@@ -521,6 +530,10 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     }
 
     private fun showList(scope: GuideScope, list: List<Channel>, focus: ChannelKey?) {
+        // The channel rows are made again: a name scrolling over the old one goes (scheduled again below). A group's
+        // name scrolling beside them carries on undisturbed.
+        val restart = marqueeCol !== groupsCol
+        if (marqueeCol === channelsCol) stopMarquee()
         shownScope = scope
         channelsCol.setHeader(headerOf(scope))
         channelsCol.setEmptyText(if (scope is GuideScope.Favorites) NO_FAVORITES else NO_CHANNELS)
@@ -528,7 +541,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         groupsCol.mark = entries.indexOfFirst { it.scope == scope }
         askNow()
         if (level == Level.CHANNELS) channelFocused()
-        scheduleMarquee()
+        if (restart) scheduleMarquee()
     }
 
     /** "Playlist · group", as the column's header. */

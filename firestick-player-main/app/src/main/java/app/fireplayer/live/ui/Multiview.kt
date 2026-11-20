@@ -513,10 +513,12 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
 
     /** Search at the list's top: Live TV search over it, see-through, the channel history under its bar. */
     private fun openSearch() {
-        if (pickFor == null) return
+        val pick = pickFor ?: return
         backDown = false
         list?.hideForSearch()
-        picker().open(pickTitle)
+        // The channels on screen already (the one playing, at the start) are left out of its channel history.
+        val shown: Set<ChannelKey> = if (pick is Pick.Enter) setOf(pick.channel.key) else model.tiles.mapTo(HashSet()) { it.channel.key }
+        picker().open(pickTitle, shown)
     }
 
     /** Back from the search page: the list as it was. */

@@ -148,6 +148,19 @@ object OverlayRules {
     fun searchStart(words: String, history: Int): SearchStart =
         if (words.isBlank() && history > 0) SearchStart.HISTORY else SearchStart.BAR
 
+    /**
+     * The channel history under the search page's bar: the channels watched last ([recent], newest first) without
+     * those on screen already ([shown]: Multiview's pictures, or the one playing at its start), at most [size].
+     */
+    fun <T, K> history(recent: List<T>, shown: Set<K>, size: Int, keyOf: (T) -> K): List<T> {
+        val out = ArrayList<T>(minOf(size, recent.size).coerceAtLeast(0))
+        for (c in recent) {
+            if (out.size >= size) break
+            if (keyOf(c) !in shown) out.add(c)
+        }
+        return out
+    }
+
     /** Whether the history shows under the bar for these words (none typed). */
     fun showsHistory(words: String): Boolean = words.isBlank()
 
