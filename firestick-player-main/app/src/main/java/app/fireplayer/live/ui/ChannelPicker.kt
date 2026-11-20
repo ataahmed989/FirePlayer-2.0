@@ -83,7 +83,9 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
         // The channels' names are read now, while the first words are typed.
         resultsView().warm()
         showNote()
-        bar.showKeyboard()
+        // The keyboard comes once the bar is on screen and selected (asked for at once, it may not show).
+        bar.focusBar()
+        post { if (isOpen && bar.hasFocusHere()) bar.showKeyboard() }
     }
 
     /** Closes (the keyboard too); no late answer comes. */

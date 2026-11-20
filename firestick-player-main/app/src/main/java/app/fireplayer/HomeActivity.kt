@@ -423,7 +423,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (isLive) {
             live.start()
         } else {
-            // Live playback doesn't follow to other tabs yet (the top-right live window is a later step).
+            // Live playback doesn't follow to other tabs yet (the top-right live window is a later step). Multiview
+            // lives inside Live TV's full screen: leaving the tab closes it for good.
+            live.endMultiview()
             live.stop()
             placeVideo(null, 0f, false)
         }

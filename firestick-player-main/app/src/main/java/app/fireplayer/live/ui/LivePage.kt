@@ -556,7 +556,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
      * on gives the controls their usual time again.
      */
     private fun pauseChanged(paused: Boolean) {
-        if (!fullScreen || released) return
+        // Multiview's channel picker over full screen keeps the selection (the controls come back when it closes).
+        if (!fullScreen || released || multiview.active) return
         if (paused) {
             if (!controls.controlsShown && !FireDialog.isShowing(activity) && !host.overlayOpen()) {
                 showControls()
@@ -2079,7 +2080,6 @@ class LivePage(private val activity: Activity, private val host: Host) {
         dropZap()
         hideControlsNow()
         multiviewFrom = null
-        if (host.sidePanel.isOpen) host.sidePanel.close()
         player.stop()
         host.setMultiview(true)
     }
@@ -2091,8 +2091,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (!fullScreen) return
         host.placeVideo(null, 0f, true)
         if (tune(channel, playlist)) {
+            // Back from here: the guide on this channel.
             zappedInFull = true
-            guide.focusChannel(channel.key)
             refreshControls()
             showZapInfo()
         } else {
