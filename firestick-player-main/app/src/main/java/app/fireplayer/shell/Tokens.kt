@@ -85,18 +85,13 @@ class Tokens(context: Context) {
         // Sizes a layout reads are in res/values/dimens.xml (player_main_button, player_pill_min_width,
         // logo_badge_height); what code draws is here.
 
-        /** The buffering symbol ([app.fireplayer.ui.BusyOverlay]): its size over a full-screen picture and its ring. */
-        const val SPINNER_DP = 44f
-        const val SPINNER_STROKE_DP = 4f
+        /**
+         * The buffering symbol over a live picture ([app.fireplayer.ui.BusyOverlay]): the film player's own turning
+         * ring, the same size as there (activity_player.xml's 40 dp) over a full-screen picture.
+         */
+        const val SPINNER_DP = 40f
         /** How much of that size it has over a miniature. */
         const val SPINNER_MINI_SCALE = 0.68f
-        /** One turn. */
-        const val SPINNER_TURN_MS = 900L
-        /** The part of the ring that's blue, in degrees. */
-        const val SPINNER_SWEEP = 100f
-        const val SPINNER_RING = 0x40FFFFFF
-        /** A darker ring under it, so it shows over a bright picture too. */
-        const val SPINNER_SHADE = 0x59000000
 
         /** Live TV's line with no programme to show: the programme line's blue, the whole way, at this strength. */
         const val NO_PROGRAMME_LINE_ALPHA = 0.45f

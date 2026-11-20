@@ -1,85 +1,13 @@
 package app.fireplayer.ui
 
-import android.animation.ObjectAnimator
-import android.animation.ValueAnimator
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.RectF
+import android.content.res.ColorStateList
 import android.text.TextUtils
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
-import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
+import android.widget.ProgressBar
 import app.fireplayer.shell.Tokens
-
-/**
- * The buffering symbol: a blue arc turning on a faint ring. It's drawn once; turning only changes the view's
- * rotation, so nothing is laid out or drawn again frame by frame. Its look is in [Tokens] (SPINNER_*).
- */
-class BufferingSpinner(context: Context, accent: Int) : View(context) {
-    private val stroke = Tokens.SPINNER_STROKE_DP * resources.displayMetrics.density
-    private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = stroke * 1.6f; color = Tokens.SPINNER_SHADE
-    }
-    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = stroke; color = Tokens.SPINNER_RING
-    }
-    private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = stroke; strokeCap = Paint.Cap.ROUND; color = accent
-    }
-    private val box = RectF()
-    private var turn: ObjectAnimator? = null
-
-    /** Turning (only while it shows: a hidden one costs nothing). */
-    var spinning = false
-        set(v) {
-            if (field == v) return
-            field = v
-            if (v && isAttachedToWindow) start() else stop()
-        }
-
-    init {
-        isFocusable = false
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-    }
-
-    private fun start() {
-        val a = turn ?: ObjectAnimator.ofFloat(this, ROTATION, 0f, 360f).apply {
-            duration = Tokens.SPINNER_TURN_MS
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-        }.also { turn = it }
-        if (!a.isStarted) a.start()
-    }
-
-    private fun stop() {
-        turn?.cancel()
-        rotation = 0f
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        if (spinning) start()
-    }
-
-    override fun onDetachedFromWindow() {
-        turn?.cancel()
-        super.onDetachedFromWindow()
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        val inset = stroke
-        box.set(inset, inset, w - inset, h - inset)
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        canvas.drawOval(box, shade)
-        canvas.drawOval(box, ring)
-        canvas.drawArc(box, -90f, Tokens.SPINNER_SWEEP, false, arc)
-    }
-}
 
 /**
  * The buffering symbol over a picture, with a line or two of text under it when there's something to say
@@ -91,7 +19,15 @@ class BusyOverlay(context: Context, t: Tokens) : FrameLayout(context) {
     private val boxW = t.dp(BOX_W_DP)
     private val boxH = t.dp(BOX_H_DP)
     private val spinnerHalf = t.dpf(Tokens.SPINNER_DP) / 2f
-    private val spinner = BufferingSpinner(context, t.accent)
+    /**
+     * The same symbol the film player shows while it buffers (activity_player.xml's): Android's turning ring in the
+     * accent colour, [Tokens.SPINNER_DP] across. It only turns while this overlay shows.
+     */
+    private val spinner = ProgressBar(context).apply {
+        isIndeterminate = true
+        indeterminateTintList = ColorStateList.valueOf(t.accent)
+        isFocusable = false
+    }
     private val label = t.label(context, 13f, t.semibold).apply {
         maxLines = 2
         gravity = Gravity.CENTER_HORIZONTAL or Gravity.TOP
@@ -162,7 +98,6 @@ class BusyOverlay(context: Context, t: Tokens) : FrameLayout(context) {
         val on = placed && busy
         if (on) move()
         visibility = if (on) VISIBLE else GONE
-        spinner.spinning = on
     }
 
     private companion object {
