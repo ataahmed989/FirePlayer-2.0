@@ -66,6 +66,8 @@ android {
     testOptions {
         // TitleInfo's tests never touch the Android parts it can use.
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.systemProperty("robolectric.offline", "false"); it.systemProperty("rail.out", System.getenv("RAIL_OUT") ?: ""); it.maxHeapSize = "2g" }
     }
 
     lint {
@@ -93,4 +95,5 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     testImplementation(libs.kxml2)
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
