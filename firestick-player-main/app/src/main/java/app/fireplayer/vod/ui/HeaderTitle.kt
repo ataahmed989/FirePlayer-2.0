@@ -18,6 +18,7 @@ import app.fireplayer.ui.ImageFit
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.data.VodArt
 
 /**
  * The banner's title box: the title's logo, the treatment the title page gives it ([TitleHeader.TitleLogo]: its
@@ -64,7 +65,7 @@ internal class HeaderTitle(context: Context, t: Tokens, cardW: Float) : FrameLay
     /** Shows [title] (null: nothing). The same title again leaves the box as it is, a name it settled on included. */
     fun show(title: Title?) {
         val text = title?.name.orEmpty()
-        val u = title?.logo?.takeIf { it.isNotEmpty() }
+        val u = HeaderLogo.urlOf(title)
         if (title != null && mode != HeaderTitleMode.NONE && text == words && u == url) return
         main.removeCallbacks(giveUp)
         logo.animate().cancel()
@@ -93,7 +94,7 @@ internal class HeaderTitle(context: Context, t: Tokens, cardW: Float) : FrameLay
 
     /** Decodes [title]'s logo ahead (the title the banner turns to next). */
     fun warm(title: Title?) {
-        val u = title?.logo?.takeIf { it.isNotEmpty() } ?: return
+        val u = HeaderLogo.urlOf(title) ?: return
         request(u, ahead)
     }
 
@@ -194,6 +195,14 @@ internal class HeaderTitle(context: Context, t: Tokens, cardW: Float) : FrameLay
 
 /** A banner's logo as it's kept in memory. */
 internal object HeaderLogo {
+    /**
+     * The address of [title]'s logo: its own, else metahub's for its IMDb id. A card from the library (Continue
+     * Watching, My List) carries no logo address, and without this its banner would always show the name in text.
+     * A title metahub has no logo for answers with nothing, and the name shows as before.
+     */
+    fun urlOf(title: Title?): String? =
+        title?.logo?.takeIf { it.isNotEmpty() } ?: title?.id?.takeIf { it.startsWith("tt") }?.let { VodArt.logo(it) }
+
     /**
      * Cuts a decoded logo to its visible part ([LogoBounds]) and fits that inside [maxW] x [maxH] px, never enlarged
      * (image thread, once per logo): the picture kept is no larger than the box it's shown in.

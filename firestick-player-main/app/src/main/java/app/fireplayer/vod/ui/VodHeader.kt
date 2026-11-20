@@ -338,7 +338,7 @@ class VodHeader(
     private fun fetchLogosAhead() {
         if (logosAhead || rotation.paused) return
         logosAhead = true
-        for (i in feed.indices) ImageLoader.prefetch(feed[i].logo)
+        for (i in feed.indices) ImageLoader.prefetch(HeaderLogo.urlOf(feed[i]))
     }
 
     private val turn = Runnable {
