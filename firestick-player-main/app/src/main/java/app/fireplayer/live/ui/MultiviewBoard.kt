@@ -8,6 +8,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -31,7 +32,9 @@ import app.fireplayer.vod.ui.VodSizes
  * Multiview's pictures on the screen: a black board under the pages (the controls, the small window, the channel
  * picker and notices draw over it), each picture its own [SurfaceView] with its channel's name at the bottom left, the
  * buffering symbol ([BusyOverlay], when [BusySigns] says) and a plain message when it can't play; the grid's free cell
- * says "Add a channel". The selected picture (or cell) has the app's white focus ring outside it.
+ * says "Add a channel". Every picture's corners are round ([LiveWidths.MV_RADIUS]): the board's black is drawn over
+ * them, anti-aliased, as the wallpaper's rounded hole does round the guide's miniature (a shape made once per size, no
+ * clip per frame). The selected picture (or cell) has the app's white focus ring outside it, round with them.
  *
  * Laid out once per change of layout, never per frame: a picture moving to its new place goes there by translation
  * and scale only (its surface follows its view's transforms from Android 7 on), and is laid out there once at the end,
@@ -76,6 +79,8 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
         internal var inUse = false
         /** The video's shape (0: not known yet): the surface fits it inside the picture, black bars round it. */
         private var aspect = 0f
+        /** The four corners outside the picture's rounded shape, in the board's black (made again only for a new size). */
+        private val corners = Path().apply { fillType = Path.FillType.EVEN_ODD }
 
         var ringed = false
             set(v) {
@@ -164,10 +169,20 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
             ringed = false
         }
 
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            corners.reset()
+            if (w <= 0 || h <= 0) return
+            corners.addRect(0f, 0f, w.toFloat(), h.toFloat(), Path.Direction.CW)
+            corners.addRoundRect(0f, 0f, w.toFloat(), h.toFloat(), radius, radius, Path.Direction.CW)
+        }
+
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
-            // The picture's corners are square: the ring's inside edge is too.
-            if (ringed) ring(canvas, width.toFloat(), height.toFloat(), 0f)
+            // Round corners: the board's black over the picture's (and its surface's) square ones.
+            canvas.drawPath(corners, cornerPaint)
+            // The ring's inside edge follows them.
+            if (ringed) ring(canvas, width.toFloat(), height.toFloat(), radius)
         }
 
         override fun onDetachedFromWindow() {
@@ -213,6 +228,9 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
     private val addCell = AddCell()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
     private val ringPx = t.dpf(VodSizes.RING)
+    /** The pictures' corners, and the black drawn over theirs (the board's own). */
+    private val radius = t.dpf(LiveWidths.MV_RADIUS)
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
     /** The "Add" cell's corners: the panel's (Glass.Kind.PANEL), for its ring to hug. */
     private val panelRadius = resources.getDimension(R.dimen.radius_panel)
     private val ringRect = RectF()

@@ -7,18 +7,24 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelKey
+import app.fireplayer.live.LiveDb
+import app.fireplayer.live.LiveSearch
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.Glass
 import app.fireplayer.vod.data.SearchHistoryRules
 import app.fireplayer.vod.ui.SearchBar
 import app.fireplayer.vod.ui.VodSizes
 
 /**
- * Multiview's channel picker ("Add channel" and "Change channel", the user's "add/search, change/search"): Live TV
- * search as the Search page has it, the same bar ([SearchBar], the TV's keyboard on OK) and the same results
- * ([LiveSearchView]: channels, then programmes on them), at the same places, over Multiview on a dark backdrop that
- * leaves the pictures faintly in sight. OK on a channel (or on a programme) picks its channel ([onPick]); Back
- * ([LivePage] passes it on) closes it. Made the first time it's needed; the results are made with the first search.
+ * Multiview's search page (Search at the top of the channel list, [LiveOverlay]): Live TV search as the Search page has
+ * it, the same bar ([SearchBar], the TV's keyboard on OK) and the same results ([LiveSearchView]: channels, then
+ * programmes on them), at the same places, over Multiview on a see-through backdrop: the pictures (or the one ready
+ * picture) show under it (the user's TiviMate photo 3). With nothing typed, the channel history shows under the bar
+ * (Channel History's channels), the selection on it; the bar has to be pressed (OK) to type ([OverlayRules.searchStart]).
+ * OK on a channel (or on a programme) picks its channel ([onPick]); Back ([Multiview] passes it on) closes it. Made the
+ * first time it's needed; the results are made with its first opening.
  */
 @SuppressLint("ViewConstructor")
 class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(context) {
@@ -31,12 +37,16 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
     private val note = t.label(context, VodSizes.NOTE)
     private var results: LiveSearchView? = null
     private val x = t.dp(VodSizes.CONTENT_SCREEN_X)
+    private val db = LiveDb.get(context)
+    /** The channel history shown while nothing is typed (empty: none, or not read yet). */
+    private var history: List<LiveSearch.ChannelHit> = emptyList()
+    private var serial = 0
 
     var isOpen = false
         private set
 
     init {
-        setBackgroundColor(LiveWidths.MV_PICKER_SCRIM)
+        applyScrim()
         visibility = GONE
         clipChildren = false
         clipToPadding = false
@@ -73,25 +83,50 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
         v.onAnswered = { showNote() }
     }
 
-    /** Opens with [heading] ("Add a channel to Multiview"…), the bar selected and the keyboard up for the first words. */
-    fun open(heading: String) {
+    /**
+     * Opens with [heading] ("Add a channel to Multiview"…), the bar selected without the keyboard (OK on it brings
+     * it); the channel history comes under it as soon as it's read, and the selection goes to it. The channels in
+     * [shown] (Multiview's pictures) are left out of the history: picking one would only say it's there already.
+     */
+    fun open(heading: String, shown: Set<ChannelKey> = emptySet()) {
         title.text = heading
         bar.setText("")
         results?.clear()
+        history = emptyList()
         isOpen = true
         visibility = VISIBLE
-        // The channels' names are read now, while the first words are typed.
+        // The channels' names are read now, for the first words typed.
         resultsView().warm()
         showNote()
-        // The keyboard comes once the bar is on screen and selected (asked for at once, it may not show).
         bar.focusBar()
-        post { if (isOpen && bar.hasFocusHere()) bar.showKeyboard() }
+        if (OverlayRules.KEYBOARD_ON_OPEN) post { if (isOpen && bar.hasFocusHere()) bar.showKeyboard() }
+        val s = ++serial
+        LiveSearch.worker.execute {
+            val recent = try {
+                OverlayRules.history(db.recent(), shown, LivePage.HISTORY_SIZE) { it.key }
+            } catch (e: RuntimeException) {
+                emptyList()
+            }
+            post { if (s == serial && isOpen) showHistory(recent) }
+        }
+    }
+
+    /** The channel history read: under the bar while nothing is typed, the selection on it if it's still on the bar. */
+    private fun showHistory(recent: List<Channel>) {
+        history = recent.map { LiveSearch.ChannelHit(it.key, it.name, it.logo, it.groupId, it.favorite) }
+        if (!OverlayRules.showsHistory(bar.text)) return
+        val r = resultsView()
+        r.showHistory(history)
+        showNote()
+        if (OverlayRules.searchStart(bar.text, history.size) == OverlayRules.SearchStart.HISTORY && bar.hasFocusHere()) r.focusFirst()
     }
 
     /** Closes (the keyboard too); no late answer comes. */
     fun close() {
         if (!isOpen) return
         isOpen = false
+        ++serial
+        history = emptyList()
         bar.cancel()
         results?.clear()
         // Hidden with the selection in it: Android lets go of the selection (nothing else in full screen takes it).
@@ -104,13 +139,19 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
     }
 
     fun applyLook() {
+        applyScrim()
         bar.applyLook()
         results?.applyLook()
     }
 
+    /** See-through over the pictures; Classic, as dark as it was. */
+    private fun applyScrim() = setBackgroundColor(if (Glass.on) LiveWidths.MV_PICKER_SCRIM else LiveWidths.MV_PICKER_SCRIM_CLASSIC)
+
     private fun search(words: String) {
         if (!isOpen) return
-        resultsView().search(SearchHistoryRules.clean(words))
+        val clean = SearchHistoryRules.clean(words)
+        // Words cleared: the channel history again.
+        if (OverlayRules.showsHistory(clean)) resultsView().showHistory(history) else resultsView().search(clean)
         showNote()
     }
 
@@ -118,7 +159,7 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
     private fun showNote() {
         val r = results
         val text = when {
-            r == null || r.query.isEmpty() -> HINT
+            r == null || r.query.isEmpty() -> if (history.isNotEmpty()) "" else HINT
             r.hasResults() -> ""
             !r.answered -> VodSizes.SEARCHING_NOTE
             else -> "No channels found for “${r.query}”"
@@ -128,6 +169,6 @@ class ChannelPicker(context: Context, private val t: Tokens) : FrameLayout(conte
     }
 
     companion object {
-        const val HINT = "Type a channel's name or a programme, then pick the channel"
+        const val HINT = "Press OK on the bar to type a channel's name or a programme"
     }
 }
