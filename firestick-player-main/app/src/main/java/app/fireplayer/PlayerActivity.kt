@@ -680,6 +680,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
         settingsPanels.onChipsChanged = { updateChips() }
+        // Search and App Settings' Search bubble: the film ends here (its place saved, as on Back) and Search opens on Home.
+        settingsPanels.onSearch = {
+            startActivity(
+                Intent(this, HomeActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(HomeActivity.EXTRA_SEARCH, true),
+            )
+            finishWithResult()
+        }
         // Subtitle style opened from App settings (Subtitles & audio): the subtitles follow, as in the player's own.
         settingsPanels.onSubtitleStyleChanged = { applySubtitleStyle(); refreshLabels() }
         settingsPanels.onAssStylingChanged = { applySubtitleStyle(); if (stylingNeedsRebuild()) rebuildPlayer() }

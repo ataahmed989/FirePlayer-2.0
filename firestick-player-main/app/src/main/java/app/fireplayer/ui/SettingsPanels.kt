@@ -117,6 +117,12 @@ class SettingsPanels(
      */
     var liveWindows: ((SettingsCategory) -> Unit)? = null
 
+    /**
+     * The Search bubble's action ("Search and App Settings", Live TV's settings window): Search opens in the kind the
+     * screen calls for; null leaves the bubble out.
+     */
+    var onSearch: (() -> Unit)? = null
+
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
@@ -142,6 +148,7 @@ class SettingsPanels(
      * there too. The Settings tab lists the categories itself.
      */
     fun renderCategories(panel: SidePanel): Unit = with(panel) {
+        onSearch?.let { searchBubble(it) }
         val live = liveWindows
         // With the icons the Settings tab shows beside them.
         for (category in SettingsCategory.entries) {

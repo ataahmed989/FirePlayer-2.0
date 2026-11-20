@@ -48,6 +48,7 @@ import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
+import app.fireplayer.vod.ui.SearchKind
 import app.fireplayer.update.Updater
 import app.fireplayer.vod.PlayHandoff
 import app.fireplayer.vod.PlayRequest
@@ -155,6 +156,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         liveSettings = LiveSettings(this, panel)
         // App settings' list opens Playlists & EPG and Live TV from here.
         settingsPanels.liveWindows = { liveSettings.openCategory(it) }
+        // The Search bubble (Search and App Settings; Live TV's settings window): Live TV search from Live TV.
+        settingsPanels.onSearch = { openSearch(if (rail.selected == NavRail.Tab.LIVE) SearchKind.LIVE else SearchKind.VOD) }
 
         wallpaper = WallpaperView(this).apply { glassLook = Glass.on }
         wallpaperHost.addView(wallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -335,6 +338,36 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         live.openChannel(key)
         // As when Live TV is entered from the rail: focus on its tab (Home's row is gone), then into the page, at once
         // or when its channels have loaded.
+        rail.focusSelected()
+        focusPage()
+    }
+
+    /** Search opened from a settings window's Search bubble, in [kind], focus on its bar. */
+    private fun openSearch(kind: SearchKind) {
+        if (panel.isOpen) panel.close()
+        showTab(NavRail.Tab.SEARCH)
+        vodPages.current?.openSearch(kind)
+    }
+
+    /** The player's Search and App Settings window chose Search: the film has ended, Search opens here. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_SEARCH, false)) openSearch(SearchKind.VOD)
+    }
+
+    /** Live TV search: the channel plays full screen ([at] null), or the guide shows it (a later programme). */
+    override fun openLiveResult(key: ChannelKey, at: Long?) {
+        // Remembered first, so Live TV's start tunes this channel and not the one watched before.
+        live.openChannel(key)
+        showTab(NavRail.Tab.LIVE)
+        rail.focusSelected()
+        focusPage()
+        live.openFromSearch(key, full = at == null)
+    }
+
+    /** Back from Live TV search's starting view. */
+    override fun backToLive() {
+        showTab(NavRail.Tab.LIVE)
         rail.focusSelected()
         focusPage()
     }
@@ -983,6 +1016,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     }
 
     companion object {
+        /** On the intent that brings this screen back from the player: open Search (films and shows). */
+        const val EXTRA_SEARCH = "app.fireplayer.extra.OPEN_SEARCH"
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
         /** A second play this soon after one is a repeated OK while the player opens, not a new play. */

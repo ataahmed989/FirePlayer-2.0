@@ -141,6 +141,8 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
     /** Live FirePlayer Settings: Playlists & EPG, Remote, Look, Defaults, Playback, Statuses, App (user spec). */
     fun openPlayerSettings(shared: SettingsPanels, onClose: (() -> Unit)? = null) = reloadThen {
         panel.open("Settings", onClose) {
+            // Search (Live TV search) first, focused as the window opens.
+            shared.onSearch?.let { searchBubble(it) }
             // Named as its category in App settings and the Settings tab.
             header(SettingsCategory.PLAYLISTS_EPG.title)
             playlistsAndEpg(this, headings = false)

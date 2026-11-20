@@ -13,7 +13,11 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import app.fireplayer.R
 import app.fireplayer.live.ChannelKey
+import app.fireplayer.live.LiveDb
+import app.fireplayer.live.LiveSearch
+import app.fireplayer.live.ui.LiveSearchView
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PressHold
 import app.fireplayer.shell.Tokens
@@ -87,6 +91,12 @@ class VodPage(
         fun play(request: PlayRequest)
         /** OK on one of Home's recent channels: Live TV opens on it. */
         fun openChannel(key: ChannelKey) {}
+        /** Live TV search: [key] plays full screen on Live TV ([at] null), or the guide shows it ([at]: a later programme's start). */
+        fun openLiveResult(key: ChannelKey, at: Long?) {}
+        /** Back from Live TV search's starting view: the Live TV tab. */
+        fun backToLive() {}
+        /** Assign favorites on a channel's group, the channel selected (a channel's small window in Live TV search). */
+        fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?) {}
     }
 
     private val t = host.tokens
@@ -104,7 +114,7 @@ class VodPage(
     private val clockText = t.label(ctx, VodSizes.CLOCK)
     /** Under the name line; clips, so nothing shows above it. */
     private val viewport = FrameLayout(ctx)
-    private val column = if (search) PageColumn(ctx, t, VodSizes.SEARCH_BAR_H, VodSizes.SEARCH_GAP) else PageColumn(ctx, t)
+    private val column = if (search) PageColumn(ctx, t, VodSizes.searchTopH(), VodSizes.SEARCH_GAP) else PageColumn(ctx, t)
     private val headerBand = FrameLayout(ctx)
     private val headerW = if (page == Page.HOME) VodSizes.homeHeaderW() else VodSizes.tabHeaderW()
     /** My List's banner holds still above its rows: shorter, and without buttons ([VodSizes.MY_LIST_HEADER_H]). */
@@ -116,7 +126,16 @@ class VodPage(
     /** Search: the bar and the trash button in the header's place, the history under them, kept on this TV. */
     private val searchBar: SearchBar? = if (search) SearchBar(ctx, t) else null
     private val historyList: SearchHistoryList? = if (search) SearchHistoryList(ctx, t) else null
-    private val history: SearchHistory? = if (search) SearchHistory.of(ctx) else null
+    /** Search: the kind searched now (the pills above the bar), and each kind's own history and last words. */
+    private var kind = SearchKind.VOD
+    private val pills: SearchKindPills? = if (search) SearchKindPills(ctx, t) else null
+    private val histories: Map<SearchKind, SearchHistory> =
+        if (search) SearchKind.entries.associateWith { SearchHistory.of(ctx, it.historyKey) } else emptyMap()
+    private val history: SearchHistory? get() = histories[kind]
+    private val lastWords = SearchRules.LastWords()
+    /** Search > Live TV: its results under the bar, made the first time that kind is chosen. */
+    private var liveResults: LiveSearchView? = null
+    private var searchBack = SearchRules.Back.RAIL
     /** Search: the words the result rows are for ("": none, the history shows). */
     private var query = ""
     /** Search: the words a "nothing found" notice was shown for. */
@@ -222,9 +241,19 @@ class VodPage(
                     topMargin = t.dp(VodSizes.VIEWPORT_TOP)
                 })
             }
-            search -> searchBar?.let {
-                it.setPadding(pageX, 0, 0, 0)
-                column.header = it
+            // Search: the kind pills on a line above the bar.
+            search -> searchBar?.let { bar ->
+                val top = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    clipChildren = false
+                    clipToPadding = false
+                    setPadding(pageX, 0, 0, 0)
+                }
+                top.addView(pills, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.SEARCH_KIND_H)))
+                top.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = t.dp(VodSizes.SEARCH_KIND_GAP)
+                })
+                column.header = top
             }
             else -> column.header = headerBand
         }
@@ -243,9 +272,9 @@ class VodPage(
             list.show(history?.entries.orEmpty())
         }
         searchBar?.let { bar ->
-            bar.onQuery = { words -> search(words) }
+            bar.onQuery = { words -> searchKind(words) }
             bar.onSubmit = { words ->
-                search(words)
+                searchKind(words)
                 rememberSearch()
             }
             bar.onArrow = { keyCode, fromTrash -> onBarArrow(keyCode, fromTrash) }
@@ -256,6 +285,11 @@ class VodPage(
             onPick = { words -> onHistoryPick(words) }
             onHold = { words, row -> onHistoryHold(words, row) }
             onUpFromTop = { searchBar?.focusBar() }
+            onLeft = { host.focusRail() }
+        }
+        pills?.apply {
+            onPick = { k -> switchKind(k) }
+            onDown = { searchBar?.focusBar() }
             onLeft = { host.focusRail() }
         }
 
@@ -311,7 +345,11 @@ class VodPage(
         titles.closeAll(focusBack = false)
         closeSeeAll(focusBack = false)
         // Search opens on its history again, an empty bar, whenever its tab is chosen anew.
-        if (search) resetSearch(focus = false)
+        if (search) {
+            resetSearch(focus = false)
+            lastWords.clear()
+            if (kind != SearchKind.VOD) switchKind(SearchKind.VOD)
+        }
         pause()
         root.visibility = View.GONE
     }
@@ -336,6 +374,7 @@ class VodPage(
         headerCancel?.cancel()
         window?.release()
         searchBar?.cancel()
+        liveResults?.release()
         titles.release()
         seeAll?.release()
         if (hold.isOpen) hold.close(fade = false, focusBack = false)
@@ -397,6 +436,8 @@ class VodPage(
         window?.applyLook()
         searchBar?.applyLook()
         historyList?.applyLook()
+        pills?.applyLook()
+        liveResults?.applyLook()
         Glass.overlay(notice, Glass.Kind.POPUP)
         Glass.background(emptyButton, Glass.Kind.PILL)
         hold.applyLook()
@@ -493,12 +534,15 @@ class VodPage(
         seeAllBackDown = false
         // Search: Back from the results (or words in the bar) goes back to the history, an empty bar; from there, to
         // the rail (the shell's).
-        if (search && (searchBackDown || showsSearch())) {
+        // Live TV search's starting view: back to Live TV.
+        val back = if (!search) SearchRules.Back.RAIL else if (searchBackDown) searchBack else SearchRules.back(kind, showsSearch())
+        if (back != SearchRules.Back.RAIL) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 searchBackDown = true
+                searchBack = back
             } else if (event.action == KeyEvent.ACTION_UP && searchBackDown) {
                 searchBackDown = false
-                resetSearch(focus = true)
+                if (back == SearchRules.Back.CLEAR) resetSearch(focus = true) else host.backToLive()
             }
             return true
         }
@@ -1275,7 +1319,87 @@ class VodPage(
 
     /** Search: results show, or words are in the bar (Back clears them). */
     private fun showsSearch(): Boolean =
-        query.isNotEmpty() || searchBar?.text?.isNotBlank() == true || visibleRows().isNotEmpty()
+        searchBar?.text?.isNotBlank() == true || if (kind == SearchKind.LIVE) {
+            liveResults?.let { it.query.isNotEmpty() || it.hasResults() } == true
+        } else {
+            query.isNotEmpty() || visibleRows().isNotEmpty()
+        }
+
+    /** Search: [words] searched in the kind chosen. */
+    private fun searchKind(words: String) {
+        if (kind == SearchKind.LIVE) liveView().search(SearchHistoryRules.clean(words)) else search(words)
+    }
+
+    /** Search > Live TV's results, made the first time they're needed (above the history, under the page's windows). */
+    private fun liveView(): LiveSearchView = liveResults ?: LiveSearchView(ctx, t, t.dp(VodSizes.PAGE_X)).also { v ->
+        liveResults = v
+        val at = historyList?.let { root.indexOfChild(it) + 1 } ?: root.childCount
+        root.addView(v, at, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            topMargin = t.dp(VodSizes.searchListTop())
+        })
+        v.onUp = { searchBar?.focusBar() }
+        v.onLeft = { host.focusRail() }
+        v.onPlay = { key ->
+            rememberSearch()
+            host.openLiveResult(key, null)
+        }
+        v.onGuide = { key, at ->
+            rememberSearch()
+            host.openLiveResult(key, at)
+        }
+        v.onHold = { hit, anchor -> openChannelHold(hit, anchor) }
+        v.onAnswered = { updateSearchView() }
+    }
+
+    /**
+     * Search: the other kind chosen on its pill. This kind's words are kept (and come back when it's chosen again), its
+     * results go; the bar takes the other kind's hint, last words and results, and the history shows that kind's.
+     */
+    private fun switchKind(to: SearchKind) {
+        val bar = searchBar ?: return
+        if (to == kind) return
+        lastWords.keep(kind, bar.text)
+        bar.cancel()
+        if (kind == SearchKind.LIVE) liveResults?.clear() else search("")
+        kind = to
+        pills?.show(to)
+        bar.setKind(to)
+        val words = lastWords.of(to)
+        bar.setText(words)
+        historyList?.show(history?.entries.orEmpty())
+        noticeFor = null
+        if (words.isNotBlank()) searchKind(words)
+        updateSearchView()
+    }
+
+    /** Search: opened in [to] (a settings window's Search bubble: Live TV search from Live TV), focus on the bar. */
+    fun openSearch(to: SearchKind) {
+        if (!search) return
+        switchKind(to)
+        searchBar?.focusBar()
+    }
+
+    /** Search > Live TV: OK held on a channel: its full name, the guide's star and Assign favorites. */
+    private fun openChannelHold(hit: LiveSearch.ChannelHit, anchor: View) {
+        val db = LiveDb.get(ctx)
+        val star = HoldPopup.Button(
+            if (hit.favorite) "Remove from Favorites" else "Add to Favorites",
+            icon = if (hit.favorite) R.drawable.ic_star_filled else R.drawable.ic_star,
+            selected = hit.favorite,
+        ) {
+            val fav = !hit.favorite
+            hit.favorite = fav
+            val now = System.currentTimeMillis()
+            LiveDb.writes.execute { db.setFavorite(hit.key, fav, now) }
+            hold.close()
+            showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
+        }
+        val assign = HoldPopup.Button("Assign favorites") {
+            hold.close(fade = false)
+            host.openAssignFavorites(hit.key.playlistId, hit.groupId, hit.key)
+        }
+        hold.open(hit.name, listOf(star, assign), anchor, anchor, hold.area(VodSizes.VIEWPORT_TOP), otherwise = { searchBar?.focusBar() })
+    }
 
     /**
      * Search: the result rows for [words], asked now (blank: none, the history shows). The rows' older answers are
@@ -1306,8 +1430,9 @@ class VodPage(
     /** Search: the words searched now go first in the history (submitted, or a result opened). */
     private fun rememberSearch() {
         val h = history ?: return
-        if (query.isEmpty()) return
-        h.add(query)
+        val q = if (kind == SearchKind.LIVE) liveResults?.query.orEmpty() else query
+        if (q.isEmpty()) return
+        h.add(q)
         historyList?.show(h.entries)
     }
 
@@ -1321,6 +1446,7 @@ class VodPage(
         bar.cancel()
         bar.setText("")
         search("")
+        liveResults?.clear()
         if (focus) pageSpring.glideTo(0f) else pageSpring.snap(0f)
         updateSearchView()
     }
@@ -1328,7 +1454,8 @@ class VodPage(
     /** Search: the history shows while no results do (and nothing covers the page); "nothing found" once per search. */
     private fun updateSearchView() {
         val list = historyList ?: return
-        val results = visibleRows().isNotEmpty()
+        val live = liveResults?.takeIf { kind == SearchKind.LIVE }
+        val results = visibleRows().isNotEmpty() || live?.hasResults() == true
         // Focus off the list before it hides (a hidden view holding focus would hand it to the rail's first tab).
         if (results && list.hasFocus()) searchBar?.focusBar()
         list.visibility = when {
@@ -1336,9 +1463,11 @@ class VodPage(
             covered -> View.INVISIBLE
             else -> View.VISIBLE
         }
-        if (query.isNotEmpty() && !results && rows.all { it.answered } && noticeFor != query && shown) {
-            noticeFor = query
-            showNotice("Nothing found for \u201C$query\u201D")
+        val q = live?.query ?: query
+        val answered = live?.answered ?: rows.all { it.answered }
+        if (q.isNotEmpty() && !results && answered && noticeFor != q && shown) {
+            noticeFor = q
+            showNotice("Nothing found for \u201C$q\u201D")
         }
     }
 
@@ -1358,7 +1487,12 @@ class VodPage(
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> if (fromTrash) bar.focusBar() else host.focusRail()
             KeyEvent.KEYCODE_DPAD_RIGHT -> if (!fromTrash) bar.focusTrash()
+            KeyEvent.KEYCODE_DPAD_UP -> pills?.focus(kind)
             KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (kind == SearchKind.LIVE) {
+                    if (liveResults?.focusFirst() != true) historyList?.focusRow(0)
+                    return
+                }
                 val row = visibleRows().firstOrNull { it.items.isNotEmpty() }
                 if (row == null || !row.focusChosen()) historyList?.focusRow(0)
             }
@@ -1370,7 +1504,7 @@ class VodPage(
         val bar = searchBar ?: return
         bar.setText(words)
         bar.focusBar()
-        search(words)
+        searchKind(words)
         rememberSearch()
     }
 

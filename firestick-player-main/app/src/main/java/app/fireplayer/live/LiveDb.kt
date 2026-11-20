@@ -514,7 +514,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     }
 
     /** Sources with listings, each with the name its current generation's rows are stored under. */
-    private fun sourcesWithEpg(): Map<String, String> =
+    internal fun sourcesWithEpg(): Map<String, String> =
         readableDatabase.rawQuery("SELECT source, gen FROM epg_status WHERE programmes > 0", null).use { c ->
             buildMap { while (c.moveToNext()) put(c.getString(0), physical(c.getString(0), c.getInt(1))) }
         }

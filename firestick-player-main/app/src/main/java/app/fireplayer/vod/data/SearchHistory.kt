@@ -8,10 +8,10 @@ import org.json.JSONArray
  * The Search tab's history, kept on this TV only (its own small file): the searches made, newest first, at most
  * [SearchHistoryRules.MAX]. Main thread; reads and writes are a few bytes.
  */
-class SearchHistory(private val prefs: SharedPreferences) {
+class SearchHistory(private val prefs: SharedPreferences, private val key: String = KEY) {
 
     /** The searches, newest first. */
-    var entries: List<String> = SearchHistoryRules.read(prefs.getString(KEY, null))
+    var entries: List<String> = SearchHistoryRules.read(prefs.getString(key, null))
         private set
 
     /** [query] made (submitted, or a result opened from it): first, an older copy of it gone. */
@@ -24,14 +24,16 @@ class SearchHistory(private val prefs: SharedPreferences) {
     private fun save(next: List<String>) {
         if (next == entries) return
         entries = next
-        prefs.edit().putString(KEY, SearchHistoryRules.write(next)).apply()
+        prefs.edit().putString(key, SearchHistoryRules.write(next)).apply()
     }
 
     companion object {
         private const val FILE = "fireplayer_search"
         private const val KEY = "history"
 
-        fun of(context: Context) = SearchHistory(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE))
+        /** The history under [key] (each kind of search keeps its own, [app.fireplayer.vod.ui.SearchKind.historyKey]). */
+        fun of(context: Context, key: String = KEY) =
+            SearchHistory(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE), key)
     }
 }
 
