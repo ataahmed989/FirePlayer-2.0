@@ -14,49 +14,54 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import app.fireplayer.R
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.RowGroups
 import app.fireplayer.ui.Rows
+import kotlin.math.ceil
 
 /**
- * The small window a held OK opens in Live TV: a channel's in the guide (Favorite, Assign favorites) and a group's in
- * the groups column (Move to top, Hide category). One look and one behaviour for both: the full name (up to two lines)
- * over a row of buttons, beside what was held, with the first button selected, and optionally one more button under
- * that row (a group's Manage groups), reached with Down and left with Up. Left from the first button, Right from the
- * last, Up from the row, Down from the bottom and Back close it (LivePage passes Back on), and the selection goes back
- * where it was.
+ * The small window a held OK opens: in Live TV a channel's in the guide (Favorite, Assign favorites), a group's in the
+ * groups column (Move to top, Hide category) and a Multiview picture's; through [app.fireplayer.vod.ui.HoldWindow]
+ * Films & Shows' (cards, title pages, Search's history and Live TV results). One look and one behaviour for all, the
+ * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name on a title line (up
+ * to two lines), then one option per line (an icon before its words where it has one), the first selected, and
+ * optionally one more under a thin line (a group's Manage groups). Up and Down move between the options; Up past the
+ * first, Down past the last, Left, Right and Back close it (LivePage passes Back on), and the selection goes back where
+ * it was.
  *
- * Light, for a slow TV: its few views are made once and reused; it's laid out once as it opens (its words and place),
- * then only faded and grown in or out, drawn as one layer while that lasts. It sits in its parent, a FrameLayout over
- * what it was opened from, and is GONE while closed.
+ * Light, for a slow TV: its few views are made once and reused; it's measured and placed once as it opens (its words
+ * and place), then only faded and slid in or out, drawn as one layer while that lasts. It sits in its parent, a
+ * FrameLayout over what it was opened from, and is GONE while closed.
  */
 class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context) {
 
-    /** A button: its words, or an [icon] with [label] as what it says to a screen reader. [selected] shows it blue. */
+    /** An option: its words, with an [icon] before them where it has one. [selected] shows it blue. */
     class Button(val label: String, val icon: Int? = null, val selected: Boolean = false, val onClick: () -> Unit)
 
-    private class Slot(val view: LinearLayout, val icon: ImageView, val text: TextView) {
-        /** Round (an icon) or a pill (words); null until first shown. */
-        var round: Boolean? = null
+    private class Slot(val view: LinearLayout) {
+        val icon = HoldShape.icon(view)
+        val text = HoldShape.words(view)
         var action: (() -> Unit)? = null
     }
 
     private val rows = Rows(context)
-    private val title = t.label(context, 15f, t.semibold).apply {
-        // The whole name: a second line rather than cut short.
-        maxLines = 2
-        maxWidth = t.dp(300)
-        setLineSpacing(t.dpf(1f), 1f)
-    }
-    private val bar = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    private val title = HoldShape.title(context, t)
     private val slots = ArrayList<Slot>()
     private var shown = 0
-    /** The button under the row, as wide as the window; made the first time one is asked for. */
+    /** The option under the thin line, and the line; made the first time one is asked for. */
     private var below: Slot? = null
+    private var line: View? = null
     private var belowShown = false
-    /** The row's button Down left from, for Up to come back to. */
-    private var lastInRow = 0
+    /** Some option has an icon: the others' words keep in line with its words. */
+    private var iconColumn = false
+
+    /** What it was opened beside and the area it may use (kept for placing it again when an option's words change). */
+    private val held = RectF()
+    private val area = RectF()
+    /** Which side of what was held it is on ([HoldPlace.side]): it slides out of that side. */
+    private var side = 0
 
     var isOpen = false
         private set
@@ -80,76 +85,61 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         orientation = VERTICAL
         visibility = GONE
         descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-        setPadding(t.dp(14), t.dp(12), t.dp(14), t.dp(12))
-        minimumWidth = t.dp(200)
-        addView(title, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        addView(bar, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(10) })
+        HoldShape.pad(this, t)
+        addView(title)
         applyLook()
     }
 
-    /** The look's surfaces: a popup's glass (or the classic popup), its buttons the pills of the app's small windows. */
+    /** The look's surfaces: a popup's glass (or the classic popup), its options lit only while selected. */
     fun applyLook() {
         // A window over the page: its glass shows the page behind it, blurred (copied each time it's shown).
         Glass.overlay(this, Glass.Kind.POPUP)
-        for (s in slots) if (s.round != null) style(s)
-        below?.let { if (it.round != null) style(it) }
+        for (s in slots) HoldShape.style(s.view)
+        below?.let { HoldShape.style(it.view) }
     }
 
     /**
-     * Opens with [name] over [buttons], beside [anchor] (the held row, in the parent's coordinates) and inside [area];
-     * the first button is selected.
+     * Opens with [name] over [buttons] (and [under], below a thin line), beside [anchor] (the held item, in the parent's
+     * coordinates) and inside [area]; the first button is selected.
      */
     fun open(name: CharSequence, buttons: List<Button>, anchor: RectF, area: RectF, under: Button? = null) {
-        val host = parent as? View ?: return
-        if (buttons.isEmpty()) return
+        if (parent !is View || buttons.isEmpty()) return
         serial++
         removeCallbacks(closeLater)
         animate().cancel()
         title.text = name
+        title.visibility = if (name.isBlank()) GONE else VISIBLE
+        iconColumn = under?.icon != null
+        for (b in buttons) if (b.icon != null) iconColumn = true
         shown = buttons.size
         buttons.forEachIndexed { i, b -> fill(slot(i), b) }
         for (i in buttons.size until slots.size) slots[i].view.visibility = GONE
         belowShown = under != null
         if (under != null) fill(belowSlot(), under) else below?.view?.visibility = GONE
-        lastInRow = 0
+        line?.visibility = if (belowShown) VISIBLE else GONE
+        held.set(anchor)
+        this.area.set(area)
         isOpen = true
         armed = false
         visibility = VISIBLE
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
-        // Measured now so it's placed before it's first drawn: one layout, with its new words.
-        measure(
-            MeasureSpec.makeMeasureSpec(host.width, MeasureSpec.AT_MOST),
-            MeasureSpec.makeMeasureSpec(host.height, MeasureSpec.AT_MOST),
-        )
-        val w = measuredWidth.toFloat()
-        val h = measuredHeight.toFloat()
-        val x = HoldPlace.x(anchor.right, w, t.dpf(8f), area.left, area.right)
-        val y = HoldPlace.y(anchor.centerY(), h, area.top, area.bottom)
-        // Placed by its layout, not a transform: the glass look lines its blurred wallpaper up with where it's laid out.
-        (layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.gravity = Gravity.TOP or Gravity.LEFT
-            lp.leftMargin = x.toInt()
-            lp.topMargin = y.toInt()
-            layoutParams = lp
-        }
-        // It grows out of the held row's side.
-        pivotX = 0f
-        pivotY = (anchor.centerY() - y).coerceIn(0f, h)
+        // Measured and placed now, before it's first drawn: one layout, with its new words.
+        place()
+        // It comes out of the held item's side.
         alpha = 0f
-        scaleX = OPEN_SCALE
-        scaleY = OPEN_SCALE
+        translationX = -side * t.dpf(Tokens.HOLD_SLIDE_DP)
         slots[0].view.requestFocus()
         viewTreeObserver.addOnGlobalFocusChangeListener(watch)
         // Fades in from the next frame (the first one lays it out and draws it), as one layer while it fades.
         val s = serial
         Choreographer.getInstance().postFrameCallback {
             if (s != serial || !isOpen) return@postFrameCallback
-            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(OPEN_MS).setInterpolator(EASE).withLayer().start()
+            animate().alpha(1f).translationX(0f).setDuration(Tokens.HOLD_OPEN_MS).setInterpolator(EASE).withLayer().start()
         }
     }
 
     /**
-     * Closes it: the selection goes back first ([focusBack], see [onClose]), so the buttons fading out never hold it.
+     * Closes it: the selection goes back first ([focusBack], see [onClose]), so the options fading out never hold it.
      * [fade] false: gone at once (a window opening in its place).
      */
     fun close(fade: Boolean = true, focusBack: Boolean = true) {
@@ -165,20 +155,23 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
             visibility = GONE
             return
         }
-        animate().alpha(0f).scaleX(CLOSE_SCALE).scaleY(CLOSE_SCALE).setDuration(CLOSE_MS).setInterpolator(EASE).withLayer()
+        animate().alpha(0f).translationX(-side * t.dpf(Tokens.HOLD_SLIDE_DP) / 2f).setDuration(Tokens.HOLD_CLOSE_MS)
+            .setInterpolator(EASE).withLayer()
             .withEndAction { if (!isOpen) visibility = GONE }
             .start()
     }
 
-    /** Closes by itself after [ms], so the viewer sees what a press did; moving to another button keeps it open. */
+    /** Closes by itself after [ms], so the viewer sees what a press did; moving to another option keeps it open. */
     fun closeAfter(ms: Long) {
         removeCallbacks(closeLater)
         postDelayed(closeLater, ms)
     }
 
-    /** Button [i] shows [b] now (the star after a press), in place. */
+    /** Button [i] shows [b] now (the star after a press), in place; the window fits its new words. */
     fun update(i: Int, b: Button) {
-        if (i < shown) fill(slots[i], b)
+        if (i >= shown) return
+        fill(slots[i], b)
+        if (isOpen) place()
     }
 
     /** A small pop on button [i]'s icon: it springs back from smaller (a transform, nothing laid out). */
@@ -199,54 +192,66 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
                 return if (armed) super.dispatchKeyEvent(event) else true
             }
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                if (down) vertical(event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN, event.repeatCount > 0)
+                if (down) step(if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1, event.repeatCount > 0)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                if (down) step(if (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1, event.repeatCount > 0)
+                // Off the list's side: closed (a held key doesn't).
+                if (down && event.repeatCount == 0) close()
                 return true
             }
         }
         return super.dispatchKeyEvent(event)
     }
 
-    /** Left / Right: the next button, or past the first or last one, closed (a held key stops at the ends). */
+    /** Up / Down: the next option, or past the first or last one, closed (a held key stops at the ends). */
     private fun step(dir: Int, repeat: Boolean) {
-        val at = (0 until shown).indexOfFirst { slots[it].view.isFocused }
+        val count = options()
+        var at = -1
+        for (i in 0 until count) if (option(i).isFocused) at = i
         val next = at + dir
-        if (at >= 0 && next in 0 until shown) {
+        if (at >= 0 && next in 0 until count) {
             removeCallbacks(closeLater)
-            slots[next].view.requestFocus()
+            option(next).requestFocus()
         } else if (!repeat) {
             close()
         }
     }
 
-    /** Down from the row: the button under it; Up from there: back to the row. Past the top or bottom, closed. */
-    private fun vertical(downKey: Boolean, repeat: Boolean) {
-        val under = below?.takeIf { belowShown }
-        val onUnder = under != null && under.view.isFocused
-        when {
-            downKey && under != null && !onUnder -> {
-                lastInRow = (0 until shown).indexOfFirst { slots[it].view.isFocused }.coerceAtLeast(0)
-                removeCallbacks(closeLater)
-                under.view.requestFocus()
-            }
-            !downKey && onUnder -> slots[lastInRow.coerceIn(0, shown - 1)].view.requestFocus()
-            !repeat -> close()
-        }
+    /** The options shown, top to bottom: the buttons, then the one under the line. */
+    private fun options(): Int = shown + if (belowShown && below != null) 1 else 0
+
+    private fun option(i: Int): View = if (i < shown) slots[i].view else below!!.view
+
+    /** Sized to its words ([HoldShape.width]) and put beside what was held ([HoldPlace]), by its layout. */
+    private fun place() {
+        val host = parent as? View ?: return
+        val lp = layoutParams as? FrameLayout.LayoutParams ?: return
+        val w = HoldShape.width(this, t, area.width())
+        measure(
+            MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(host.height, MeasureSpec.AT_MOST),
+        )
+        val width = w.toFloat()
+        val h = measuredHeight.toFloat()
+        val x = HoldPlace.x(held.left, held.right, width, t.dpf(Tokens.HOLD_GAP_DP), area.left, area.right)
+        val y = HoldPlace.y(held.centerY(), h, area.top, area.bottom)
+        side = HoldPlace.side(x, width, held.left, held.right)
+        // Placed by its layout, not a transform: the glass look lines its blurred wallpaper up with where it's laid out.
+        lp.gravity = Gravity.TOP or Gravity.LEFT
+        lp.width = w
+        lp.leftMargin = x.toInt()
+        lp.topMargin = y.toInt()
+        layoutParams = lp
     }
 
     private fun belowSlot(): Slot {
         below?.let { return it }
-        val view = rows.base().apply { gravity = Gravity.CENTER }
-        val icon = ImageView(context).apply { imageTintList = rows.textColors }
-        val text = rows.text("")
-        view.addView(icon, LayoutParams(t.dp(18), t.dp(18)))
-        view.addView(text)
-        val s = Slot(view, icon, text)
-        view.setOnClickListener { if (isOpen) s.action?.invoke() }
-        addView(view, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(34)).apply { topMargin = t.dp(8) })
+        val l = HoldShape.line(context)
+        addView(l, HoldShape.lineParams(t))
+        line = l
+        val s = option()
+        addView(s.view, HoldShape.optionParams(t, first = true))
         below = s
         return s
     }
@@ -262,62 +267,171 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
     private fun slot(i: Int): Slot {
         slots.getOrNull(i)?.let { return it }
-        // The pills of the app's small windows (FireDialog's buttons): white with dark words when selected.
-        val view = rows.base().apply { gravity = Gravity.CENTER }
-        val icon = ImageView(context).apply { imageTintList = rows.textColors }
-        val text = rows.text("")
-        view.addView(icon, LayoutParams(t.dp(18), t.dp(18)))
-        view.addView(text)
-        val s = Slot(view, icon, text)
-        view.setOnClickListener { if (isOpen) s.action?.invoke() }
-        bar.addView(view, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(34)).apply { if (i > 0) marginStart = t.dp(8) })
+        val s = option()
+        // After the title and the options before it (above the line and the option under it, if they're made).
+        addView(s.view, 1 + slots.size, HoldShape.optionParams(t, first = slots.isEmpty()))
         slots += s
         return s
     }
 
+    private fun option(): Slot {
+        val s = Slot(HoldShape.option(rows, t))
+        s.view.setOnClickListener { if (isOpen) s.action?.invoke() }
+        return s
+    }
+
     private fun fill(s: Slot, b: Button) {
-        val round = b.icon != null
         s.action = b.onClick
         s.view.visibility = VISIBLE
         s.view.isSelected = b.selected
         s.view.contentDescription = b.label
-        if (b.icon != null) s.icon.setImageResource(b.icon) else s.text.text = b.label
-        if (s.round == round) return
-        s.round = round
-        s.icon.visibility = if (round) VISIBLE else GONE
-        s.text.visibility = if (round) GONE else VISIBLE
-        val lp = s.view.layoutParams as LayoutParams
-        lp.width = if (round) t.dp(34) else ViewGroup.LayoutParams.WRAP_CONTENT
-        s.view.layoutParams = lp
-        style(s)
-        if (round) s.view.setPadding(0, 0, 0, 0) else s.view.setPadding(t.dp(14), 0, t.dp(14), 0)
+        s.text.text = b.label
+        if (b.icon != null) {
+            s.icon.setImageResource(b.icon)
+            s.icon.visibility = VISIBLE
+        } else {
+            s.icon.visibility = if (iconColumn) INVISIBLE else GONE
+        }
     }
 
-    private fun style(s: Slot) =
-        Glass.background(s.view, Glass.Kind.ROW, if (s.round == true) R.drawable.bg_circle else R.drawable.bg_pill)
-
     private companion object {
-        const val OPEN_MS = 160L
-        const val CLOSE_MS = 120L
         const val POP_MS = 220L
-        const val OPEN_SCALE = 0.94f
-        const val CLOSE_SCALE = 0.96f
         const val POP_SCALE = 0.6f
         val EASE = PathInterpolator(0.2f, 0f, 0f, 1f)
         val OVERSHOOT = OvershootInterpolator(3f)
     }
 }
 
-/** Where the small window goes (pure, unit-tested): beside the held row, kept inside the area it may use. */
+/**
+ * The app's one hold window shape ([HoldPopup]; a settings window row's, [app.fireplayer.ui.FireDialog.hold]): a narrow
+ * vertical list beside what was held. The window has a little room round the list; a title line (the name held, in line
+ * with the options' words); one option per line, an icon before its words where it has one, only the selected one lit
+ * (the window is the card); a thin line before an option of another kind. As wide as its widest line ([width]). Its
+ * sizes are in [Tokens] (HOLD_*).
+ */
+object HoldShape {
+    /** The window's room round its list. */
+    fun pad(box: View, t: Tokens) {
+        val p = t.dp(Tokens.HOLD_PAD_DP)
+        box.setPadding(p, p, p, p)
+    }
+
+    /** The title line: the name held, up to [Tokens.HOLD_TITLE_LINES] lines, in line with the options' words. */
+    fun title(context: Context, t: Tokens): TextView = t.label(context, Tokens.HOLD_TITLE).apply {
+        maxLines = Tokens.HOLD_TITLE_LINES
+        val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
+        setPadding(x, t.dp(Tokens.HOLD_TITLE_PAD_TOP_DP), x, t.dp(Tokens.HOLD_TITLE_PAD_BOTTOM_DP))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    /** An option: an icon (hidden until it has one, [icon]) and its words ([words]), lit only while selected. */
+    fun option(rows: Rows, t: Tokens): LinearLayout = rows.base().apply {
+        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        minimumHeight = 0
+        val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
+        setPadding(x, 0, x, 0)
+        style(this)
+        val size = t.dp(Tokens.HOLD_ICON_DP)
+        addView(ImageView(context).apply {
+            imageTintList = rows.textColors
+            visibility = View.GONE
+        }, LinearLayout.LayoutParams(size, size).apply { marginEnd = t.dp(Tokens.HOLD_ICON_GAP_DP) })
+        addView(rows.text(""), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    fun icon(option: LinearLayout): ImageView = option.getChildAt(0) as ImageView
+
+    fun words(option: LinearLayout): TextView = option.getChildAt(1) as TextView
+
+    /** An option's place in the list: full width, this tall, the gap above it unless it's [first]. */
+    fun optionParams(t: Tokens, first: Boolean) =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(Tokens.HOLD_ROW_H_DP)).apply {
+            if (!first) topMargin = t.dp(Tokens.HOLD_ROW_GAP_DP)
+        }
+
+    /** An option's look (again when the look changes): the selected white alone, glass or classic. */
+    fun style(option: View) {
+        val l = option.paddingLeft
+        val top = option.paddingTop
+        val r = option.paddingRight
+        val b = option.paddingBottom
+        option.background = RowGroups.focusOnly(option.context)
+        option.setPadding(l, top, r, b)
+    }
+
+    /** The thin line before an option of another kind: the glass hairline, in line with the words. */
+    fun line(context: Context): View = View(context).apply { setBackgroundColor(GlassStyle.HAIRLINE) }
+
+    fun lineParams(t: Tokens) =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, GlassStyle.hairlinePx(t.density).toInt().coerceAtLeast(1)).apply {
+            val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
+            leftMargin = x
+            rightMargin = x
+            topMargin = t.dp(Tokens.HOLD_LINE_GAP_DP)
+            bottomMargin = t.dp(Tokens.HOLD_LINE_GAP_DP)
+        }
+
+    /**
+     * How wide [box] (a window of this shape, its words set) is: its widest line as it would be on one line, and its
+     * room, within [Tokens.HOLD_MIN_W_DP]..[Tokens.HOLD_MAX_W_DP] and [max] px (the area). Measures its lines once.
+     */
+    fun width(box: ViewGroup, t: Tokens, max: Float): Int {
+        val free = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        var widest = 0
+        for (i in 0 until box.childCount) {
+            val c = box.getChildAt(i)
+            if (c.visibility == View.GONE) continue
+            c.measure(free, free)
+            if (c.measuredWidth > widest) widest = c.measuredWidth
+        }
+        val w = HoldSize.width(
+            widest.toFloat(),
+            (box.paddingLeft + box.paddingRight).toFloat(),
+            t.dpf(Tokens.HOLD_MIN_W_DP),
+            minOf(t.dpf(Tokens.HOLD_MAX_W_DP), max),
+        )
+        return ceil(w).toInt()
+    }
+}
+
+/** How big a hold window is (pure, unit-tested). */
+object HoldSize {
+    /**
+     * Its width: its widest line [content] and its [padding], no wider (no empty room beside its words), at least [min]
+     * (a short list still reads as a column), at most [max] (a longer title takes a second line); [max] wins over [min]
+     * (a narrow area).
+     */
+    fun width(content: Float, padding: Float, min: Float, max: Float): Float =
+        (content + padding).coerceAtLeast(min).coerceAtMost(max.coerceAtLeast(0f))
+}
+
+/** Where a hold window goes (pure, unit-tested): beside what was held, kept inside the area it may use. */
 object HoldPlace {
-    /** Its left edge: [gap] right of the anchor's right edge, moved left (over the anchor) when it doesn't fit there. */
-    fun x(anchorRight: Float, width: Float, gap: Float, left: Float, right: Float): Float =
-        minOf(anchorRight + gap, right - width).coerceAtLeast(left)
+    /**
+     * Its left edge: [gap] right of the anchor; where it doesn't fit there (an item near the area's right edge), [gap]
+     * left of it; where neither side has room (an item as wide as the area), as far right as fits, over the anchor, and
+     * never past the area's left edge.
+     */
+    fun x(anchorLeft: Float, anchorRight: Float, width: Float, gap: Float, left: Float, right: Float): Float {
+        val after = anchorRight + gap
+        if (after >= left && after + width <= right) return after
+        val before = anchorLeft - gap - width
+        if (before >= left && before + width <= right) return before
+        return minOf(after, right - width).coerceAtLeast(left)
+    }
 
     /** Its top: centred on the anchor, moved to stay between [top] and [bottom]. */
     fun y(anchorCenterY: Float, height: Float, top: Float, bottom: Float): Float =
         minOf(anchorCenterY - height / 2, bottom - height).coerceAtLeast(top)
+
+    /** Which side of the anchor a window at [x] is: 1 right of it, -1 left of it, 0 over it (it slides out of that side). */
+    fun side(x: Float, width: Float, anchorLeft: Float, anchorRight: Float): Int = when {
+        x >= anchorRight -> 1
+        x + width <= anchorLeft -> -1
+        else -> 0
+    }
 }
+
 
 /**
  * OK in the guide (pure, unit-tested): a short press acts on its release; held past [holdMs] (or once the system

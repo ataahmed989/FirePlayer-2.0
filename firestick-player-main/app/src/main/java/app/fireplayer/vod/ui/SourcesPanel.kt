@@ -139,9 +139,9 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         )
     }
 
-    /** Hold OK on a row: Play from beginning, Details. */
+    /** Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). */
     private fun holdMenu(s: PlaybackSource) {
-        FireDialog.ask(
+        FireDialog.hold(
             activity,
             // The row's own main line, so the window names the copy as the list did.
             PlayRules.mainLine(s).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() },
