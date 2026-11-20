@@ -224,8 +224,10 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     /** Whether any result shows. */
     fun hasResults(): Boolean = result?.isEmpty == false
 
-    /** No more answers (the page hid or went). */
-    fun clear() = search("")
+    /** No more answers (the page hid or went); the channel history shown in their place goes too. */
+    fun clear() {
+        if (query.isEmpty() && result != null) show(null) else search("")
+    }
 
     fun release() {
         released = true
