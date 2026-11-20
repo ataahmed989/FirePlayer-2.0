@@ -116,4 +116,8 @@ class ConnectionBudget {
 
     @Synchronized
     fun inUse(account: String): Int = held[account]?.size ?: 0
+
+    /** How many more streams [account] allows now (its allowance [limit], 0 meaning one, less those open). */
+    @Synchronized
+    fun free(account: String, limit: Int): Int = ((if (limit <= 0) 1 else limit) - inUse(account)).coerceAtLeast(0)
 }
