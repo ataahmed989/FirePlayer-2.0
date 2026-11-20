@@ -589,7 +589,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         logosAtOpen[0] = logos.fromDisk
         logosAtOpen[1] = logos.fromNetwork
         logosAtOpen[2] = logos.failedCount
-        val resume = if (!player.onScreenStarted() && player.currentKey == null) prefs.lastChannel else null
+        // (A channel that was playing when the tab was left comes back whatever the setting says: that's carrying on.)
+        val resume = if (!player.onScreenStarted() && player.currentKey == null && prefs.playLastOnOpening) prefs.lastChannel else null
         // Built now, while the channel is read, rather than when it arrives.
         if (resume != null) player.warm()
         // The rail and column as they were (the rail shows with the column, or while there's nothing else).
@@ -2051,6 +2052,11 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
 class LivePrefs(context: Context) {
     private val sp = context.getSharedPreferences("fireplayer_live", Context.MODE_PRIVATE)
 
+    companion object {
+        /** [playLastOnOpening]'s row in Settings › Live TV, as its category lists it. */
+        const val PLAY_LAST_ON_OPENING = "Play the last channel on opening"
+    }
+
     var scope: GuideScope?
         get() = GuideScope.decode(sp.getString("scope", null))
         set(v) = sp.edit().putString("scope", v?.encode()).apply()
@@ -2093,6 +2099,15 @@ class LivePrefs(context: Context) {
     var epgUpdateHours: Int
         get() = sp.getInt("epg_update_h", 24)
         set(v) = sp.edit().putInt("epg_update_h", v).apply()
+
+    /**
+     * Play the last channel on opening (Settings › Live TV): opening Live TV with nothing playing starts the channel
+     * watched last in the small picture. On by default, as it always did; off, it opens on the guide alone (no
+     * stream, no sound, the provider's connection left free) until a channel is picked.
+     */
+    var playLastOnOpening: Boolean
+        get() = sp.getBoolean("play_last_on_opening", true)
+        set(v) = sp.edit().putBoolean("play_last_on_opening", v).apply()
 
     /** Live TV buffer: how much of a channel is loaded ahead. Default Medium, the buffer live TV always had. */
     var liveBuffer: app.fireplayer.player.LiveBuffer

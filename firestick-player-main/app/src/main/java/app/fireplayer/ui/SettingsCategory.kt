@@ -22,7 +22,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
     LIVE_TV(
         "Live TV",
         R.drawable.ic_live,
-        listOf("Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Live TV buffer"),
+        listOf("Channel ▲▼", "Hide controls after", "Full screen after no key presses", "Play the last channel on opening", "Live TV buffer"),
     ),
     PLAYBACK(
         "Playback",
