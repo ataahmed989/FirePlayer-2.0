@@ -65,6 +65,8 @@ class SettingsCategoryTest {
             "Match the focused Continue Watching title",
             // ...and how long every tab's banner shows each title while idle.
             "Time on each title",
+            // Multiview: how many pictures at most, and how 3 or 4 open.
+            "Multiview pictures", "Multiview with 3 or 4",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

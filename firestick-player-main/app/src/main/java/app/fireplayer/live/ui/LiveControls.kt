@@ -41,7 +41,7 @@ import kotlin.math.roundToInt
  *
  * Left: TV Guide and Channel History, main controls the size of the VOD player's Play. While the channel is paused or behind live, Play/Pause and Go live come first
  * and push them along. Right: Captions and Favorite. Down swaps them for the extra row under the chevron, as the VOD
- * player's icon row: Multiview and External PiP (dimmed: not built yet), Audio, Audio delay, Display size, Screen
+ * player's icon row: Multiview, External PiP (dimmed: not built yet), Audio, Audio delay, Display size, Screen
  * dimmer, Sleep timer and Settings, each with its value under it. Up brings the buttons back.
  */
 class LiveControls(context: Context, private val t: Tokens) : FrameLayout(context) {
@@ -147,7 +147,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
 
     /**
      * The extra row, built as the VOD player builds its icon row (item_more: a round icon, its value under it, the
-     * whole item growing a little when selected). Multiview and External PiP are dimmed and passed over by the D-pad,
+     * whole item growing a little when selected). External PiP is dimmed and passed over by the D-pad,
      * as a settings row that can't be used is ([app.fireplayer.ui.SidePanel.row] with enabled = false).
      */
     private fun buildMoreRow() {
@@ -169,7 +169,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
             moreRow.addView(v)
             moreItems[key] = MoreItem(v, iconView.parent as View, value)
         }
-        add(MULTIVIEW, R.drawable.ic_multiview, "Multiview", enabled = false)
+        add(MULTIVIEW, R.drawable.ic_multiview, "Multiview")
         add(PIP, R.drawable.ic_pip, "External PiP", enabled = false)
         add(AUDIO, R.drawable.ic_audio, "Audio")
         add(AUDIO_DELAY, R.drawable.ic_audio_delay, "Audio delay")

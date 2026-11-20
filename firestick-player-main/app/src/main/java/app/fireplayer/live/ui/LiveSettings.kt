@@ -898,6 +898,15 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 refresh()
             }
             liveBufferRow(this, activity)
+            // Multiview (inside full screen): how many pictures at most, and how 3 or 4 open.
+            header("Multiview")
+            val counts = listOf(2, 3, 4)
+            choice(MULTIVIEW_PICTURES, counts.map { "Up to $it" }, counts.indexOf(prefs.multiviewMost).coerceAtLeast(0)) { i ->
+                prefs.multiviewMost = counts[i]
+            }
+            choice(MULTIVIEW_LAYOUT, listOf("In a grid", "One large on top"), if (prefs.multiviewLarge) 1 else 0) { i ->
+                prefs.multiviewLarge = i == 1
+            }
         }
     }
 

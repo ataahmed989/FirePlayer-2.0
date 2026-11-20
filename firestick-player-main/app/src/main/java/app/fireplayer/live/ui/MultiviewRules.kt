@@ -2,6 +2,10 @@ package app.fireplayer.live.ui
 
 import kotlin.math.abs
 
+/** Settings › Live TV's Multiview rows (labels, as App settings' categories list them). */
+const val MULTIVIEW_PICTURES = "Multiview pictures"
+const val MULTIVIEW_LAYOUT = "Multiview with 3 or 4"
+
 /**
  * Where Multiview's pictures go (dp on the 960 x 540 dp screen), and where the D-pad moves between them. Pure, so the
  * maths is unit-tested. The user's design: 2 side by side; 3 and 4 in a 2 x 2 grid (with 3, the fourth cell is "Add");

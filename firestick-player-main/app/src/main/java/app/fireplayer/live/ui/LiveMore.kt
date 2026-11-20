@@ -21,7 +21,8 @@ import java.util.Date
  * timer; and Captions, from its button beside Favorite. Also the values shown under those buttons, and the sleep timer
  * itself, which keeps running in the guide.
  *
- * Settings (Live FirePlayer Settings) is opened by the page itself; Multiview and External PiP aren't built yet.
+ * Settings (Live FirePlayer Settings) and Multiview ([Multiview]) are opened by the page itself; External PiP isn't
+ * built yet.
  */
 class LiveMore(
     private val activity: Activity,

@@ -191,7 +191,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.onChipsChanged = { live.refreshPods() }
         filmMode = FilmMode(this, object : FilmMode.Hooks {
             override fun stopLive() {
-                // The channel stops and its player is released: its decoders are the film's now.
+                // The channel stops and its player is released: its decoders are the film's now. Multiview's pictures
+                // too, for good (they don't come back after the film).
+                live.endMultiview()
                 live.stop()
                 player.stop()
                 placeVideo(null, 0f, false)
@@ -283,6 +285,23 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     override fun pictureChanged() {
         layoutVideo()
         applyLiveDim()
+    }
+
+    /** Multiview shows: its pictures (its board, under the pages) take the screen's video in place of the one picture. */
+    private var multiviewOn = false
+
+    override fun addMultiview(board: View) {
+        // Under the pages, over the wallpaper and the one picture's buffering symbol: the controls, windows and notices
+        // draw over it.
+        root.addView(board, root.indexOfChild(busy) + 1, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    override fun setMultiview(on: Boolean) {
+        if (multiviewOn == on) return
+        multiviewOn = on
+        // The one picture hides (its surface, buffering symbol and captions); the wallpaper draws nothing under the
+        // board while it shows (it would only be drawn over), and comes back as it closes.
+        if (on) placeVideo(null, 0f, false) else wallpaper.setHole(null, 0f)
     }
 
     override fun setFilmGlass(on: Boolean) {
@@ -763,7 +782,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         motion.clear()
         laidAt = null
         pictureFull = false
-        wallpaper.setHole(null, 0f)
+        wallpaper.setHole(null, 0f, full = multiviewOn)
         busy.away()
         resetTransform()
         if (surface.visibility != View.INVISIBLE) {
