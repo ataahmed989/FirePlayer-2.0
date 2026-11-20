@@ -922,6 +922,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onDestroy() {
         super.onDestroy()
+        // Never left pointing at a screen that's gone (onStop's releasePlayer normally takes it away first).
+        if (FilmRoom.film === filmRoom) FilmRoom.film = null
         barWatch?.release()
         liveSettings?.release()
         if (diagMade.isInitialized()) diag.release()
@@ -5892,7 +5894,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Explicit either way: FirePlayer's own plays never ask "Resume from?".
             startPositionMs = startMs
             attachSaved(entry, chooseOn = true)
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer()
+            // Built now, or at onStart from the memory free then (the old player's budget is kept for this moment only).
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer() else keepBudgetBytes = 0
         }
 
         override fun ask(question: String, choices: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {

@@ -817,7 +817,7 @@ private class FilmLoadControl(
     /**
      * Squeezed: the memory the film let go of since (what's played past, and kept behind no longer) is freed rather
      * than kept for reuse, at most once a second. Media3 frees it only on a jump. The cap is given to the allocator
-     * again first: Media3 sets it back to the whole budget when tracks are chosen, which can cross a squeeze made on
+     * again first: Media3 sets it back to the tier's size when tracks are chosen, which can cross a squeeze made on
      * the main thread at the same moment.
      */
     private fun freeLetGo(cap: Int) {
@@ -839,7 +839,8 @@ private class FilmLoadControl(
         trackSelections: Array<ExoTrackSelection?>,
     ) {
         inner.onTracksSelected(parameters, trackGroups, trackSelections)
-        // Media3 sets the memory kept for reuse back to the whole budget here; squeezed, it stays at the cap.
+        // Media3 sets the memory kept for reuse back to the tier's size here; it stays at what the buffer fills to
+        // (the budget, or the cap while squeezed).
         allocator.setTargetBufferSize(capBytes)
     }
 
