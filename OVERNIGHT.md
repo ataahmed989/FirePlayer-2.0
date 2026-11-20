@@ -152,3 +152,8 @@ and continue from the first unfinished step. Update the status lines here as ste
   narrow hold windows (icons for Add / Remove from list), Home's 16:9 live picture with the narrowing banner,
   Continue Watching across seasons, the larger Search live picture. Seen on the TV: hold window, overlay Left and
   Left again, Home's 16:9 picture. Waiting on the user's look and go-ahead for step 5 (release + data reset).
+- 19:58 UTC: RELEASED. ataahmed989/firestick-player#77 merged (646bf09): FirePlayer 2.0 replaces 1.0, published
+  as FirePlayer 1.0.304 (signed with the same release key, a92cea4b...5265, as 1.0.298 on the TV). Glass Home #16
+  merged (1a7f52f), its release building. On the Max: 1.0.304 installed over app.fireplayer, app.fireplayer.next
+  uninstalled, app.fireplayer's data cleared (pm clear); it opens cleanly on Home. Future changes go to the
+  firestick-player repository (each push to main publishes a release; TVs update themselves).
