@@ -86,24 +86,41 @@ class VodSizesTitleTest {
 
     @Test
     fun theTextBlockHoldsItsLines() {
-        // The title box, the facts row, two lines of story, then the source line, and 8 dp under it.
+        // The title box, the facts row, two lines of story, then the source line, and about 8 dp under it.
         near(30f, VodSizes.TITLE_TOP)
         near(122f, VodSizes.titleFactsTop())
         near(150f, VodSizes.titleStoryTop())
-        near(37.6f, VodSizes.titleStoryH())
-        near(193.6f, VodSizes.titleSourceTop())
-        near(VodSizes.TITLE_HEADER_H - 8f, VodSizes.titleSourceTop() + VodSizes.SOURCE.lineSp)
-        // The facts and story are the page headers' styles a size up; a name at its large size fits the title box.
+        near(35.2f, VodSizes.titleStoryH())
+        near(195.2f, VodSizes.titleSourceTop())
+        val sourceBottom = VodSizes.titleSourceTop() + VodSizes.SOURCE.lineSp
+        near(208.4f, sourceBottom)
+        near(VodSizes.TITLE_HEADER_H - 8f, sourceBottom, 0.5f)
+        // Tuning round 1: the story a step under the facts (the page headers' own size), the source line a small quiet
+        // caption; each a size down from the one above it.
         assertEquals(VodSizes.FACTS.copy(sp = 14f), VodSizes.TITLE_FACTS)
-        assertEquals(VodSizes.STORY.copy(sp = 14f), VodSizes.TITLE_STORY)
+        assertEquals(VodSizes.STORY.copy(sp = 13f), VodSizes.TITLE_STORY)
+        assertEquals(TextStyle(11f, TextStyle.Weight.REGULAR, TextStyle.Ink.OWN, 0xFFA9B1BA.toInt()), VodSizes.SOURCE)
+        assertTrue(VodSizes.SOURCE.sp < VodSizes.TITLE_STORY.sp && VodSizes.TITLE_STORY.sp < VodSizes.TITLE_FACTS.sp)
+        assertEquals(VodSizes.POD_META.color, VodSizes.SOURCE.color)
+        // The source line stands apart from the story (further than the story is from the facts, and than its own
+        // lines are from each other), and is as far above the season dropdown as the pods are below it.
+        assertTrue(VodSizes.SOURCE_GAP > VodSizes.STORY_GAP && VodSizes.STORY_GAP > VodSizes.TITLE_STORY.lineGap)
+        val aboveDropdown = VodSizes.TITLE_HEADER_H + VodSizes.SEASON_TOP - sourceBottom
+        val belowDropdown = VodSizes.STAGE_ROW_TOP - VodSizes.SEASON_TOP - VodSizes.SEASON_H
+        near(16f, belowDropdown)
+        near(belowDropdown, aboveDropdown, 0.5f)
+        // A name at its large size fits the title box; the story's measure stays inside the facts' width.
         assertTrue(VodSizes.TITLE_NAME.lineSp <= VodSizes.TITLE_BOX_H && VodSizes.LOGO_W <= VodSizes.TITLE_BOX_W)
+        assertTrue(VodSizes.TITLE_TEXT_W <= VodSizes.TITLE_BOX_W)
     }
 
     @Test
     fun theStageHoldsTheColumnAndThePodsBesideIt() {
-        // The column starts at the content's x; the pods a gap after it, at screen x 334.
-        near(276f, VodSizes.stageX())
-        near(334f, VodSizes.RAIL + VodSizes.stageX())
+        // Tuning round 1: the column is clearly shorter in length than the 216 dp it was.
+        assertEquals(176f, VodSizes.ACTIONS_W)
+        // The column starts at the content's x; the pods a gap after it, at screen x 294 (40 dp further left).
+        near(236f, VodSizes.stageX())
+        near(294f, VodSizes.RAIL + VodSizes.stageX())
         // About two pods and part of a third fit from there to the screen's right edge, also with the first one grown.
         val room = VodSizes.SCREEN_W - (VodSizes.RAIL + VodSizes.stageX())
         val third = room - 2 * VodSizes.podPitch()
@@ -122,18 +139,167 @@ class VodSizesTitleTest {
         near(220f, VodSizes.podsBandH())
         // The season dropdown's row ends above that room; the first button is level with the pods' top.
         assertTrue(VodSizes.SEASON_TOP + VodSizes.SEASON_H <= VodSizes.STAGE_ROW_TOP - VodSizes.POD_ROOM)
-        // The column with all its buttons ends about level with the pods, its widest pill inside it.
-        near(204f, VodSizes.actionsH())
-        assertTrue(kotlin.math.abs(VodSizes.actionsH() - VodSizes.podH()) <= 8f)
-        // A focused pill (grown 1.04) stays clear of the pods' box.
+        // The column with all its buttons (a resume point: four rows, the cards' gap apart) is exactly as tall as the
+        // pods beside it, top and bottom level; on the TV each button and gap is a whole number of pixels.
+        near(200f, VodSizes.actionsH())
+        near(VodSizes.podH(), VodSizes.actionsH())
+        assertEquals(VodSizes.GAP, VodSizes.BUTTON_GAP)
+        assertTrue(VodSizes.BUTTON_H in 38f..40f)
+        near(79f, VodSizes.BUTTON_H * 2f, 0.0001f)
+        // A focused pill (grown 1.04 about its middle) stays clear of the pods' box and of the row under it; a focused
+        // circle (1.08) of the circle beside it and of the row above.
         assertTrue(VodSizes.ACTIONS_W * 0.02f < VodSizes.STAGE_GAP - VodSizes.POD_GAP)
-        // A pill's words at about 0.55 of their size a letter: "Resume S2 E5 · 12m left" fits at the buttons' size beside
-        // its icon, a long "Resume S12 E15 · 1h 12m left" a size down; the wait for an add-on (no icon) a size down too.
-        near(166f, VodSizes.pillTextW(icon = true))
-        near(188f, VodSizes.pillTextW(icon = false))
-        assertTrue(23 * 0.55f * VodSizes.BUTTON.sp <= VodSizes.pillTextW(icon = true))
-        assertTrue(26 * 0.55f * VodSizes.BUTTON_LONG.sp <= VodSizes.pillTextW(icon = true))
-        assertTrue(29 * 0.55f * VodSizes.BUTTON_LONG.sp <= VodSizes.pillTextW(icon = false))
+        assertTrue(VodSizes.BUTTON_H * 0.02f < VodSizes.BUTTON_GAP / 2f)
+        assertTrue(VodSizes.BUTTON_H * 0.04f < VodSizes.BUTTON_GAP / 2f)
+        // The room for a pill's words: the column inside 12 dp at each end, after its icon and the gap when it has one.
+        near(131f, VodSizes.pillTextW(icon = true))
+        near(152f, VodSizes.pillTextW(icon = false))
+        // The round buttons are the pills' family: as tall as one, from the column's left edge, the rows' gap between
+        // them; both inside the column.
+        assertTrue(2 * VodSizes.BUTTON_H + VodSizes.BUTTON_GAP <= VodSizes.ACTIONS_W)
+        assertTrue(VodSizes.CIRCLE_ICON < VodSizes.BUTTON_H && VodSizes.BUTTON_ICON < VodSizes.BUTTON.lineSp)
+        // A resuming pill's progress line runs along the pill's straight part (its ends are round, half its height in
+        // radius), well inside the curve at its height (the pill is [cut] narrower there at each end than at its
+        // middle), and clear of the words above it (a 13 sp line centred in the pill).
+        val r = VodSizes.BUTTON_H / 2f
+        val below = r - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H / 2f
+        val cut = r - kotlin.math.sqrt(r * r - below * below)
+        assertTrue(VodSizes.PILL_PROGRESS_SIDE >= r && cut + 12f < VodSizes.PILL_PROGRESS_SIDE)
+        assertTrue(VodSizes.ACTIONS_W - 2 * VodSizes.PILL_PROGRESS_SIDE >= 0.75f * VodSizes.ACTIONS_W)
+        val lineTop = VodSizes.BUTTON_H - VodSizes.PILL_PROGRESS_BOTTOM - VodSizes.PILL_PROGRESS_H
+        val wordsBottom = r + VodSizes.BUTTON.lineSp / 2f
+        assertTrue(wordsBottom + 4f <= lineTop)
+        // The gap over the line and the room under it are alike (within a dp).
+        near(VodSizes.PILL_PROGRESS_BOTTOM, lineTop - wordsBottom, 1f)
+    }
+
+    /**
+     * Figtree 600's letter widths (res/font/figtree_600.ttf, thousandths of an em) for the letters, digits and marks
+     * the buttons' words use: a line's width at a size is their sum (the TV's own spacing of some pairs only makes it
+     * narrower). [theLetterWidthsAreTheFontsOwn] checks them against the font file.
+     */
+    private object Figtree600 {
+        private const val CHARS = " ,0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz·"
+        val UNITS = intArrayOf(
+            241, 245,
+            645, 419, 571, 551, 628, 578, 574, 548, 613, 574,
+            699, 612, 723, 695, 590, 550, 750, 750, 282, 537, 644, 530, 853, 774, 783, 594, 785, 637, 610, 572, 705, 711, 975, 653, 630, 635,
+            524, 592, 544, 591, 551, 384, 596, 565, 250, 282, 517, 236, 864, 564, 581, 597, 586, 363, 466, 393, 564, 542, 815, 512, 556, 483,
+            258,
+        )
+
+        fun width(s: String, sp: Float): Float = s.sumOf { c ->
+            val i = CHARS.indexOf(c)
+            require(i >= 0) { "no width for '$c'" }
+            UNITS[i]
+        } * sp / 1000f
+
+        /**
+         * The same widths read from a TrueType [file]: each letter's glyph (the cmap's format 4 table) and that glyph's
+         * advance (hmtx), in thousandths of the font's em (head). Null for a file without those tables.
+         */
+        fun fromFile(file: java.io.File): IntArray? {
+            val b = java.nio.ByteBuffer.wrap(file.readBytes())
+            fun u16(at: Int) = b.getShort(at).toInt() and 0xFFFF
+            val tables = HashMap<String, Int>()
+            for (i in 0 until u16(4)) {
+                val at = 12 + 16 * i
+                tables[String(ByteArray(4) { b.get(at + it) }, Charsets.ISO_8859_1)] = b.getInt(at + 8)
+            }
+            val head = tables["head"] ?: return null
+            val hhea = tables["hhea"] ?: return null
+            val hmtx = tables["hmtx"] ?: return null
+            val cmap = tables["cmap"] ?: return null
+            val em = u16(head + 18)
+            val metrics = u16(hhea + 34)
+            val sub = (0 until u16(cmap + 2)).map { cmap + b.getInt(cmap + 4 + 8 * it + 4) }.firstOrNull { u16(it) == 4 } ?: return null
+            val seg2 = u16(sub + 6)
+            val ends = sub + 14
+            val starts = ends + seg2 + 2
+            val deltas = starts + seg2
+            val offsets = deltas + seg2
+            fun glyph(c: Int): Int {
+                for (s in 0 until seg2 / 2) {
+                    if (c > u16(ends + 2 * s)) continue
+                    val start = u16(starts + 2 * s)
+                    if (c < start) return 0
+                    val offset = u16(offsets + 2 * s)
+                    val delta = u16(deltas + 2 * s)
+                    if (offset == 0) return (c + delta) and 0xFFFF
+                    val g = u16(offsets + 2 * s + offset + 2 * (c - start))
+                    return if (g == 0) 0 else (g + delta) and 0xFFFF
+                }
+                return 0
+            }
+            return IntArray(CHARS.length) { i ->
+                val advance = u16(hmtx + 4 * minOf(glyph(CHARS[i].code), metrics - 1))
+                Math.round(advance * 1000f / em)
+            }
+        }
+    }
+
+    /** A button's words at the buttons' size, dp (on the TV an sp is a dp). */
+    private fun wordsW(s: String): Float = Figtree600.width(s, VodSizes.BUTTON.sp)
+
+    /** Every film's Resume, whatever is left of it: "Resume · 1m left" to "Resume · 4h 59m left". */
+    private fun filmResumes(): List<String> = (0..4).flatMap { h ->
+        (0..59).mapNotNull { m ->
+            val left = listOfNotNull("${h}h".takeIf { h > 0 }, "${m}m".takeIf { m > 0 }).joinToString(" ")
+            if (left.isEmpty()) null else "Resume · $left left"
+        }
+    }
+
+    @Test
+    fun everyStatesWordsFitTheColumn() {
+        // The words each state of a pill shows, at the buttons' size, are narrower than the pill's room for them, with
+        // 2 dp to spare for the TV's own rounding: nothing is cut short or made smaller.
+        val withIcon = listOf(
+            "Play", "Play S1 E1", "Play S12 E24", "Play S2024 E120",
+            "Resume S2 E5", "Resume S12 E24", "Resume S40 E40", "Resume S2024 E200", "Resume Special 12",
+            "Watch again · S1 E1", "Watch again · S4 E4",
+            "Play from beginning",
+            "Sources", "Sources · 18", "Sources · 400",
+        ) + filmResumes()
+        // Play that can't play yet has no icon, nor has the wait for the add-ons.
+        val withoutIcon = listOf(
+            "Play", "Coming soon", "Coming 2027", "Coming May 20", "Coming Mar 6, 2027", "Coming May 20, 2030", "Coming Sep 30, 2027",
+            "Waiting", "Waiting · 0 s", "Waiting · 40 s", "Waiting · 120 s",
+        )
+        for (s in withIcon) assertTrue("$s: ${wordsW(s)}", wordsW(s) + 2f <= VodSizes.pillTextW(icon = true))
+        for (s in withoutIcon) assertTrue("$s: ${wordsW(s)}", wordsW(s) + 2f <= VodSizes.pillTextW(icon = false))
+        // The column is sized from the widest of them with balanced ends: beside the usual widest ("Play from
+        // beginning" and its icon) 16 dp or more is left at each end, about half the pill's height; beside the very
+        // widest (a film with over four hours left) never less than the 12 dp the fit keeps.
+        fun ends(s: String) = (VodSizes.ACTIONS_W - VodSizes.BUTTON_ICON - VodSizes.BUTTON_ICON_GAP - wordsW(s)) / 2f
+        near(118.4f, wordsW("Play from beginning"), 0.1f)
+        assertTrue(ends("Play from beginning") >= 16f && ends("Resume · 1h 52m left") >= 16f)
+        assertTrue(withIcon.minOf { ends(it) } >= VodSizes.ACTIONS_PAD)
+        // And it could not be much shorter: 12 dp less and "Play from beginning" would not fit.
+        assertTrue(wordsW("Play from beginning") + 2f > VodSizes.pillTextW(icon = true) - 12f)
+        // Words no room is made for have a shorter form that fits, so the pill never cuts them or steps their size
+        // down: a rewatch that starts far into a show's numbering. What an episode's Resume says when read out, and the
+        // wait's own words, are wider than the pill: it shows their short forms.
+        val room = VodSizes.pillTextW(icon = true)
+        fun fit(full: String, compact: String) = TitleRules.fitWords(full, compact, room, ::wordsW)
+        assertEquals(TitleRules.Fit("Watch again", small = false), fit("Watch again · S2024 E101", "Watch again"))
+        assertEquals(TitleRules.Fit("Watch again · S1 E1", small = false), fit("Watch again · S1 E1", "Watch again"))
+        assertEquals(TitleRules.Fit("Resume · 1h 52m left", small = false), fit("Resume · 1h 52m left", "Resume"))
+        assertTrue(wordsW("Resume S2 E5 · 12m left") > room)
+        assertTrue(wordsW("Waiting for MediaFusion · 9 s") > VodSizes.pillTextW(icon = false))
+        // The step down is only ever a last resort, and still a readable size.
+        assertTrue(VodSizes.BUTTON_LONG.sp < VodSizes.BUTTON.sp && VodSizes.BUTTON_LONG.sp >= 11f)
+    }
+
+    @Test
+    fun theLetterWidthsAreTheFontsOwn() {
+        // The widths above are the font file's (the table can't go stale unseen if the file is ever replaced).
+        val file = listOf("src/main/res/font/figtree_600.ttf", "app/src/main/res/font/figtree_600.ttf")
+            .map { java.io.File(it) }.firstOrNull { it.isFile }
+        // Gradle runs the tests in the module's folder; anywhere the file can't be found, there's nothing to compare.
+        org.junit.Assume.assumeTrue("the app's font is where the tests run", file != null)
+        val widths = Figtree600.fromFile(file!!)
+        assertTrue("the font has the tables the widths are read from", widths != null)
+        assertArrayEquals(Figtree600.UNITS, widths)
     }
 
     @Test

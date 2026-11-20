@@ -15,13 +15,16 @@ import app.fireplayer.ui.Rows
 import app.fireplayer.vod.ui.TitleRules.Dir
 
 /**
- * The title page's action column (Design-References/redesign-2026-11-19; design-brief.md §6.4 for what each does),
- * top to bottom: Play / Resume (its words carry the state, a thin progress line inside when it resumes), Play from
- * beginning (only with a resume point), Sources, then the round (+) My List (a blue ✓ while the title is on it) and
- * the round (⋯) side by side. The pills are as wide as the column, their words centred, a size smaller when they're
- * long, and cut short only if they still don't fit. Buttons a title doesn't have are GONE, so the others close up; Play that can't play yet ("Coming Mar 6") stays,
- * dimmed and passed by. Made from the app's shared buttons ([Buttons]: glass pills and circles, blue on white when
- * focused, growing 1.04 and 1.08).
+ * The title page's action column (Design-References/redesign-2026-11-19 and its TUNING-1; design-brief.md §6.4 for
+ * what each does), top to bottom: Play / Resume (its words carry the state, a thin progress line inside when it
+ * resumes), Play from beginning (only with a resume point), Sources, then the round (+) My List (a blue ✓ while the
+ * title is on it) and the round (⋯) side by side, from the column's left edge. The three pills are alike: as wide as
+ * the column ([VodSizes.ACTIONS_W], sized from the widest words a state shows), one icon size and one style of words,
+ * the icon and words centred together. Play is the main action and reads as one before it has focus (brighter glass,
+ * [Buttons.PillSpec.primary]); in "Sources · 18" the count is quieter than the word. Words are never cut short: ones
+ * wider than the column have a shorter form ([TitleRules.fitWords]). Buttons a title doesn't have are GONE, so the
+ * others close up; Play that can't play yet ("Coming Mar 6") stays, dimmed, without its icon, and passed by. Made from
+ * the app's shared buttons ([Buttons]: glass pills and circles, blue on white when focused, growing 1.04 and 1.08).
  *
  * Up and Down move between the rows, Left and Right between the circles, without wrapping ([TitleRules.buttonStep]);
  * a press that leaves the column is the page's ([Listener]: Left to the rail, Right to what's beside the column, Down
@@ -42,17 +45,19 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
         fun onLeftEdge()
     }
 
-    private val spec = Buttons.PillSpec(
+    private fun spec(primary: Boolean) = Buttons.PillSpec(
         height = VodSizes.BUTTON_H,
-        pad = VodSizes.BUTTON_PAD,
+        pad = VodSizes.ACTIONS_PAD,
         text = VodSizes.BUTTON,
         icon = VodSizes.BUTTON_ICON,
         iconGap = VodSizes.BUTTON_ICON_GAP,
         progressH = VodSizes.PILL_PROGRESS_H,
         progressBottom = VodSizes.PILL_PROGRESS_BOTTOM,
+        primary = primary,
+        progressSide = VodSizes.PILL_PROGRESS_SIDE,
     )
 
-    val play = pill()
+    val play = pill(primary = true)
     private val restart = pill()
     private val sources = pill()
     private val myList = Buttons.RoundButton(context, t, VodSizes.BUTTON_H, VodSizes.CIRCLE_ICON, toggle = true)
@@ -98,28 +103,31 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
         setMyList(false)
         words(play, "Play", R.drawable.ic_play)
         words(restart, "Play from beginning", R.drawable.ic_restart)
-        words(sources, "Sources", null)
+        words(sources, "Sources", R.drawable.ic_sources)
     }
 
-    /** A pill of the column: its icon and words centred, the words on one line and cut short if the column is too narrow. */
-    private fun pill() = Buttons.ActionPill(context, t, spec).apply {
+    /** A pill of the column: its icon and words centred together, the words on one line. */
+    private fun pill(primary: Boolean = false) = Buttons.ActionPill(context, t, spec(primary)).apply {
         gravity = Gravity.CENTER
         label.maxLines = 1
+        // Never reached by a state's words ([TitleRules.fitWords]); a line that still can't fit ends in "…", not cut.
         label.ellipsize = TextUtils.TruncateAt.END
     }
 
     /**
-     * [pill]'s words and icon: at the buttons' size, or a size down when they're wider than the column has room for
-     * (measured here; the size changes only when the words cross that width).
+     * [pill]'s words and icon. The words are [full] when the column has room for them at the buttons' size, else
+     * [compact] ([TitleRules.fitWords]; measured here, and the size changes only for words too wide in both forms).
+     * What follows [quietFrom] in them is quieter (the count after "Sources"); [says] is read out.
      */
-    private fun words(pill: Buttons.ActionPill, text: String, iconRes: Int?) {
-        pill.set(text, iconRes)
+    private fun words(pill: Buttons.ActionPill, full: String, iconRes: Int?, compact: String = full, says: String = full, quietFrom: Int = -1) {
         val paint = pill.label.paint
         val now = paint.textSize
         paint.textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, VodSizes.BUTTON.sp, resources.displayMetrics)
-        val wide = paint.measureText(text) > t.dpf(VodSizes.pillTextW(iconRes != null))
+        val fit = TitleRules.fitWords(full, compact, t.dpf(VodSizes.pillTextW(iconRes != null))) { paint.measureText(it) }
         paint.textSize = now
-        pill.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (wide) VodSizes.BUTTON_LONG.sp else VodSizes.BUTTON.sp)
+        pill.set(if (fit.words == full) Buttons.quietTail(full, quietFrom) else fit.words, iconRes)
+        pill.contentDescription = says
+        pill.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (fit.small) VodSizes.BUTTON_LONG.sp else VodSizes.BUTTON.sp)
     }
 
     private fun focused(which: Which) {
@@ -131,23 +139,28 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
     private var playState = TitleRules.Play("Play")
     private var waiting = false
 
-    /** Play's words, progress line and whether it can play now (dimmed and passed by when not). */
+    /**
+     * Play's words, progress line and whether it can play now. One that can't ("Coming Mar 6") is dimmed and passed by,
+     * and is neither the main action nor marked with the play icon.
+     */
     internal fun setPlay(p: TitleRules.Play) {
         playState = p
         if (waiting) {
             play.isFocusable = p.enabled
             return
         }
-        words(play, p.label, R.drawable.ic_play)
+        words(play, p.label, if (p.enabled) R.drawable.ic_play else null, compact = p.compact, says = p.says)
         play.progress = p.progress
+        play.primary = p.enabled
         play.alpha = if (p.enabled) 1f else Rows.DIM
         if (!p.enabled && play.isFocused) focusFirst(skip = play)
         play.isFocusable = p.enabled
     }
 
     /**
-     * Play waiting for the add-ons (design-brief.md §6.5, stage 1): "Waiting for MediaFusion · 9 s" with a thin bar
-     * toward its answer limit; null [label] puts Play back as the title's state says.
+     * Play waiting for the add-ons (design-brief.md §6.5, stage 1): "Waiting · 9 s" with a thin bar toward their answer
+     * limit ([label] is the wait's own words, "Waiting for MediaFusion · 9 s": read out here, shown whole on the
+     * page's source line); null [label] puts Play back as the title's state says.
      */
     fun setWaiting(label: String?, fraction: Float = 0f) {
         if (label == null) {
@@ -157,15 +170,15 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
             return
         }
         waiting = true
-        words(play, label, null)
+        words(play, TitleRules.waitWords(label), null, says = label)
         play.progress = fraction
     }
 
-    /** The Sources button's words: "Sources", then "Sources · 40" once an add-on has answered. */
+    /** The Sources button's words: "Sources", then "Sources · 40" once an add-on has answered (the count quieter). */
     fun setSourcesLabel(text: String) {
         if (sourcesText == text) return
         sourcesText = text
-        words(sources, text, null)
+        words(sources, text, R.drawable.ic_sources, compact = "Sources", quietFrom = TitleRules.quietFrom(text))
     }
 
     private var sourcesText = "Sources"

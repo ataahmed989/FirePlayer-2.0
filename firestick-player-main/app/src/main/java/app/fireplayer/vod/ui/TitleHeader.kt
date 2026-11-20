@@ -19,8 +19,10 @@ import app.fireplayer.ui.ImageTarget
 /**
  * The title page's text block (Design-References/redesign-2026-11-19, concept 3), at fixed sizes so new words only
  * redraw it: the large title (its logo, or its name in 40 sp, 28 sp when long), the compact facts line with at most
- * one callout chip beside it, two lines of story, and the source line (one compact line: which source Play would
- * start, or the wait for the add-ons; its height reserved, so nothing under it moves). The cast is in ⋯ › Details;
+ * one callout chip beside it, two lines of story a size under the facts, and the source line (one compact line, a
+ * small quiet caption set a little apart from the story: which source Play would start, or the wait for the add-ons;
+ * its height reserved, so nothing under it moves). Each step down reads quieter than the one above; the sizes, gaps
+ * and colours are [VodSizes]' (TITLE_FACTS, TITLE_STORY, SOURCE and the gaps between). The cast is in ⋯ › Details;
  * the buttons are the page's action column ([TitleButtons]), under this block. While an episode is chosen it shows
  * that episode's facts and overview instead ([follow]), the title and backdrop staying. A story that changes once
  * shown (TMDB's overview arriving after Cinemeta's) fades out and in, with the page headers' text fade

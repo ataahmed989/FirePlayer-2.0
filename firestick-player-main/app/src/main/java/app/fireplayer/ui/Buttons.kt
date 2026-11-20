@@ -9,6 +9,11 @@ import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.CharacterStyle
+import android.text.style.UpdateAppearance
 import android.view.Gravity
 import android.view.View
 import android.widget.ImageView
@@ -29,7 +34,11 @@ import app.fireplayer.shell.Tokens
  */
 object Buttons {
 
-    /** A pill's sizes, dp, and its words' style. */
+    /**
+     * A pill's sizes, dp, and its words' style. [primary]: the page's main action (Play on a title's page), which reads
+     * as the main one before it has focus too ([ActionPill.primary]). [progressSide]: how far the progress line stays
+     * from the pill's ends (a pill with round ends keeps it in its straight part); unset, the pill's padding.
+     */
     class PillSpec(
         val height: Float,
         val pad: Float,
@@ -38,7 +47,35 @@ object Buttons {
         val iconGap: Float = 0f,
         val progressH: Float = 0f,
         val progressBottom: Float = 0f,
+        val primary: Boolean = false,
+        val progressSide: Float = -1f,
     )
+
+    // The main action's pill in the glass look, while it isn't focused: the same glass with a faint light inside it and
+    // a slightly stronger hairline round it (GlassStyle's own is 0x26 white, half a dp). Focused it is the white body
+    // with blue words, as every button; the classic look keeps its one solid surface.
+    const val PRIMARY_FILL = 0x1FFFFFFF
+    const val PRIMARY_HAIRLINE = 0x57FFFFFF
+    const val PRIMARY_HAIRLINE_DP = 0.75f
+
+    /** The quieter part of a button's words (the count in "Sources · 18"): this share of the words' own strength. */
+    const val QUIET_ALPHA = 0.6f
+
+    /**
+     * [text] with what follows [from] quieter ([QUIET_ALPHA] of the words' own colour, so it stays quieter in the
+     * focused blue too). [from] outside the words: [text] as it is.
+     */
+    fun quietTail(text: String, from: Int): CharSequence {
+        if (from <= 0 || from >= text.length) return text
+        return SpannableString(text).apply { setSpan(Quiet(QUIET_ALPHA), from, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+    }
+
+    /** Draws its part of a line at [share] of the line's own colour, whatever that is now. */
+    private class Quiet(private val share: Float) : CharacterStyle(), UpdateAppearance {
+        override fun updateDrawState(tp: TextPaint) {
+            tp.alpha = (tp.alpha * share).toInt()
+        }
+    }
 
     /** The blue-on-white text and icon colours of a focusable button (Live TV's controls; the title page's). */
     fun buttonColors(context: Context): ColorStateList =
@@ -65,7 +102,7 @@ object Buttons {
     /**
      * A pill button: an optional icon, its words and, for one that resumes, a thin progress line inside its bottom
      * ([progress]). Grows [Tokens.GROW_PILL] when focused ([Tokens.focusEffect]). Its words change in place; the row it
-     * sits in lays out again only when they change width.
+     * sits in lays out again only when they change width. A [primary] one is brighter glass while it isn't focused.
      */
     @SuppressLint("ViewConstructor")
     class ActionPill(context: Context, private val t: Tokens, private val spec: PillSpec) : LinearLayout(context) {
@@ -87,9 +124,28 @@ object Buttons {
                 invalidate()
             }
 
+        /**
+         * The page's main action ([PillSpec.primary]): in the glass look, a faint light inside the pill and a slightly
+         * stronger hairline round it while it isn't focused. Off for a main action that can't be pressed just now.
+         */
+        var primary: Boolean = spec.primary
+            set(v) {
+                if (field == v) return
+                field = v
+                invalidate()
+            }
+
         private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = t.accent }
         private val line = RectF()
+        // Made only for a pill that can be the main action.
+        private val primaryFill = if (spec.primary) Paint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY_FILL } else null
+        private val primaryRim = if (spec.primary) Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = PRIMARY_HAIRLINE
+            strokeWidth = t.dpf(PRIMARY_HAIRLINE_DP).coerceAtLeast(1f)
+        } else null
+        private val body = RectF()
 
         init {
             orientation = HORIZONTAL
@@ -120,14 +176,31 @@ object Buttons {
 
         fun applyLook() = Glass.background(this, Glass.Kind.PILL)
 
+        /** Over the pill's glass, under its icon and words: the main action's light and hairline. */
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val fill = primaryFill ?: return
+            val rim = primaryRim ?: return
+            if (!primary || isFocused || !Glass.on || width <= 0 || height <= 0) return
+            body.set(0f, 0f, width.toFloat(), height.toFloat())
+            val r = minOf(width, height) / 2f
+            canvas.drawRoundRect(body, r, r, fill)
+            val half = rim.strokeWidth / 2f
+            body.inset(half, half)
+            canvas.drawRoundRect(body, r - half, r - half, rim)
+        }
+
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
             val p = progress ?: return
             if (spec.progressH <= 0f) return
-            val side = paddingLeft.toFloat()
+            val set = spec.progressSide >= 0f
+            val left = if (set) t.dpf(spec.progressSide) else paddingLeft.toFloat()
+            val right = width - if (set) t.dpf(spec.progressSide) else paddingRight.toFloat()
+            if (right <= left) return
             val h = t.dpf(spec.progressH)
             val bottom = height - t.dpf(spec.progressBottom)
-            line.set(side, bottom - h, width - paddingRight.toFloat(), bottom)
+            line.set(left, bottom - h, right, bottom)
             val r = h / 2f
             trackPaint.color = if (isFocused) t.buttonTrackFocused else t.buttonTrack
             canvas.drawRoundRect(line, r, r, trackPaint)
@@ -140,7 +213,7 @@ object Buttons {
 
         override fun drawableStateChanged() {
             super.drawableStateChanged()
-            if (progress != null) invalidate()
+            if (progress != null || primary) invalidate()
         }
     }
 

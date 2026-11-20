@@ -118,8 +118,20 @@ internal object TitleRules {
 
     // ---- The Play button ----
 
-    /** Play's words and state: dimmed and passed by when it can't play yet; [restart] offers Play from beginning. */
-    data class Play(val label: String, val progress: Float? = null, val enabled: Boolean = true, val restart: Boolean = false)
+    /**
+     * Play's words and state: dimmed and passed by when it can't play yet; [restart] offers Play from beginning.
+     * [label] is what the pill says. [compact] is a shorter way to say it, for words wider than the action column has
+     * room for ([fitWords]: a pill's words are never cut short). [says] is what's read out: [label], with what the pill
+     * leaves to its progress line (an episode's time left).
+     */
+    data class Play(
+        val label: String,
+        val progress: Float? = null,
+        val enabled: Boolean = true,
+        val restart: Boolean = false,
+        val compact: String = label,
+        val says: String = label,
+    )
 
     /**
      * A film's Play: "Play", "Resume · 42m left" (FirePlayer 1.0: a position past 30 s and not in the last 3 minutes,
@@ -129,10 +141,38 @@ internal object TitleRules {
         if (!d.isOut(now, thisYear)) return Play(coming(d, thisYear), enabled = false)
         if (last != null && last.resumable) {
             val left = last.position.leftMs?.let { Captions.left(it) }
-            return Play(listOfNotNull("Resume", left).joinToString(" · "), last.position.fraction, restart = true)
+            return Play(listOfNotNull("Resume", left).joinToString(" · "), last.position.fraction, restart = true, compact = "Resume")
         }
         return Play("Play")
     }
+
+    /** A pill's words as they fit its column: [words], at the buttons' size or ([small]) a size down. */
+    data class Fit(val words: String, val small: Boolean)
+
+    /**
+     * What a pill of the action column shows, with [room] for its words and [width] measuring them at the buttons'
+     * size: [full] when it fits, else [compact]; only words wider than the room in both forms step a size down. So no
+     * state's words are cut short, and every pill keeps the one size.
+     */
+    fun fitWords(full: String, compact: String, room: Float, width: (String) -> Float): Fit = when {
+        width(full) <= room -> Fit(full, small = false)
+        compact != full && width(compact) <= room -> Fit(compact, small = false)
+        else -> Fit(compact, small = true)
+    }
+
+    /**
+     * The Play pill's words while it waits for the add-ons: "Waiting · 9 s", from the wait's own words ("Waiting for
+     * MediaFusion · 9 s"), which the source line shows whole with each add-on's state.
+     */
+    fun waitWords(label: String): String {
+        val at = label.lastIndexOf(SEP)
+        return if (at < 0) "Waiting" else "Waiting" + label.substring(at)
+    }
+
+    /** Where the quieter part of a button's words starts ("Sources · 18": the dot and the count), or -1 for none. */
+    fun quietFrom(label: String): Int = label.indexOf(SEP)
+
+    private const val SEP = " · "
 
     /** "Coming Mar 6", "Coming Mar 6, 2027", "Coming 2027", or "Coming soon". */
     fun coming(d: TitleDetails, thisYear: Int): String {
@@ -142,8 +182,9 @@ internal object TitleRules {
     }
 
     /**
-     * A show's Play: "Play S1 E1", "Resume S2 E5 · 12m left" (with Play from beginning: this episode again), "Play S2
-     * E6", "Watch again · S1 E1"; "Coming Nov 20" when no episode has aired; "Play" while the episodes aren't known.
+     * A show's Play: "Play S1 E1", "Resume S2 E5" (with Play from beginning: this episode again; its time left is the
+     * pill's progress line, the episode's pod and, read out, "Resume S2 E5 · 12m left"), "Play S2 E6", "Watch again ·
+     * S1 E1"; "Coming Nov 20" when no episode has aired; "Play" while the episodes aren't known.
      * Listed with Specials only ([playTarget] never starts one): "Play" dimmed and passed by, as Sources is left out;
      * the specials play from their cards.
      */
@@ -158,10 +199,13 @@ internal object TitleRules {
         val code = episodeCode(target.episode.ref)
         return when (target.action) {
             PlayAction.PLAY -> Play("Play $code")
-            PlayAction.WATCH_AGAIN -> Play("Watch again · $code")
+            PlayAction.WATCH_AGAIN -> Play("Watch again · $code", compact = "Watch again")
             PlayAction.RESUME -> {
                 val left = target.position?.leftMs?.let { Captions.left(it) }
-                Play(listOfNotNull("Resume $code", left).joinToString(" · "), target.position?.fraction, restart = true)
+                Play(
+                    "Resume $code", target.position?.fraction, restart = true,
+                    says = listOfNotNull("Resume $code", left).joinToString(" · "),
+                )
             }
         }
     }
