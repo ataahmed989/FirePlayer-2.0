@@ -82,7 +82,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     private var namesAsked = false
 
     private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
-    private val channelsHead = head("Channels")
+    private val channelsHead = head(CHANNELS_HEAD)
     private val strip = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
     private val tilesLine = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
     private val programmesHead = head("Programmes")
@@ -157,6 +157,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         val q = words.trim()
         if (q == query && (answered || q.isNotEmpty())) return
         query = q
+        if (q.isNotEmpty()) setHead(CHANNELS_HEAD)
         val my = ++serial
         cancel?.cancel()
         cancel = null
@@ -199,6 +200,25 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
                 onAnswered?.invoke()
             }
         }
+    }
+
+    /**
+     * The channels watched last ([hits]), under "Channel History", while nothing is typed (the search page over
+     * Multiview, [OverlayRules.searchStart]): the same tiles as found channels, picked the same way.
+     */
+    fun showHistory(hits: List<LiveSearch.ChannelHit>) {
+        query = ""
+        ++serial
+        cancel?.cancel()
+        cancel = null
+        guidePending = false
+        answered = true
+        setHead(HISTORY_HEAD)
+        show(if (hits.isEmpty()) null else LiveSearch.Result("", hits, emptyList()))
+    }
+
+    private fun setHead(words: String) {
+        if (channelsHead.text.toString() != words) channelsHead.text = words
     }
 
     /** Whether any result shows. */
@@ -586,6 +606,8 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
     private companion object {
         const val TAG = "FirePlayerLive"
         const val SUB_SIZE = 0.82f
+        const val CHANNELS_HEAD = "Channels"
+        const val HISTORY_HEAD = "Channel History"
         val ARROWS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
     }
 }

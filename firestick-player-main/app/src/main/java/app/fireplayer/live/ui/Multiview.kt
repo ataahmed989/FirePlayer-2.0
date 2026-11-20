@@ -36,8 +36,10 @@ import app.fireplayer.shell.Tokens
  * change/search, or go full screen"; sound only from the selected picture; never more streams than the provider
  * allows).
  *
- * - Full screen's Multiview button: the channel playing is the first picture and the channel picker ([ChannelPicker],
- *   Live TV search) opens for the second; Multiview opens once it's picked (Back first: full screen as it was).
+ * - Full screen's Multiview button: the playing picture shrinks to the top right (ready for a second) and the channel
+ *   list ([LiveOverlay]: the playlist's groups, the channels beside them, "Search" at the top) opens on the left for
+ *   the second; Search opens Live TV search ([ChannelPicker]) over it, see-through, the channel history under its bar.
+ *   Multiview opens once a channel is picked (Back first: full screen as it was).
  * - The D-pad moves between the pictures ([MultiviewLayout.move]); the selected one has the white ring and the sound,
  *   the others play silent. OK makes it the large one, OK on the large one goes back to equal; OK on "Add a channel"
  *   opens the picker. Held OK (or Menu): Remove, Add channel, Change channel, Full screen ([HoldPopup]).
@@ -67,6 +69,13 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         /** [key]'s channel and its playlist, read off the main thread, handed to [then] on it (not at all if gone). */
         fun lookUp(key: ChannelKey, then: (Channel, Playlist) -> Unit)
         fun notice(text: String)
+        /** The channel list over the screen ([LiveOverlay]), made once by the page: where a channel is picked. */
+        fun list(): LiveOverlay
+        /**
+         * Multiview's start: the one picture small at the screen's top right, ready for a second ([on]); or full screen
+         * again (the start given up). [animate]: it moves there.
+         */
+        fun readyPicture(on: Boolean, animate: Boolean)
     }
 
     /** A picture: the channel it shows, its player, its place on the board. */
@@ -107,8 +116,20 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
     /** The screen is started: pictures play. */
     private var running = false
 
-    /** Multiview or its picker has the keys. */
-    val active: Boolean get() = isOpen || picker?.isOpen == true
+    /** Multiview, or a pick for it (the list or the search page), has the keys. */
+    val active: Boolean get() = isOpen || pickFor != null
+
+    /** The channel list, once asked for (the page's). */
+    private var list: LiveOverlay? = null
+    /** What the pick is for, as the search page's heading says. */
+    private var pickTitle = ""
+
+    /** The list's answers while it's open for a pick. */
+    private val pickList = object : LiveOverlay.Listener {
+        override fun onChannel(channel: Channel, scope: app.fireplayer.live.GuideScope?) = picked(channel.key)
+        override fun onSearch() = openSearch()
+        override fun onClosed() = cancelPicker()
+    }
 
     /** A Back this took the DOWN of: only its UP acts. */
     private var backDown = false
@@ -119,6 +140,8 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
     fun begin(channel: Channel, playlist: Playlist) {
         if (active) return
         model.limitTo(MultiviewRules.most(prefs.multiviewMost))
+        // Ready for a second picture: the one playing shrinks to the top right, the list opens on the left.
+        callbacks.readyPicture(true, animate = true)
         openPicker(Pick.Enter(channel, playlist), ENTER_TITLE)
     }
 
@@ -162,8 +185,10 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
 
     private fun closeAll() {
         menu?.close(fade = false, focusBack = false)
-        picker?.close()
-        pickFor = null
+        val pick = pickFor
+        closePicker()
+        // Its start given up: the one picture full screen again.
+        if (pick is Pick.Enter) callbacks.readyPicture(false, animate = false)
         for (tile in model.tiles) dropTile(tile)
         leases.dropAll()
         model.clear()
@@ -185,8 +210,9 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         running = false
         menu?.close(fade = false, focusBack = false)
         // A pick half made is dropped (Multiview's start too: full screen is as it was).
-        picker?.close()
-        pickFor = null
+        val pick = pickFor
+        closePicker()
+        if (pick is Pick.Enter) callbacks.readyPicture(false, animate = false)
         backDown = false
         press.cancel()
         if (!isOpen) return
@@ -361,8 +387,15 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         val code = event.keyCode
         val down = event.action == KeyEvent.ACTION_DOWN
         if (picker?.isOpen == true) {
-            if (code == KeyEvent.KEYCODE_BACK) return back(event) { cancelPicker() }
+            // Back from the search page: the list again, as it was.
+            if (code == KeyEvent.KEYCODE_BACK) return back(event) { closeSearch() }
             // The picker's bar and results have the rest; nothing else opens over it.
+            return code in SWALLOWED
+        }
+        if (pickFor != null) {
+            // The list has the D-pad, OK and Back (Back gives the pick up: [cancelPicker]).
+            val l = list
+            if (l != null && l.isOpen && l.dispatchKey(event)) return true
             return code in SWALLOWED
         }
         if (!isOpen) return false
@@ -457,32 +490,65 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
 
     // ---- The channel picker ---------------------------------------------------------------------------------------
 
+    /**
+     * The channel list opens for [pick] (the user: "list first, Search at its top"), on the group of the channel it's
+     * for: the playing one at the start, the picture being changed, else the selected picture's.
+     */
     private fun openPicker(pick: Pick, title: String) {
         menu?.close(fade = false, focusBack = false)
         press.cancel()
         backDown = false
+        picker?.close()
+        val near: Pair<Channel, Playlist>? = when (pick) {
+            is Pick.Enter -> pick.channel to pick.playlist
+            is Pick.Change -> pick.tile.channel to pick.tile.playlist
+            Pick.Add -> (model.tiles.getOrNull(model.selected) ?: model.tiles.firstOrNull())?.let { it.channel to it.playlist }
+        }
+        if (near == null) return
         pickFor = pick
-        picker().open(title)
+        pickTitle = title
+        val l = callbacks.list().also { list = it }
+        l.open(near.first, near.second, picking = true, listener = pickList)
     }
 
+    /** Search at the list's top: Live TV search over it, see-through, the channel history under its bar. */
+    private fun openSearch() {
+        if (pickFor == null) return
+        backDown = false
+        list?.hideForSearch()
+        picker().open(pickTitle)
+    }
+
+    /** Back from the search page: the list as it was. */
+    private fun closeSearch() {
+        picker?.close()
+        if (pickFor != null) list?.showAfterSearch()
+    }
+
+    /** The pick is done or given up: the list and the search page close. */
     private fun closePicker() {
         pickFor = null
         picker?.close()
+        list?.takeIf { it.isOpen && it.picking }?.close()
     }
 
-    /** Back in the picker: Multiview as it was; at Multiview's start, full screen as it was. */
+    /** Back in the list: Multiview as it was; at Multiview's start, full screen as it was (the picture grows back). */
     private fun cancelPicker() {
         val pick = pickFor
         closePicker()
-        if (pick is Pick.Enter) callbacks.entryCancelled()
-        else if (isOpen && MultiviewRules.leaveWithoutPick(model.count)) model.tiles.firstOrNull()?.let { leaveTo(it) }
+        if (pick is Pick.Enter) {
+            callbacks.readyPicture(false, animate = true)
+            callbacks.entryCancelled()
+        } else if (isOpen && MultiviewRules.leaveWithoutPick(model.count)) {
+            model.tiles.firstOrNull()?.let { leaveTo(it) }
+        }
     }
 
     private fun picked(key: ChannelKey) {
         val pick = pickFor ?: return
         callbacks.lookUp(key) { ch, pl ->
             // Closed, or open for something else, meanwhile.
-            if (pickFor !== pick || picker?.isOpen != true) return@lookUp
+            if (pickFor !== pick) return@lookUp
             when (pick) {
                 is Pick.Enter -> enterWith(pick, ch, pl)
                 Pick.Add -> addPicture(ch, pl)

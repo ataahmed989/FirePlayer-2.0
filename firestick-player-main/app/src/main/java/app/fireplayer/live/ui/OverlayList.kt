@@ -106,7 +106,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         private set
 
     /** The first whole row shown at rest. */
-    var top = 0
+    var firstRow = 0
         private set
 
     // ---- Geometry (px) -------------------------------------------------------------------------------------------
@@ -255,12 +255,12 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         focus = if (row in 0 until count) row else -1
         val vis = visibleRows()
         val maxTop = (count - vis).coerceAtLeast(0)
-        top = when {
+        firstRow = when {
             first >= 0 -> first
             focus >= 0 -> focus - vis / 3
             else -> 0
         }.coerceIn(0, maxTop)
-        scrollY = top * rowH
+        scrollY = firstRow * rowH
         pill = focus.toFloat()
         invalidate()
     }
@@ -273,7 +273,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         if (row !in 0 until count || row == focus) return
         if (height == 0 || !isShown) { place(row); return }
         val vis = visibleRows()
-        val newTop = GuideCells.topFor(row, top, vis, count)
+        val newTop = GuideCells.topFor(row, firstRow, vis, count)
         val to = newTop * rowH
         val glideRows = LiveWidths.OV_LONG_GLIDE_ROWS
         motion.cancel()
@@ -281,7 +281,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         scrollTo = to
         pillFrom = if (abs(row - pill) > vis) (row + if (row < pill) glideRows else -glideRows).toFloat() else pill
         focus = row
-        top = newTop
+        firstRow = newTop
         scrollY = scrollFrom
         pill = pillFrom
         motion.duration = if (held) LiveWidths.OV_REPEAT_MS else LiveWidths.OV_MOVE_MS
@@ -341,8 +341,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         headNameCut = null
         headSubCut = null
         val vis = visibleRows()
-        top = top.coerceIn(0, (count - vis).coerceAtLeast(0))
-        scrollY = top * rowH
+        firstRow = firstRow.coerceIn(0, (count - vis).coerceAtLeast(0))
+        scrollY = firstRow * rowH
         pill = focus.toFloat()
     }
 

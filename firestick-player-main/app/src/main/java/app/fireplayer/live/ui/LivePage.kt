@@ -199,7 +199,108 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
 
         override fun notice(text: String) = showNotice(text)
+
+        override fun list(): LiveOverlay = overlay()
+
+        override fun readyPicture(on: Boolean, animate: Boolean) {
+            if (released || !fullScreen) return
+            val ms = if (animate) GROW_MS else 0L
+            if (!on) {
+                host.placeVideo(null, 0f, true, ms)
+                return
+            }
+            val screen = root.rootView
+            val d = t.density
+            val b = OverlayRules.readyPicture(screen.width / d, screen.height / d, LiveWidths.GAP.toFloat())
+            host.placeVideo(RectF(b[0] * d, b[1] * d, b[2] * d, b[3] * d), t.dpf(LiveWidths.MINI_RADIUS), false, ms)
+        }
     })
+
+    /**
+     * The channel list over the picture ([LiveOverlay]): full screen's Left, and Multiview's way to pick a channel.
+     * Made the first time it's needed.
+     */
+    private var overlay: LiveOverlay? = null
+
+    private fun overlay(): LiveOverlay = overlay ?: LiveOverlay(activity, t, overlayIo).also {
+        overlay = it
+        // Over the page and its controls, under its notices (which say what a pick couldn't do).
+        root.addView(it, root.indexOfChild(notice), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    /** The list's reads, behind the screen on the guide's thread, answered on the main thread. */
+    private val overlayIo = object : LiveOverlay.Io {
+        override fun logo(url: String): Logo? = logos.get(url)
+
+        override fun groupOf(channel: Channel, then: (GuideScope, List<Channel>) -> Unit) {
+            val key = channel.key
+            // The playing channel's group as Channel ▲ / ▼ move through it, when it's read and still current.
+            val started = zapScope.takeIf { player.currentKey == key.toString() }
+            val zl = zapList
+            if (started != null && zl != null && zapLists == db.listChanges.get() && zl.holds(key)) {
+                then(started, zl)
+                return
+            }
+            val last = prefs.zapGroupOf(key)
+            bg {
+                for (s in ZapOrder.candidates(started, last, key.playlistId, channel.groupId)) {
+                    val (list, _) = runCatching { listFor(s) }.getOrNull() ?: continue
+                    if (!list.holds(key)) continue
+                    main.post { if (!released) then(s, list) }
+                    return@bg
+                }
+                // Gone from its playlist meanwhile: the playlist's channels, without it.
+                val all = GuideScope.AllChannels(key.playlistId)
+                val list = runCatching { listFor(all).first }.getOrDefault(emptyList())
+                main.post { if (!released) then(all, list) }
+            }
+        }
+
+        override fun channels(scope: GuideScope, then: (List<Channel>) -> Unit) = bg {
+            val list = runCatching { listFor(scope).first }.getOrDefault(emptyList())
+            main.post { if (!released) then(list) }
+        }
+
+        override fun groups(playlistId: String, then: (List<ChannelGroup>) -> Unit) = bg {
+            val groups = runCatching { db.groups(playlistId) }.getOrDefault(emptyList())
+            main.post { if (!released) then(groups) }
+        }
+
+        override fun programmes(channels: List<Channel>, from: Long, to: Long, then: (Map<ChannelKey, List<Programme>>) -> Unit) = bg {
+            val map = runCatching { db.programmes(channels, from, to) }.getOrDefault(emptyMap())
+            main.post { if (!released) then(map) }
+        }
+    }
+
+    /** Full screen's list: OK on a channel plays it (the list stays); on the one playing, the list closes. */
+    private val watchList = object : LiveOverlay.Listener {
+        override fun onChannel(channel: Channel, scope: GuideScope?) {
+            val playing = channel.key.toString() == player.playingKey && player.status().error == null
+            when (OverlayRules.okOnChannel(picking = false, isPlaying = playing)) {
+                OverlayRules.Ok.CLOSE -> overlay?.close()
+                else -> if (tune(channel, from = scope)) {
+                    // Back to the guide from here: on this channel.
+                    zappedInFull = true
+                    refreshControls()
+                }
+            }
+        }
+
+        override fun onClosed() = Unit
+    }
+
+    /** Full screen's Left: the channel list over the picture, on the playing channel's group. */
+    private fun openList() {
+        val key = ChannelKey.parse(player.currentKey) ?: return
+        val ch = playingChannel?.takeIf { it.key == key } ?: guide.channelOf(key)
+        val pl = ch?.let { c -> playlists.firstOrNull { it.id == c.playlistId } }
+        if (ch == null || pl == null) {
+            showNotice("The channel is still being read: try again in a moment")
+            return
+        }
+        hideControlsNow()
+        overlay().open(ch, pl, picking = false, listener = watchList)
+    }
 
     private val logos = LogoCache(t.dp(76)) { url, loaded ->
         if (loaded) {
@@ -210,6 +311,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
+        if (loaded) overlay?.logosChanged()
         logLogos()
     }.also { LogoCache.useDisk(ctx) }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
@@ -247,7 +349,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val railSpace = t.dp(LiveWidths.RAIL)
     private val columnW = t.dp(LiveWidths.COLUMN)
     private val miniW = t.dp(LiveWidths.MINI)
-    private val miniH = t.dp(207)
+    private val miniH = t.dp(LiveWidths.MINI_H)
     private val gap = t.dp(LiveWidths.GAP)
     /**
      * The details' logo tile ([LiveWidths]: large, the logo fitted inside with its shape kept), and the room before the
@@ -482,6 +584,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (film) host.setFilmGlass(true)
         controls.applyLook()
         multiview.applyLook()
+        overlay?.applyLook()
         if (placeholder == true) { placeholder = null; showSlotPlaceholder(true) }
     }
 
@@ -733,6 +836,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** Full screen left at once, nothing moving (the tab is being left): the guide is as Back would leave it. */
     private fun quitFullScreen() {
+        overlay?.close(animate = false)
         ++motionSerial
         dropZap()
         fullScreen = false
@@ -763,6 +867,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Every Multiview picture's stream, player and connection go too (the pictures come back with the screen).
         multiview.suspend()
         multiviewFrom = null
+        overlay?.close(animate = false)
         player.removeListener(statusListener)
         sync.removeListener(dataListener)
         // Kept playing on Home or Search: the stream and its connection stay.
@@ -797,6 +902,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         letGo()
         stop()
         multiview.release()
+        overlay?.release()
         more.release()
         released = true
         ++reloadSerial
@@ -1203,6 +1309,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         prefs.lastChannel = channel.key
         playingChannel = channel
+        overlay?.takeIf { it.isOpen && !it.picking }?.playingKey = channel.key
         noteZapGroup(channel, from)
         // A channel change from elsewhere closes a small window still open.
         popup.close()
@@ -1304,7 +1411,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         r.offset(dx, 0f)
         placedAt = r
         showSlotPlaceholder(false)
-        host.placeVideo(r, t.dpf(12f), false, animateMs)
+        host.placeVideo(r, t.dpf(LiveWidths.MINI_RADIUS), false, animateMs)
     }
 
     /** Whether the miniature's slot shows its placeholder panel (null: not decided yet, or the look changed). */
@@ -1375,6 +1482,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     fun toGuide(toPlaying: Boolean = false) {
         if (!fullScreen) return
+        overlay?.close(animate = false)
         dropZap()
         fullScreen = false
         revealKey = 0
@@ -1630,7 +1738,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** The channel's name and programme at the top for a moment (unless the controls are up anyway). */
     private fun showZapInfo() {
-        if (controls.controlsShown) return
+        if (controls.controlsShown || overlay?.isOpen == true) return
         controls.showInfo()
         main.removeCallbacks(hideControls)
         main.postDelayed(hideControls, INFO_MS)
@@ -1684,6 +1792,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var revealKey = 0
 
     private fun showControls(focus: View? = null) {
+        overlay?.takeIf { !it.picking }?.close(animate = false)
         refreshControls()
         more.refreshValues()
         filmGlass(true)
@@ -2020,6 +2129,21 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         val code = event.keyCode
 
+        // The channel list over full screen has the keys while it shows. What it leaves: Play/Pause and the channel
+        // buttons act as in full screen; the Guide key closes it on the way to the guide; the rest wait.
+        overlay?.let { list ->
+            if (list.isOpen && !list.picking && fullScreen) {
+                if (list.dispatchKey(event)) return true
+                when (code) {
+                    KeyEvent.KEYCODE_GUIDE -> list.close(animate = false)
+                    KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN -> Unit
+                    in PLAY_PAUSE_KEYS -> Unit
+                    KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> return true
+                    else -> return false
+                }
+            }
+        }
+
         if (code == KeyEvent.KEYCODE_BACK) return back(event)
 
         // Play/Pause in the guide: the miniature's channel pauses or carries on, as in full screen, with a word to say so.
@@ -2090,7 +2214,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
             KeyEvent.KEYCODE_DPAD_UP -> if (channelButtonsOnly) reveal(code, event) else zap(+1, event.repeatCount > 0)
             KeyEvent.KEYCODE_DPAD_DOWN -> if (channelButtonsOnly) reveal(code, event) else zap(-1, event.repeatCount > 0)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> reveal(code, event)
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
+            // Left: the channel list over the picture (the playing channel's group). Right: the channel's name and
+            // programme a moment, as before.
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (event.repeatCount == 0) openList()
+            KeyEvent.KEYCODE_DPAD_RIGHT -> controls.showInfo().also { main.removeCallbacks(hideControls); main.postDelayed(hideControls, INFO_MS) }
             else -> return false
         }
         return true
@@ -2240,7 +2367,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         /** A held zap key's channel is opened once no repeat has come for this long (repeats come about every 50 ms). */
         private const val ZAP_SETTLE_MS = 250L
         /** Channel History: the last ten channels watched before the one playing (design-layout.md). */
-        private const val HISTORY_SIZE = 10
+        internal const val HISTORY_SIZE = 10
         /**
          * A long list's first screenful: this many channels before the one it opens on and this many from it on, as
          * many rows as the guide asks listings for around its eight (two screens above, three below).

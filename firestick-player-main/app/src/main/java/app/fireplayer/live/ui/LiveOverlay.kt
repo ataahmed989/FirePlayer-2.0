@@ -146,14 +146,14 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     }
     private var marqueeCol: OverlayList? = null
     private var travel = 0f
-    private val marqueeStart = Runnable { startMarquee() }
-    private val marqueeAgain = Runnable {
+    private val marqueeStart: Runnable = Runnable { startMarquee() }
+    private val marqueeAgain: Runnable = Runnable {
         if (marqueeCol == null) return@Runnable
         marqueeText.translationX = 0f
         postDelayed(marqueeRun, VodSizes.LIVE_MARQUEE_DELAY_MS)
     }
-    private val marqueeEnd = Runnable { postDelayed(marqueeAgain, VodSizes.LIVE_MARQUEE_HOLD_MS) }
-    private val marqueeRun = Runnable {
+    private val marqueeEnd: Runnable = Runnable { postDelayed(marqueeAgain, VodSizes.LIVE_MARQUEE_HOLD_MS) }
+    private val marqueeRun: Runnable = Runnable {
         if (marqueeCol == null) return@Runnable
         marqueeText.animate().translationX(-travel).setStartDelay(0)
             .setDuration(LiveSearchView.Marquee.durationMs(travel, t.dpf(VodSizes.LIVE_MARQUEE_DP_S)))
@@ -539,8 +539,8 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         val list = channelsCol.channels
         if (list.isEmpty()) return
         val vis = channelsCol.visibleRows()
-        val from = (channelsCol.top - LiveWidths.OV_NOW_AROUND).coerceAtLeast(0)
-        val to = minOf(list.size, channelsCol.top + vis + LiveWidths.OV_NOW_AROUND)
+        val from = (channelsCol.firstRow - LiveWidths.OV_NOW_AROUND).coerceAtLeast(0)
+        val to = minOf(list.size, channelsCol.firstRow + vis + LiveWidths.OV_NOW_AROUND)
         var need: ArrayList<Channel>? = null
         for (i in from until to) {
             val ch = list[i]
