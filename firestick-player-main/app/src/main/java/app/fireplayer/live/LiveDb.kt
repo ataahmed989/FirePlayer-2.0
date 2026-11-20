@@ -581,7 +581,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
     companion object {
         private const val VERSION = 6
         private const val TAG = "FirePlayerLive"
-        const val RECENT_KEEP = 10
+        /** Channel History lists the last ten besides the one playing, which is the newest here. */
+        const val RECENT_KEEP = 11
         private const val STAGING = "#new"
         private const val BATCH = 2_000
         private const val PLAYLIST_COLS = "id, name, kind, url, username, password, epg_url, output, include_live, include_vod, " +

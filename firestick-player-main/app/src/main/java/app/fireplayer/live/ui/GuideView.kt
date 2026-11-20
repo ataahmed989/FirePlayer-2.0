@@ -88,7 +88,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     /** Between cells, both ways: cells are 32 dp tall in 35 dp rows. */
     private val gap = t.dpf(3f)
     private val radiusClassic = t.dpf(7f)
-    private val radiusGlass = t.dpf(8f)
+    private val radiusGlass = t.dpf(GlassStyle.RADIUS_CELL)
     private val hairline = t.dpf(0.5f)
     private val numberLead = t.dpf(4f)
     private val numberMin = t.dpf(22f)
@@ -237,13 +237,17 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     // ---- Data -----------------------------------------------------------------------------------------------------
 
-    /** Shows [list]; focus goes to [focus] (or stays on the same channel, or the first). */
-    fun setChannels(list: List<Channel>, focus: ChannelKey?) {
+    /**
+     * Shows [list]; focus goes to [focus] (or stays on the same channel, or the first). [reload]: the same list read
+     * again (a playlist update), where a focused channel that has gone leaves focus on the row nearest its place
+     * rather than sending it back to the top.
+     */
+    fun setChannels(list: List<Channel>, focus: ChannelKey?, reload: Boolean = false) {
         stopMotion()
         val keep = focus ?: channels.getOrNull(focusRow)?.key
         channels = list
         indexChannels()
-        focusRow = list.indexOfFirst { it.key == keep }.coerceAtLeast(0)
+        focusRow = GuideFocus.rowAfter(list.indexOfFirst { it.key == keep }, focusRow, list.size, reload)
         // The time window catches up with now (it may have been opened a while ago), unless the viewer had moved
         // ahead into later programmes.
         val now = clock()
@@ -951,5 +955,18 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         const val LOGO_EMPTY = 0x1FFFFFFF
         /** Past programmes and gaps ("No information"). */
         const val TEXT_DIM = 0x99F4F2EE.toInt()
+    }
+}
+
+/** Where the guide's focus lands when its list is shown again. Pure, for tests. */
+object GuideFocus {
+    /**
+     * [found]: the wanted channel's row in the new list (-1: not in it). A [reload] of the same list keeps the row the
+     * focus was on ([oldRow], within the new [size]); a new list starts at the top.
+     */
+    fun rowAfter(found: Int, oldRow: Int, size: Int, reload: Boolean): Int = when {
+        found >= 0 -> found
+        reload && size > 0 -> oldRow.coerceIn(0, size - 1)
+        else -> 0
     }
 }

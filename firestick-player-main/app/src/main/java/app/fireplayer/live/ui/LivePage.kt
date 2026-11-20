@@ -697,12 +697,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** [s]'s [list] arrived: the guide shows it, focus on [focus] (else the channel playing, else the last focused). */
     private fun showChannels(s: GuideScope, list: List<Channel>, focus: ChannelKey?, enterGrid: Boolean) {
+        val reload = shownScope == s
         shownScope = s
         loadingScope = null
         // The playing group's own list, just read: kept for Channel ▲ / ▼ (no read of its own).
         if (s == zapScope && list.any { it.key.toString() == player.currentKey }) { zapList = list; zapReading = null }
         guide.clearProgrammes()
-        guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
+        guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
         if (list.isEmpty()) {
             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
                 if (sync.busy) "Updating the playlist…" else "No channels here.")
@@ -1042,10 +1043,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // The groups the column lists (a hidden group isn't one to show).
         val shown = groupNames.keys
         val serial = loadSerial
+        // The list Channel ▲ / ▼ moves through first (the one the channel was started from), so the guide shows the
+        // same order the channel buttons follow; a hidden group isn't one to show.
+        val zapIn = zapScope?.takeIf { it !is GuideScope.Group || (it.playlistId to it.groupId) in shown }
         bg {
             val ch = known ?: db.channel(key) ?: return@bg
             val group = ch.groupId?.takeIf { (ch.playlistId to it) in shown }?.let { GuideScope.Group(ch.playlistId, it) }
-            for (s in listOfNotNull(group, GuideScope.AllChannels(ch.playlistId))) {
+            for (s in listOfNotNull(zapIn, group, GuideScope.AllChannels(ch.playlistId)).distinct()) {
                 val list = db.channels(s)
                 if (list.none { it.key == key }) continue
                 main.post {
@@ -1333,7 +1337,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     private fun showHistory() {
         bg {
-            val recent = db.recent().filter { it.key.toString() != player.currentKey }
+            val recent = db.recent().filter { it.key.toString() != player.currentKey }.take(HISTORY_SIZE)
             main.post {
                 if (recent.isEmpty()) { showNotice("No other channels watched yet"); return@post }
                 FireDialog.choose(activity, "Channel History", recent.map { "${it.number}  ${it.name}" }, -1) { i ->
@@ -1763,6 +1767,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         private const val INFO_MS = 4_000L
         /** A held zap key's channel is opened once no repeat has come for this long (repeats come about every 50 ms). */
         private const val ZAP_SETTLE_MS = 250L
+        /** Channel History: the last ten channels watched before the one playing (design-layout.md). */
+        private const val HISTORY_SIZE = 10
         /** Column and rail sliding in and out. */
         private const val SLIDE_MS = 220L
         /** The miniature growing to full screen, and shrinking back. */

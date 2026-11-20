@@ -222,6 +222,8 @@ object PlayerFactory {
         passthrough: Boolean,
         delays: Delays? = null,
         buffer: LiveBuffer = LiveBuffer.MEDIUM,
+        /** The live session's own buffer rules (PlayerHost's LiveLoadControl); [buffer] through Media3's alone when null. */
+        liveLoadControl: LoadControl? = null,
     ): ExoPlayer {
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val http = DefaultHttpDataSource.Factory()
@@ -236,7 +238,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory().setTsSubtitleFormats(LIVE_CAPTION_FORMATS)
         val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
-        val loadControl = DefaultLoadControl.Builder()
+        val loadControl = liveLoadControl ?: DefaultLoadControl.Builder()
             // Medium starts after 1.5 s of picture (3 s after a stall) and keeps up to 30 s ahead.
             .setBufferDurationsMs(buffer.minMs, buffer.maxMs, buffer.startMs, buffer.afterStallMs)
             .setPrioritizeTimeOverSizeThresholds(true)

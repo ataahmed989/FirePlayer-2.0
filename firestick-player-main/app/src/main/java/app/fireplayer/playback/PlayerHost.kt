@@ -1,6 +1,8 @@
 package app.fireplayer.playback
 
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +23,7 @@ import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ui.LivePrefs
 import app.fireplayer.player.Delays
@@ -81,6 +84,21 @@ class PlayerHost private constructor(context: Context) {
     private var builtHeaders: Map<String, String>? = null
     /** The Live TV buffer [player] was built with. */
     private var builtBuffer: LiveBuffer? = null
+    /** [player]'s buffer rules, for the stall wait, the memory ceiling and the log. */
+    private var control: LiveLoadControl? = null
+    /** The memory step Fire OS last asked for (see [LiveCushion.stepFor]); back to 0 with each new stream. */
+    private var memoryStep = 0
+    /** The kind of stream playing (HLS, TS...), for the log. */
+    private var kind = "stream"
+    /** The player's own estimate of the connection's speed (bits a second; 0 not known yet), for the log. */
+    private var bitrateEstimate = 0L
+    /** The last playback state seen, to tell a stall (ready, then buffering) from a start. */
+    private var lastState = Player.STATE_IDLE
+    /** A jump the app asked for (a new stream, Go live, a reconnect) is under way: its buffering isn't a stall. */
+    private var jumping = false
+    /** When the stall under way began (elapsedRealtime; 0: none). */
+    private var stalledAt = 0L
+    private val stallWatch = LiveStallWatch()
     private var surface: SurfaceView? = null
     private val reconnect = LiveReconnect()
     /** Between a failure and frames playing again. */
@@ -116,6 +134,24 @@ class PlayerHost private constructor(context: Context) {
     }
 
     val session = LiveSession(engine, budget)
+
+    init {
+        // Fire OS short of memory while a channel plays: the buffer steps down (and gives memory back) rather than the
+        // app being killed. Only the levels sent to the app in front count; a stopped screen has closed its stream.
+        app.registerComponentCallbacks(object : ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) {
+                if (level > ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) return
+                val step = LiveCushion.stepFor(level)
+                if (step <= memoryStep) return
+                memoryStep = step
+                val c = control ?: return
+                c.squeeze(step)
+                Log.i(TAG, "Live buffer: memory low (level $level), held to ${c.cushion.capBytes() shr 20} MiB, ${c.allocatedBytes shr 20} MiB loaded")
+            }
+            override fun onConfigurationChanged(newConfig: Configuration) {}
+            @Deprecated("Deprecated in Java") override fun onLowMemory() {}
+        })
+    }
 
     val playingKey: String? get() = session.playingKey
     val currentKey: String? get() = session.source?.key
@@ -228,6 +264,7 @@ class PlayerHost private constructor(context: Context) {
         paused = false
         behind = false
         if (p.isCurrentMediaItemDynamic && p.isCurrentMediaItemSeekable) {
+            jumping = true
             p.seekToDefaultPosition()
             p.playWhenReady = true
         } else {
@@ -374,7 +411,14 @@ class PlayerHost private constructor(context: Context) {
         }
         val before = player
         val p = playerFor(source.headers)
-        timing.opened(SystemClock.uptimeMillis(), pressedAt, LiveTiming.kindOf(Uri.parse(source.url).lastPathSegment), before === p)
+        kind = LiveTiming.kindOf(Uri.parse(source.url).lastPathSegment)
+        timing.opened(SystemClock.uptimeMillis(), pressedAt, kind, before === p)
+        // A new stream: no stalls counted, the memory ceiling lifted until Fire OS asks again.
+        main.removeCallbacks(stallCheck)
+        stalledAt = 0L
+        jumping = true
+        memoryStep = 0
+        control?.let { it.newStream(); it.squeeze(0) }
         // The shared Defaults (Settings › Defaults, the same values films use): the sound in the chosen language when
         // the channel has it, and that language's captions first once captions are on.
         val prefs = Prefs(app)
@@ -396,9 +440,14 @@ class PlayerHost private constructor(context: Context) {
             p.removeListener(playerListener)
             p.release()
         }
+        main.removeCallbacks(stallCheck)
         player = null
+        control = null
         builtHeaders = null
         builtBuffer = null
+        stalledAt = 0L
+        jumping = false
+        lastState = Player.STATE_IDLE
         timing.clear()
         reconnect.reset()
         reconnecting = false
@@ -419,8 +468,14 @@ class PlayerHost private constructor(context: Context) {
             surface?.let { old.clearVideoSurfaceView(it) }
             old.removeListener(playerListener)
             old.release()
+            main.removeCallbacks(stallCheck)
+            stalledAt = 0L
         }
-        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough, delays, buffer)
+        val c = LiveLoadControl(buffer)
+        val p = PlayerFactory.buildLive(app, headers, Prefs(app).passthrough, delays, buffer, c)
+        control = c
+        lastState = Player.STATE_IDLE
+        p.addAnalyticsListener(bandwidth)
         // Captions start off; the viewer turns them on from the Captions button (and they then stay on).
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn).build()
         p.addListener(playerListener)
@@ -435,6 +490,10 @@ class PlayerHost private constructor(context: Context) {
         val uri = Uri.parse(source.url)
         val path = uri.lastPathSegment?.lowercase() ?: ""
         val b = MediaItem.Builder().setUri(uri).setMediaId(source.key)
+            // A live window (HLS/DASH) is never played faster than it arrives to close in on the live edge: Media3's
+            // default speeds up to 1.03x until it sits at its target offset, eating the cushion that rides out a late
+            // segment. It still slows down (to 0.97x) to back away from the edge after a stall.
+            .setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1f).build())
         when {
             path.endsWith(".m3u8") || path.endsWith(".m3u") -> b.setMimeType(MimeTypes.APPLICATION_M3U8)
             path.endsWith(".mpd") -> b.setMimeType(MimeTypes.APPLICATION_MPD)
@@ -449,6 +508,11 @@ class PlayerHost private constructor(context: Context) {
         // Reconnecting lands at the live edge: whatever was behind has recalibrated itself.
         behind = false
         paused = false
+        // A stall that came back by itself while the wait ran: nothing to reconnect.
+        if (p.playbackState == Player.STATE_READY && p.playWhenReady) return@Runnable
+        jumping = true
+        // A stall that got nowhere still holds its dead connection: stopped first, so preparing opens a new one.
+        if (p.playbackState == Player.STATE_BUFFERING) p.stop()
         p.seekToDefaultPosition()
         if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) p.prepare()
         p.playWhenReady = true
@@ -478,6 +542,9 @@ class PlayerHost private constructor(context: Context) {
         override fun onPlayerError(e: PlaybackException) {
             val p = player ?: return
             if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                // Fell out of the live window (a long stall or pause): back to the live edge, silently.
+                Log.i(TAG, "Live recovery: behind the live window; ${diagnosis(p)}; back to the live edge")
+                jumping = true
                 p.seekToDefaultPosition()
                 p.prepare()
                 return
@@ -534,11 +601,82 @@ class PlayerHost private constructor(context: Context) {
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_READY) timing.ready(SystemClock.uptimeMillis())
+            noteStall(state)
             // A live channel doesn't end: the provider dropped the stream. Reconnect, almost at once the first time
             // (what was loaded has played out), then with the same back-off as errors.
             if (state != Player.STATE_ENDED || session.playingKey == null) return
             if (player == null) return
             reconnectAfter("stream ended", "The channel stopped", ended = true)
+        }
+    }
+
+    private val bandwidth = object : AnalyticsListener {
+        override fun onBandwidthEstimate(eventTime: AnalyticsListener.EventTime, totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
+            this@PlayerHost.bitrateEstimate = bitrateEstimate
+        }
+    }
+
+    /**
+     * Ready, then buffering while meant to play, with no jump asked for: a stall. Each gets one log line, and once it
+     * plays on, another; the stall wait grows on the same stream ([LiveCushion]) and a stall with nothing arriving is
+     * reconnected ([stallCheck]).
+     */
+    private fun noteStall(state: Int) {
+        val p = player ?: return
+        val c = control
+        val was = lastState
+        lastState = state
+        val now = SystemClock.elapsedRealtime()
+        when (state) {
+            Player.STATE_BUFFERING -> if (was == Player.STATE_READY && !jumping && p.playWhenReady && session.playingKey != null && c != null) {
+                c.cushion.stalls++
+                stalledAt = now
+                Log.i(TAG, "Live rebuffer ${c.cushion.stalls}: up to ${c.takePeakMs()} ms was loaded ahead before it; " +
+                    "${diagnosis(p)}; ${if (p.isLoading) "loading" else "not loading"}; " +
+                    "plays on at ${c.cushion.afterStallNeedUs(0) / 1000} ms loaded")
+                stallWatch.started(now, p.totalBufferedDuration)
+                main.removeCallbacks(stallCheck)
+                main.postDelayed(stallCheck, LiveStallWatch.CHECK_MS)
+            }
+            Player.STATE_READY -> {
+                jumping = false
+                main.removeCallbacks(stallCheck)
+                if (stalledAt != 0L) {
+                    Log.i(TAG, "Live rebuffer over after ${now - stalledAt} ms; ${diagnosis(p)}")
+                    stalledAt = 0L
+                }
+                c?.takePeakMs()
+            }
+            else -> {
+                jumping = false
+                main.removeCallbacks(stallCheck)
+                stalledAt = 0L
+            }
+        }
+    }
+
+    /** What the log needs to tell one stall from another (never the address). */
+    private fun diagnosis(p: ExoPlayer): String {
+        val offset = p.currentLiveOffset
+        val video = p.videoFormat?.bitrate ?: Format.NO_VALUE
+        return "estimate ${bitrateEstimate / 1000} kbps" +
+            (if (video != Format.NO_VALUE) ", video ${video / 1000} kbps" else "") +
+            ", live offset " + (if (offset == C.TIME_UNSET) "n/a" else "$offset ms") +
+            ", $kind" + (if (memoryStep > 0) ", memory step $memoryStep" else "")
+    }
+
+    /** While a stall lasts, every few seconds: nothing has arrived for a while, so the connection is opened again. */
+    private val stallCheck = object : Runnable {
+        override fun run() {
+            val p = player ?: return
+            if (p.playbackState != Player.STATE_BUFFERING || !p.playWhenReady || session.playingKey == null) return
+            if (!stallWatch.stuck(SystemClock.elapsedRealtime(), p.totalBufferedDuration)) {
+                main.postDelayed(this, LiveStallWatch.CHECK_MS)
+                return
+            }
+            Log.i(TAG, "Live recovery: stalled with nothing arriving for ${LiveStallWatch.LIMIT_MS} ms; ${diagnosis(p)}")
+            stalledAt = 0L
+            reconnectAfter("stall", "The channel stopped", ended = true)
         }
     }
 
