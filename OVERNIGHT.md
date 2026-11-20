@@ -37,6 +37,17 @@ and continue from the first unfinished step. Update the status lines here as ste
    in the Sources list and therefore as the best source, as long as it is one this TV can play and is not marked
    troubled; among themselves, and for everything else, today's order stays. Parser words and the rule as pure,
    unit-tested logic. Status: not started.
+1c. **A third add-on (the user, 02:45 their time): StremThru "Torz"** ("starts with
+   https://stremthru.13377001.xyz/stremio/torz/ ... ends with manifest.json"; the user enters the whole link on the
+   TV: never ask for it, print it, log it or store it anywhere but encrypted on the TV). Today the app has two fixed
+   add-ons (`Addon.TORRENTIO`, `Addon.MEDIAFUSION` in `vod/SourcesContract.kt`, parsed in `vod/sources/*`). Add a
+   third the same way: Settings > Add-ons row with its hint and note, link check, its stream format parsed (read the
+   format from StremThru's public source / an unconfigured manifest, never from the user's link), failures, limits,
+   merged and ranked with the others, unit tests. Build with 1b after `audit/vod` is merged (same files).
+   Also asked: "is there a way for you to check if my Debrid is working and protects my ip": the app plays only
+   HTTPS links handed over by the add-ons (it has no torrent client); add one FirePlayerDiag line per film start
+   naming only the HOST the stream comes from and whether the source was a ready (cached) link, so it can be confirmed
+   on the TV without showing a link. Status: not started.
 2. **Movies & TV Shows search:** the row holding the best match comes first (a show: TV Shows first; a film: Movies).
    Branch `feat/home-header` (with step 3). Status: MERGED (2850d18), tests pass; NOT yet tried on the TV (search a
    show, e.g. "breaking bad": TV Shows first; a film, e.g. "dune": Movies first).
