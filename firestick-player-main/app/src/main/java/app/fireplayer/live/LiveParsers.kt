@@ -33,19 +33,25 @@ object M3uParser {
         val url: String,
     )
 
-    class Parsed(val entries: List<Entry>, val epgUrl: String?)
+    /** [header]: the #EXTM3U line was there (an M3U, even with no channels). */
+    class Parsed(val entries: List<Entry>, val epgUrl: String?, val header: Boolean = false)
 
-    fun parse(content: String): Parsed {
+    fun parse(content: String): Parsed = parse(content.lineSequence())
+
+    /** Reads the playlist line by line, so a large one is never held whole in memory. */
+    fun parse(lines: Sequence<String>): Parsed {
         val out = ArrayList<Entry>()
         var epgUrl: String? = null
+        var header = false
         var attrs: Map<String, String>? = null
         var display: String? = null
         var extGroup: String? = null
-        for (raw in content.lineSequence()) {
+        for (raw in lines) {
             val line = raw.trim().removePrefix("﻿")
             when {
                 line.isEmpty() -> {}
                 line.startsWith("#EXTM3U") -> {
+                    header = true
                     val head = attributes(line.removePrefix("#EXTM3U"))
                     epgUrl = (head["url-tvg"] ?: head["x-tvg-url"])?.split(',')?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
                 }
@@ -77,7 +83,7 @@ object M3uParser {
                 }
             }
         }
-        return Parsed(out, epgUrl)
+        return Parsed(out, epgUrl, header)
     }
 
     /**

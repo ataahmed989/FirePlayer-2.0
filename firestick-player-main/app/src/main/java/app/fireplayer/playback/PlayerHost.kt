@@ -210,6 +210,7 @@ class PlayerHost private constructor(context: Context) {
     }
 
     fun onScreenStarted(): Boolean {
+        screenOn = true
         val resumed = session.resume()
         publish()
         return resumed
@@ -221,6 +222,7 @@ class PlayerHost private constructor(context: Context) {
      */
     fun onScreenStopped(owner: Any? = null) {
         if (owner != null && surface != null && owner !== surface) return
+        screenOn = false
         session.suspend()
         // A player built ahead ([warm]) that never got a channel.
         if (player != null && session.state != LiveSession.State.PLAYING) closeStream()
@@ -232,6 +234,31 @@ class PlayerHost private constructor(context: Context) {
         session.stop()
         if (player != null) closeStream()
         publish()
+    }
+
+    // ---- Playlist and EPG updates (live/SyncGuard.kt) ---------------------------------------------------------------
+
+    /** The live screen is started (between [onScreenStarted] and [onScreenStopped]). */
+    var screenOn = false
+        private set
+
+    /**
+     * An update is about to ask this channel's provider: the stream is closed and its connection lease returned, the
+     * channel remembered (as when the screen stops). Returns its key, or null when nothing was playing.
+     */
+    fun letGoForUpdate(): String? {
+        if (session.state != LiveSession.State.PLAYING) return null
+        val key = session.source?.key
+        session.suspend()
+        publish()
+        return key
+    }
+
+    /** The update is over: the remembered channel plays again, from live. True when it did. */
+    fun backAfterUpdate(): Boolean {
+        val back = session.resume()
+        publish()
+        return back
     }
 
     fun setMuted(muted: Boolean) { player?.volume = if (muted) 0f else 1f }
