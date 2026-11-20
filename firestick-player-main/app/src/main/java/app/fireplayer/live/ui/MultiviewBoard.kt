@@ -166,7 +166,8 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
 
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
-            if (ringed) ring(canvas, width.toFloat(), height.toFloat())
+            // The picture's corners are square: the ring's inside edge is too.
+            if (ringed) ring(canvas, width.toFloat(), height.toFloat(), 0f)
         }
 
         override fun onDetachedFromWindow() {
@@ -204,7 +205,7 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
 
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
-            if (ringed) ring(canvas, width.toFloat(), height.toFloat())
+            if (ringed) ring(canvas, width.toFloat(), height.toFloat(), panelRadius)
         }
     }
 
@@ -212,7 +213,8 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
     private val addCell = AddCell()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
     private val ringPx = t.dpf(VodSizes.RING)
-    private val ringRadius = t.dpf(VodSizes.CARD_RADIUS)
+    /** The "Add" cell's corners: the panel's (Glass.Kind.PANEL), for its ring to hug. */
+    private val panelRadius = resources.getDimension(R.dimen.radius_panel)
     private val ringRect = RectF()
     private var mover: ValueAnimator? = null
     /** The pictures of the move under way (read every frame by index: nothing made per frame). */
@@ -231,12 +233,12 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
         addCell.visibility = GONE
     }
 
-    /** The app's white focus ring hugging the outside of a [w] x [h] area (the cards' ring). */
-    private fun ring(canvas: Canvas, w: Float, h: Float) {
+    /** The app's white focus ring hugging the outside of a [w] x [h] area whose corners are [radius] (the cards' ring). */
+    private fun ring(canvas: Canvas, w: Float, h: Float, radius: Float) {
         ringPaint.strokeWidth = ringPx
         val half = ringPx / 2f
         ringRect.set(-half, -half, w + half, h + half)
-        canvas.drawRoundRect(ringRect, ringRadius + half, ringRadius + half, ringPaint)
+        canvas.drawRoundRect(ringRect, radius + half, radius + half, ringPaint)
     }
 
     /** A picture to show a channel on: one made before and free, or a new one (never more than four are made). */

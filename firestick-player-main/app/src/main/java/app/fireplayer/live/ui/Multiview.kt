@@ -335,10 +335,7 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
     /** The pictures to the model's layout ([animate]: those on screen move there), the ring on the selected one. */
     private fun relayout(animate: Boolean) {
         val b = board ?: return
-        val d = t.density
-        val w = (b.width.takeIf { it > 0 } ?: activity.window.decorView.width) / d
-        val h = (b.height.takeIf { it > 0 } ?: activity.window.decorView.height) / d
-        val layout = model.layout(w, h, LiveWidths.MV_GAP)
+        val layout = layoutNow()
         order.clear()
         for (tile in model.tiles) order += tile.picture
         b.place(order, layout, animate)
@@ -408,6 +405,7 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         applyPlayers()
     }
 
+    /** The model's layout on the screen as it is (the board's size; the window's before the board is first laid out). */
     private fun layoutNow(): MultiviewLayout.Layout {
         val b = board
         val d = t.density
