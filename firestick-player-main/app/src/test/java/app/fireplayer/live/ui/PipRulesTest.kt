@@ -20,17 +20,24 @@ class PipRulesTest {
     }
 
     @Test fun leavingLiveTvKeepsAPlayingChannelForHomeAndSearchOnly() {
-        assertTrue(PipRules.keepOnLeavingLive(enabled = true, to = Page.HOME, playing = true, multiview = false))
-        assertTrue(PipRules.keepOnLeavingLive(enabled = true, to = Page.SEARCH, playing = true, multiview = false))
+        assertTrue(PipRules.keepOnLeavingLive(enabled = true, to = Page.HOME, playing = true, multiview = false, paused = false))
+        assertTrue(PipRules.keepOnLeavingLive(enabled = true, to = Page.SEARCH, playing = true, multiview = false, paused = false))
         for (to in listOf(Page.MOVIES, Page.TV_SHOWS, Page.MY_LIST, Page.SETTINGS)) {
-            assertFalse(to.name, PipRules.keepOnLeavingLive(enabled = true, to = to, playing = true, multiview = false))
+            assertFalse(to.name, PipRules.keepOnLeavingLive(enabled = true, to = to, playing = true, multiview = false, paused = false))
         }
     }
 
     @Test fun switchedOffNothingPlayingOrMultiviewLeavingLiveTvStopsTheChannelAsBefore() {
-        assertFalse(PipRules.keepOnLeavingLive(enabled = false, to = Page.HOME, playing = true, multiview = false))
-        assertFalse(PipRules.keepOnLeavingLive(enabled = true, to = Page.HOME, playing = false, multiview = false))
-        assertFalse(PipRules.keepOnLeavingLive(enabled = true, to = Page.SEARCH, playing = true, multiview = true))
+        assertFalse(PipRules.keepOnLeavingLive(enabled = false, to = Page.HOME, playing = true, multiview = false, paused = false))
+        assertFalse(PipRules.keepOnLeavingLive(enabled = true, to = Page.HOME, playing = false, multiview = false, paused = false))
+        assertFalse(PipRules.keepOnLeavingLive(enabled = true, to = Page.SEARCH, playing = true, multiview = true, paused = false))
+    }
+
+    @Test fun aChannelPausedOnLiveTvDoesNotFollowToHomeOrSearch() {
+        // Still in the corner with no Play on the strip (and Play/Pause unused on Home): it stops, remembered.
+        for (to in listOf(Page.HOME, Page.SEARCH)) {
+            assertFalse(to.name, PipRules.keepOnLeavingLive(enabled = true, to = to, playing = true, multiview = false, paused = true))
+        }
     }
 
     @Test fun whileThePicturePlaysOtherTabsStopItAndLiveTvTakesItBack() {

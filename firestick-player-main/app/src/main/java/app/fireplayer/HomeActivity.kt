@@ -640,7 +640,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             // Live TV, as leaving it always did.
             val to = pipPageOf(tab)
             val keep = if (from == NavRail.Tab.LIVE) {
-                live.leave(PipRules.keepOnLeavingLive(Prefs(this).pipKeep, to, playing = player.currentKey != null, multiview = live.multiviewActive))
+                live.leave(PipRules.keepOnLeavingLive(Prefs(this).pipKeep, to, playing = player.currentKey != null, multiview = live.multiviewActive, paused = player.paused))
             } else {
                 (pipOn && PipRules.whenGoingTo(to) == PipRules.Move.KEEP).also { if (pipOn && !it) stopPip(closed = false) }
             }

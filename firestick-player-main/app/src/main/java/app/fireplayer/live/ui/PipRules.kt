@@ -27,10 +27,12 @@ object PipRules {
     /**
      * Leaving Live TV for [to]: whether the channel carries on there in the picture. Only with the setting on
      * ([enabled]), a channel [playing] in the one live player (Multiview's pictures never follow: it ends as Live TV
-     * is left) and a page that shows the picture.
+     * is left) and a page that shows the picture. A channel the viewer [paused] doesn't follow either: it would sit
+     * still in the corner with nothing there to start it again (the strip has no Play, and Play/Pause isn't Home's),
+     * so it stops, remembered, as leaving Live TV always did.
      */
-    fun keepOnLeavingLive(enabled: Boolean, to: Page, playing: Boolean, multiview: Boolean): Boolean =
-        enabled && playing && !multiview && keepsPicture(to)
+    fun keepOnLeavingLive(enabled: Boolean, to: Page, playing: Boolean, multiview: Boolean, paused: Boolean): Boolean =
+        enabled && playing && !paused && !multiview && keepsPicture(to)
 
     /** What the picture does as the viewer goes to another page while it plays. */
     enum class Move {
