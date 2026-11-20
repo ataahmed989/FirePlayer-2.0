@@ -10,8 +10,10 @@ import app.fireplayer.vod.LookupWhy
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.StartAt
+import app.fireplayer.vod.sources.SourceRank
 import java.util.Locale
 
 /**
@@ -101,9 +103,10 @@ object PlayRules {
     // ---- The title page's source line and Sources button -----------------------------------------------------------
 
     /**
-     * The source line once an add-on has answered: "Best for this TV · 4K · DV · WEB-DL · 29.3 GB · from Torrentio"
-     * ("Best so far" while the other still looks; "Last used" when that release is offered again). "No sources found"
-     * when every add-on answered with none; null before any answer (the line stays empty).
+     * The source line once an add-on has answered: "Best for this TV · 4K IMAX · DV · Remux · 58.3 GB · from Torrentio"
+     * (the copy's [mainLine]; "Best so far" while the other still looks; "Last used" when that release is offered again,
+     * never an SD one: [SourceRank.withoutSd]). "No sources found" when every add-on answered with none; null before any
+     * answer (the line stays empty).
      */
     fun sourceLine(list: SourceList?): String? {
         if (list == null) return null
@@ -124,7 +127,7 @@ object PlayRules {
             list.complete -> "Best for this TV"
             else -> "Best so far"
         }
-        return listOf(lead, badges(pick), "from ${addonsOf(pick)}").filter { it.isNotEmpty() }.joinToString(" · ")
+        return listOf(lead, mainLine(pick), "from ${addonsOf(pick)}").filter { it.isNotEmpty() }.joinToString(" · ")
     }
 
     /** The Sources button: "Sources", then "Sources · 40" once an add-on has answered. */
@@ -142,7 +145,11 @@ object PlayRules {
         else -> "${height}p"
     }
 
-    /** Line 1: resolution, HDR kinds, origin, size and average rate, pack ("4K · DV · HDR10+ · WEB-DL · 29.3 GB · ≈25 Mb/s"). */
+    /**
+     * A copy in full on one line, for the player's notes and questions ("Switch to …?"): resolution, HDR kinds, origin,
+     * size and average rate, pack ("4K · DV · HDR10+ · WEB-DL · 29.3 GB · ≈25 Mb/s"). The Sources panel's rows and the
+     * title page's source line use the shorter [mainLine] and [detailLine].
+     */
     fun badges(s: PlaybackSource): String {
         val f = s.facts
         val hdr = Hdr.entries.filter { it in f.hdr }.map { h ->
@@ -159,15 +166,84 @@ object PlayRules {
         ).joinToString(" · ")
     }
 
-    /** Line 2: the one warning first, then codec, sound, group, languages, seeders for files not on Real-Debrid. */
-    fun facts(s: PlaybackSource): String {
+    // ---- A Sources row's two lines (and the title page's source line) ----------------------------------------------
+
+    /** A 2160p copy whose name or file name says IMAX, IMX or Open Matte ([SourceRank.isImax]): the "4K IMAX" ones. */
+    fun imax(s: PlaybackSource): Boolean =
+        (s.facts.height ?: 0) >= 2160 && s.offers.any { SourceRank.isImax(it.text) || SourceRank.isImax(it.filename) }
+
+    /** "4K IMAX", "4K", "1080p", "720p"…; null when the add-ons didn't say. */
+    fun quality(s: PlaybackSource): String? = resolution(s.facts.height)?.let { if (imax(s)) "$it IMAX" else it }
+
+    /**
+     * The HDR kind, short: "DV", "DV · HDR10+" (what a TV without Dolby Vision plays of it), "HDR10+", "HDR10", "HLG";
+     * null for SDR. With [one], the first kind only.
+     */
+    fun hdrKind(f: SourceFacts, one: Boolean = false): String? = when {
+        Hdr.DOLBY_VISION in f.hdr -> if (Hdr.HDR10_PLUS in f.hdr && !one) "DV · HDR10+" else "DV"
+        Hdr.HDR10_PLUS in f.hdr -> "HDR10+"
+        Hdr.HDR10 in f.hdr -> "HDR10"
+        Hdr.HLG in f.hdr -> "HLG"
+        else -> null
+    }
+
+    /** The HDR kind in plain words, for the Best row's reason: "Dolby Vision", "HDR10+", "HDR10", "HLG"; null for SDR. */
+    fun hdrWords(f: SourceFacts): String? = if (Hdr.DOLBY_VISION in f.hdr) "Dolby Vision" else hdrKind(f)
+
+    /** What a copy was made from: "Remux", "BluRay", "WEB" (WEB-DL, WEBRip), else the add-on's word ("HDTV", "CAM"). */
+    fun kind(origin: String?): String? = when (origin) {
+        null -> null
+        "REMUX" -> "Remux"
+        "WEB-DL", "WEBRip", "WEB" -> "WEB"
+        else -> origin
+    }
+
+    /**
+     * A Sources row's main line, and the title page's: quality · HDR kind · what it was made from · size ("4K IMAX · DV ·
+     * HDR10+ · Remux · 58.3 GB"). Over [chars] characters (what the row has room for, so it's never cut inside a word),
+     * the HDR kind keeps its first part.
+     */
+    fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE): String {
+        val f = s.facts
+        fun line(one: Boolean) = listOfNotNull(quality(s), hdrKind(f, one), kind(f.origin), f.sizeBytes?.let { size(it) }).joinToString(" · ")
+        return line(one = false).takeIf { it.length <= chars } ?: line(one = true)
+    }
+
+    /**
+     * A Sources row's quieter second line: the one warning, codec, sound, languages, pack, seeders (copies not cached
+     * yet) and the add-on ("HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR · Torrentio"). Over [chars] characters (its two
+     * lines), the languages go first, then the codec, pack and sound; the warning, seeders and add-on stay.
+     */
+    fun detailLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE): String {
         val f = s.facts
         val codec = listOfNotNull(f.codec, f.bitDepth?.takeIf { it > 8 }?.let { "$it-bit" }).joinToString(" ").ifEmpty { null }
         val sound = listOfNotNull(f.audio, f.channels).joinToString(" ").ifEmpty { null }
-        val langs = f.languages.takeIf { it.isNotEmpty() }?.joinToString(" + ") { it.uppercase(Locale.ROOT) }
+        val langs = f.languages.takeIf { it.isNotEmpty() }?.let { all ->
+            val named = all.take(LANGUAGES).joinToString(" + ") { it.uppercase(Locale.ROOT) }
+            if (all.size > LANGUAGES) "$named + ${all.size - LANGUAGES} more" else named
+        }
         val seeds = if (s.readiness == Readiness.NOT_READY) f.seeders?.let { "$it seeders" } else null
-        return listOfNotNull(s.warning?.let { "⚠ $it" }, codec, sound, f.group, langs, seeds).joinToString(" · ")
+        // Each part, and how long it stays when the line is too long (KEEP: always).
+        val parts = listOf(
+            s.warning?.let { "⚠ $it" } to KEEP,
+            codec to 1,
+            sound to 3,
+            langs to 0,
+            (if (f.pack) "Pack" else null) to 2,
+            seeds to KEEP,
+            addonsOf(s).ifEmpty { null } to KEEP,
+        ).mapNotNull { (text, stays) -> text?.let { it to stays } }.toMutableList()
+        fun joined() = parts.joinToString(" · ") { it.first }
+        while (joined().length > chars) {
+            val drop = parts.filter { it.second < KEEP }.minByOrNull { it.second } ?: break
+            parts.remove(drop)
+        }
+        return joined()
     }
+
+    /** Languages a row names before "+ N more". */
+    private const val LANGUAGES = 3
+    private const val KEEP = Int.MAX_VALUE
 
     /** "Torrentio", "MediaFusion", or "Both add-ons". */
     fun addonsOf(s: PlaybackSource): String = when {

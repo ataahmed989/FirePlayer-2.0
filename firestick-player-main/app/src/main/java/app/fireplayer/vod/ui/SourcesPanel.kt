@@ -9,8 +9,8 @@ import app.fireplayer.ui.LongList
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.vod.Attempt
 import app.fireplayer.vod.PlaybackSource
-import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceList
+import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.SourcesModel
 import java.util.Date
 
@@ -18,17 +18,17 @@ import java.util.Date
  * The Sources panel (design-brief.md §6.5, r3_sources-organize §4): one merged list in the wide settings window, made of
  * the app's shared parts ([SidePanel]'s long list, its two-line rows, headings and notes). The same panel opens from a
  * title page's Sources button and from the player (Picture & sound › Sources). Answers arriving later redraw it in place
- * ([update]); focus stays on its row (rows are keyed).
+ * ([update]); focus stays on its row (rows are keyed). What it lists, and in what order: [SourcesModel].
  *
  * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Hold OK:
- * Play from beginning or Details. "Show N" opens a group in place. Back closes Details, then the panel.
+ * Play from beginning or Details. "Show N" opens a section in place. Back closes Details, then the panel.
  */
 class SourcesPanel(private val activity: Activity, private val panel: SidePanel) {
 
     private var list: SourceList? = null
     private var attempts: List<Attempt> = emptyList()
     private var playingKey: String? = null
-    private var opened = HashSet<SourceGroup>()
+    private var opened = HashSet<SourcesModel.Section>()
     private var items: List<SourcesModel.Item> = emptyList()
     private var onPick: ((PlaybackSource, Boolean) -> Unit)? = null
     private var session = -1
@@ -70,7 +70,8 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun entries(): LongList {
-        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, ::time, ::day)
+        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, ::time, ::day,
+            VodSizes.SOURCES_LINE_CHARS, VodSizes.SOURCES_NOTE_CHARS)
         val shown = items
         return object : LongList {
             override val size: Int get() = shown.size
@@ -89,7 +90,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 if (held) return
                 val item = shown.getOrNull(index) ?: return
                 when (item.kind) {
-                    SourcesModel.Kind.SHOW_MORE -> item.group?.let { g ->
+                    SourcesModel.Kind.SHOW_MORE -> item.section?.let { g ->
                         opened += g
                         panel.refresh()
                         // Focus on the first row it brought, where "Show N" was.
@@ -142,7 +143,8 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private fun holdMenu(s: PlaybackSource) {
         FireDialog.ask(
             activity,
-            PlayRulesText.short(s),
+            // The row's own main line, so the window names the copy as the list did.
+            PlayRules.mainLine(s).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() },
             listOf(
                 "Play from beginning" to { play(s, beginning = true) },
                 "Details" to { details(s) },
@@ -161,10 +163,4 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private fun time(at: Long): String = DateFormat.getTimeFormat(activity).format(Date(at))
 
     private fun day(at: Long): String = DateFormat.format("MMM d", at).toString()
-}
-
-/** A source in a few words, for the hold window's title. */
-internal object PlayRulesText {
-    fun short(s: PlaybackSource): String =
-        app.fireplayer.vod.play.PlayRules.badges(s).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() }
 }

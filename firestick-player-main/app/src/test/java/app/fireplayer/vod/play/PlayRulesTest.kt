@@ -86,7 +86,7 @@ class PlayRulesTest {
         val best = Fixtures.source(1)
         assertNull(PlayRules.sourceLine(null))
         val done = Fixtures.list(target, listOf(best))
-        assertEquals("Best for this TV · 4K · HDR · WEB-DL · 29.3 GB · ≈25 Mb/s · from Torrentio", PlayRules.sourceLine(done))
+        assertEquals("Best for this TV · 4K · HDR10 · WEB · 29.3 GB · from Torrentio", PlayRules.sourceLine(done))
         val soFar = done.copy(states = mapOf(Addon.TORRENTIO to AddonState.Answered(1), Addon.MEDIAFUSION to AddonState.Asking(0, 25_000)))
         assertTrue(PlayRules.sourceLine(soFar)!!.startsWith("Best so far · "))
         val last = Fixtures.source(2, also = Addon.MEDIAFUSION)
@@ -114,13 +114,47 @@ class PlayRulesTest {
                 warning = "Dolby Vision 7: may not play here")
         }
         assertEquals("4K · DV7 · HDR · WEB-DL · 29.3 GB · ≈25 Mb/s · Pack · ×3", PlayRules.badges(s))
-        assertEquals("⚠ Dolby Vision 7: may not play here · HEVC 10-bit · DD+ 5.1 · GRP · EN", PlayRules.facts(s))
+        // The Sources row: quality · HDR kind · made from · size, then the quieter line ending with the add-on.
+        assertEquals("4K · DV · WEB · 29.3 GB", PlayRules.mainLine(s))
+        assertEquals("⚠ Dolby Vision 7: may not play here · HEVC 10-bit · DD+ 5.1 · EN · Pack · Torrentio", PlayRules.detailLine(s))
         assertFalse(PlayRules.badges(s).contains("invalid"))
-        assertFalse(PlayRules.facts(s).contains("invalid"))
-        // Seeders only for files not on Real-Debrid.
+        assertFalse((PlayRules.mainLine(s) + PlayRules.detailLine(s)).contains("invalid"))
+        // Seeders only for files not cached yet, before the add-on.
         val nr = Fixtures.source(2, readiness = Readiness.NOT_READY).let { it.copy(facts = it.facts.copy(seeders = 12)) }
-        assertTrue(PlayRules.facts(nr).endsWith("12 seeders"))
+        assertTrue(PlayRules.detailLine(nr).endsWith("12 seeders · Torrentio"))
         assertEquals("from Torrentio", PlayRules.factsFrom(Fixtures.source(1)) { "Nov 12" })
+    }
+
+    @Test
+    fun aRowsMainLineSaysQualityHdrKindMadeFromAndSize() {
+        fun of(hdr: Set<Hdr>, origin: String?, text: String = "Film.2160p.mkv") = Fixtures.source(1).let {
+            it.copy(facts = it.facts.copy(hdr = hdr, origin = origin, sizeBytes = 58_300_000_000L), offers = listOf(it.offers[0].copy(text = text)))
+        }
+        assertEquals("4K · DV · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS, Hdr.HDR10), "REMUX")))
+        assertEquals("4K · HDR10+ · BluRay · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.HDR10_PLUS, Hdr.HDR10), "BluRay")))
+        assertEquals("4K · HLG · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.HLG), "WEBRip")))
+        assertEquals("4K · HDTV · 58.3 GB", PlayRules.mainLine(of(emptySet(), "HDTV")))
+        // IMAX, IMX or open matte in a 2160p copy's name: "4K IMAX".
+        val imax = of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS), "REMUX", "The.Film.2026.IMAX.2160p.REMUX")
+        assertTrue(PlayRules.imax(imax))
+        assertEquals("4K IMAX · DV · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(imax))
+        // Too long for the row: the HDR kind keeps its first part, never a word cut.
+        assertEquals("4K IMAX · DV · Remux · 58.3 GB", PlayRules.mainLine(imax, chars = 38))
+        assertFalse(PlayRules.imax(Fixtures.source(2, height = 1080).let { it.copy(offers = listOf(it.offers[0].copy(text = "Film.IMAX.1080p"))) }))
+    }
+
+    @Test
+    fun aRowsSecondLineDropsTheLeastUsefulPartsWhenLong() {
+        val s = Fixtures.source(1, also = Addon.MEDIAFUSION).let {
+            it.copy(facts = it.facts.copy(audio = "TrueHD Atmos", channels = "7.1", languages = listOf("en", "fr", "de", "es", "it")),
+                warning = "Needs 69 Mb/s · this connection brought 72")
+        }
+        val full = "⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR + DE + 2 more · Both add-ons"
+        assertEquals(full, PlayRules.detailLine(s))
+        // Languages go first, then the codec; the warning and the add-on stay.
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · Both add-ons", PlayRules.detailLine(s, chars = 92))
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · TrueHD Atmos 7.1 · Both add-ons", PlayRules.detailLine(s, chars = 80))
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · Both add-ons", PlayRules.detailLine(s, chars = 10))
     }
 
     @Test

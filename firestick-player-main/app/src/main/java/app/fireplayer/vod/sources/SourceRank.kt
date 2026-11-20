@@ -9,6 +9,7 @@ import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceFacts
+import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
 import kotlin.math.floor
@@ -47,14 +48,31 @@ object SourceRank {
     private const val FILM_MIN = 120
     private const val EPISODE_MIN = 45
 
+    /** Ranks [sources] best first, without SD copies when the title has better ([withoutSd]). */
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
-        val scored = sources.mapIndexed { i, s ->
+        val scored = withoutSd(sources).mapIndexed { i, s ->
             val measured = s.release?.let { input.measured(it.storeKey) }
             val (fit, warning) = fit(s.facts, input.plan, measured, input.lineMbps)
             val ranked = s.copy(fit = fit, warning = warning, measured = measured)
             Scored(ranked, i, keyOf(ranked, input))
         }
         return scored.sortedWith(ORDER).map { it.source }
+    }
+
+    /** Below this height a copy is SD (480p, 576p): the user's "480p should not appear". */
+    const val HD_HEIGHT = 720
+
+    /** Whether [s] is SD: its stated height is under [HD_HEIGHT] (an unstated height isn't). */
+    fun isSd(s: PlaybackSource): Boolean = s.facts.height?.let { it < HD_HEIGHT } == true
+
+    /**
+     * The SD rule: SD copies are left out (not listed, never the best or Last used, never played by itself) whenever
+     * the film or episode has any copy at 720p or above that isn't a cinema recording, cached or not. Only when it has
+     * none do they stay (the Sources panel's "Lower quality").
+     */
+    fun withoutSd(sources: List<PlaybackSource>): List<PlaybackSource> {
+        val hd = sources.any { (it.facts.height ?: 0) >= HD_HEIGHT && it.group != SourceGroup.CINEMA }
+        return if (hd) sources.filterNot { isSd(it) } else sources
     }
 
     /** The automatic pick: the first ranked source that may be picked by itself. */
