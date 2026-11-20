@@ -3,7 +3,8 @@ package app.fireplayer.ui
 /**
  * When a picture that's waiting says so: the buffering symbol only once the wait has lasted about 300 ms (a quick
  * channel change never flashes it), a line of text ("Reconnecting…") only once a reconnect has lasted a few seconds,
- * and both gone the moment frames play. Pure: the clock is passed in (any steady clock, ms).
+ * and both gone the moment frames play. A channel the provider refused ([refused]) has its line at once: there's
+ * nothing to wait out before saying why. Pure: the clock is passed in (any steady clock, ms).
  */
 class BusySigns(
     private val spinnerAfterMs: Long = SPINNER_AFTER_MS,
@@ -18,10 +19,10 @@ class BusySigns(
     private var reconnectSince = NONE
 
     /**
-     * The picture is [busy] (loading with nothing playing) and maybe [reconnecting] at [now]. Returns how long until
-     * the signs next change by themselves (ask again then), or [NONE] when nothing is due.
+     * The picture is [busy] (loading with nothing playing) and maybe [reconnecting] or [refused] at [now]. Returns how
+     * long until the signs next change by themselves (ask again then), or [NONE] when nothing is due.
      */
-    fun update(busy: Boolean, reconnecting: Boolean, now: Long): Long {
+    fun update(busy: Boolean, reconnecting: Boolean, now: Long, refused: Boolean = false): Long {
         if (!busy) {
             busySince = NONE
             reconnectSince = NONE
@@ -32,7 +33,7 @@ class BusySigns(
         if (busySince == NONE) busySince = now
         if (!reconnecting) reconnectSince = NONE else if (reconnectSince == NONE) reconnectSince = now
         spinner = now - busySince >= spinnerAfterMs
-        text = reconnectSince != NONE && now - reconnectSince >= textAfterMs
+        text = refused || (reconnectSince != NONE && now - reconnectSince >= textAfterMs)
         var next = NONE
         if (!spinner) next = busySince + spinnerAfterMs - now
         if (reconnectSince != NONE && !text) {

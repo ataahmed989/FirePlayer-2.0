@@ -237,7 +237,7 @@ object PlayerFactory {
         // (HLS streams are already looked at this way by Media3's HLS reader.)
         val extractors = DefaultExtractorsFactory().setTsSubtitleFormats(LIVE_CAPTION_FORMATS)
         val mediaSources = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http), extractors)
-            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
+            .setLoadErrorHandlingPolicy(LiveErrorPolicy)
         val loadControl = liveLoadControl ?: DefaultLoadControl.Builder()
             // Medium starts after 1.5 s of picture (3 s after a stall) and keeps up to 30 s ahead.
             .setBufferDurationsMs(buffer.minMs, buffer.maxMs, buffer.startMs, buffer.afterStallMs)
@@ -255,6 +255,28 @@ object PlayerFactory {
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
+    }
+
+    /**
+     * The live player's own load retries: Media3's three, except for an answer that says the stream isn't there or
+     * isn't allowed ([app.fireplayer.playback.LiveRefusal.refuses]: 404, 403...). Asking such a server again at once
+     * only made each failed try four requests long; the live host says why and tries again slowly itself.
+     */
+    private object LiveErrorPolicy : DefaultLoadErrorHandlingPolicy(3) {
+        override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long =
+            if (app.fireplayer.playback.LiveRefusal.refuses(httpCodeOf(loadErrorInfo.exception))) C.TIME_UNSET
+            else super.getRetryDelayMsFor(loadErrorInfo)
+    }
+
+    /** The HTTP status a failure carries somewhere in its causes (0: none). Only the number: never the address. */
+    fun httpCodeOf(e: Throwable?): Int {
+        var c = e
+        var depth = 0
+        while (c != null && depth++ < 8) {
+            if (c is HttpDataSource.InvalidResponseCodeException) return c.responseCode
+            c = c.cause
+        }
+        return 0
     }
 
     /**

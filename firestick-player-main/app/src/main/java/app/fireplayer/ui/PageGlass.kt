@@ -146,6 +146,13 @@ class PageGlass(
         disarm()
     }
 
+    /** [trim], unless a window may be on screen (its picture stays): true when the pictures went. */
+    fun trimIfIdle(): Boolean {
+        if (active) return false
+        trim()
+        return true
+    }
+
     /** Lets the pictures go (film mode, low memory); the next window is copied afresh. */
     fun trim() {
         shown = null

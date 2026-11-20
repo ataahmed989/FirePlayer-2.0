@@ -42,9 +42,13 @@ class LiveCushion(private val afterStallUs: Long, private val minBufferUs: Long)
         return need
     }
 
-    /** The most the buffer may hold now, in bytes ([Int.MAX_VALUE]: Media3's own limits only). */
+    /**
+     * The most the buffer may hold now, in bytes. Even with memory to spare it's [NORMAL_BYTES]: the Live TV buffer is
+     * set in seconds, and 30 s of a 4K channel at 25 Mbit/s would be over 90 MB on a 1.7 GB Stick (a plain 1080p
+     * channel never comes near it). The [floorUs] still holds, so a heavy channel holds less ahead, it doesn't stall.
+     */
     fun capBytes(): Int = when (memoryStep) {
-        0 -> Int.MAX_VALUE
+        0 -> NORMAL_BYTES
         1 -> SQUEEZE_1_BYTES
         else -> SQUEEZE_2_BYTES
     }
@@ -54,6 +58,7 @@ class LiveCushion(private val afterStallUs: Long, private val minBufferUs: Long)
 
     companion object {
         const val MAX_TIMES = 3
+        const val NORMAL_BYTES = 64 shl 20
         const val SQUEEZE_1_BYTES = 24 shl 20
         const val SQUEEZE_2_BYTES = 12 shl 20
         const val FLOOR_US = 4_000_000L
@@ -143,7 +148,7 @@ class LiveLoadControl(buffer: LiveBuffer) : LoadControl {
         if (parameters.bufferedDurationUs > peakUs) peakUs = parameters.bufferedDurationUs
         val wanted = inner.shouldContinueLoading(parameters)
         val cap = cushion.capBytes()
-        if (cap != Int.MAX_VALUE && allocator.totalBytesAllocated >= cap && parameters.bufferedDurationUs >= cushion.floorUs()) return false
+        if (allocator.totalBytesAllocated >= cap && parameters.bufferedDurationUs >= cushion.floorUs()) return false
         return wanted
     }
 

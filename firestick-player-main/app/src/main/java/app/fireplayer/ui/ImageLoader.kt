@@ -251,6 +251,24 @@ object ImageLoader {
         if (fraction <= 0f) cache.evictAll() else cache.trimToSize((cache.maxSize() * fraction).toInt())
     }
 
+    /**
+     * Lets go of the decoded pictures kept in memory that [large] says are too big to keep (the pages' banners, cards
+     * and posters while Live TV is in front; see [app.fireplayer.playback.LiveRoom]): how many went, and their bytes.
+     * Pictures on screen are held by their views and stay. Main thread; not for every frame (it copies the list).
+     */
+    fun trimLarger(large: (Int) -> Boolean): Pair<Int, Long> {
+        var count = 0
+        var bytes = 0L
+        for ((key, bitmap) in cache.snapshot()) {
+            val size = bitmap.byteCount
+            if (!large(size)) continue
+            cache.remove(key)
+            count++
+            bytes += size
+        }
+        return count to bytes
+    }
+
     const val TRIM_HALF = 0.5f
     /** How long a picture that wasn't in memory fades in (image views and cards alike). */
     const val FADE_MS = 160L
