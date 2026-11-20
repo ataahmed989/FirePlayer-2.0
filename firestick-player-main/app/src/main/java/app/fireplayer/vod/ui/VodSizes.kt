@@ -178,11 +178,12 @@ internal object VodSizes {
     fun searchTopH(): Float = SEARCH_KIND_H + SEARCH_KIND_GAP + SEARCH_BAR_H
     fun searchListTop(): Float = VIEWPORT_TOP + searchTopH() + SEARCH_GAP
 
-    // The live picture (automatic picture-in-picture, DECISIONS.md of 2026-11-19). On Home it is Recent channels' box
-    // ([WINDOW_W] x [HEADER_H] at [windowX]), the picture fitted and centred in it (a 16:9 channel leaves a band above
-    // and below it, where the strip fits). On Search it's a size smaller: about a quarter of the screen wide, 16:9, in
-    // the top right corner beside the page's name, ending above the history and results ([searchListTop]); the bar and
-    // the history are shortened to clear it ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name).
+    // The live picture (automatic picture-in-picture, DECISIONS.md of 2026-11-19). On Home it takes Recent channels'
+    // place in a window of its own shape ([PIP_WINDOW_W] x [HEADER_H] at [windowX] (pip), the user's request of
+    // 2026-11-20), so a 16:9 channel fills it with no bars; the banner narrows to keep the gap before it. On Search
+    // it's a size smaller: about a quarter of the screen wide, 16:9, in the top right corner beside the page's name,
+    // ending above the history and results ([searchListTop]); the bar and the history are shortened to clear it
+    // ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name).
     const val SEARCH_PIP_W = 240f
     const val SEARCH_PIP_H = SEARCH_PIP_W * 9f / 16f
     const val SEARCH_PIP_TOP = NAME_TOP
@@ -191,8 +192,9 @@ internal object VodSizes {
     fun searchPipX(): Float = SCREEN_W - RAIL - RIGHT_MARGIN - SEARCH_PIP_W
     /**
      * The slim strip, shown only while the picture has focus: a pill this tall, inset this much from the box's sides
-     * and bottom (on Home it sits in a 16:9 picture's lower band), the channel and programme ([PIP_WORDS]) and three
-     * round buttons ([PIP_BUTTON], icons [PIP_ICON]). It eases in and out ([PIP_STRIP_MS]) rising [PIP_STRIP_RISE].
+     * and bottom, over the picture's bottom edge (glass in the glass look, solid in Classic), the channel and programme
+     * ([PIP_WORDS]) and three round buttons ([PIP_BUTTON], icons [PIP_ICON]). It eases in and out ([PIP_STRIP_MS])
+     * rising [PIP_STRIP_RISE].
      */
     const val PIP_STRIP_H = 28f
     const val PIP_STRIP_INSET = 4f
@@ -206,6 +208,16 @@ internal object VodSizes {
     const val PIP_STRIP_RISE = 6f
     /** Between the channel's name and the programme on the strip. */
     const val PIP_SEPARATOR = " \u00B7 "
+
+    /**
+     * Home's live picture's window: 16:9 at the banner's height ([HEADER_H]) is 405.3 dp, kept to whole dp so its edges
+     * fall on whole pixels; a 16:9 channel fills it (the 0.3 dp is within [app.fireplayer.live.ui.LivePicture.FILL_WITHIN]).
+     * It ends where Recent channels ends, 24 dp from the screen's edge, and the banner narrows to end [WINDOW_GAP]
+     * before it ([homeHeaderW] (pip)).
+     */
+    const val PIP_WINDOW_W = 405f
+    /** Recent channels' contents fade in once its window is its own width again (after the picture's Close). */
+    const val RECENT_FADE_IN_MS = 160L
 
     // Live TV search's results, under the bar: a row of channel tiles (the guide's logo plate, the name beneath), then
     // a list of programme rows (logo, title, "channel · start-end", a LIVE mark while on now).
@@ -737,10 +749,31 @@ internal object VodSizes {
     }
 
     /** Home's header card: from [HOME_HEADER_X] to the window. */
-    fun homeHeaderW(): Float = SCREEN_W - HOME_HEADER_SCREEN_X - RIGHT_MARGIN - WINDOW_GAP - WINDOW_W
+    fun homeHeaderW(): Float = homeHeaderW(pip = false)
     /** Movies' and TV Shows' header card: the content's width. */
     fun tabHeaderW(): Float = SCREEN_W - CONTENT_SCREEN_X - RIGHT_MARGIN
-    fun windowX(): Float = HOME_HEADER_X + homeHeaderW() + WINDOW_GAP
+    fun windowX(): Float = windowX(pip = false)
+
+    /** Home's top-right window: Recent channels ([WINDOW_W]), or the live picture's 16:9 one ([PIP_WINDOW_W]). */
+    fun windowW(pip: Boolean): Float = if (pip) PIP_WINDOW_W else WINDOW_W
+    /** Home's banner beside Recent channels (560 dp) or beside the live picture's window (445). */
+    fun homeHeaderW(pip: Boolean): Float = SCREEN_W - HOME_HEADER_SCREEN_X - RIGHT_MARGIN - WINDOW_GAP - windowW(pip)
+    /** The window's left edge (page-local): [WINDOW_GAP] past the banner. Its right edge is the same either way. */
+    fun windowX(pip: Boolean): Float = HOME_HEADER_X + homeHeaderW(pip) + WINDOW_GAP
+
+    /**
+     * Home's top right [p] of the way from Recent channels' layout (0) to the live picture's (1), as the two change
+     * places in one motion: the banner's right edge (page-local) and the window's left edge, which keep the
+     * [WINDOW_GAP] between them all the way; the banner's left edge and the window's right edge never move.
+     */
+    fun homeHeaderRight(p: Float): Float = HOME_HEADER_X + mix(homeHeaderW(pip = false), homeHeaderW(pip = true), p)
+    fun homeWindowLeft(p: Float): Float = homeHeaderRight(p) + WINDOW_GAP
+
+    /** [a] moved [f] of the way to [b]. */
+    fun mix(a: Float, b: Float, f: Float): Float = a + (b - a) * f
+
+    /** Home's banner beside the live picture: narrower than any other page's banner. */
+    fun beside(cardW: Float): Boolean = cardW < homeHeaderW()
 
     /** The first row's top in the page's column (the header above it). */
     fun firstRowTop(): Float = HEADER_H + HEADER_GAP
@@ -765,11 +798,24 @@ internal object VodSizes {
     fun storyW(cardW: Float): Float {
         val clear = pictureClearX(cardW)
         val w = min(cardW - HEADER_INSET - HEADER_CLEAR, HEADER_STORY_MAX)
+        // Beside the live picture the dark side is too narrow to hold them (40 dp): the words lie over the picture's
+        // eased edge, on the shade, and end as far from the card's right edge as on every banner (249 dp).
+        if (beside(cardW)) return w
         return if (clear > 0f) min(w, clear - HEADER_INSET) else w
     }
 
-    /** The room a banner's logo has across (its box is [HEADER_TITLE_H] tall). */
-    fun headerLogoW(cardW: Float): Float = min(storyW(cardW) * HEADER_LOGO_SHARE, HEADER_LOGO_MAX)
+    /**
+     * The room a banner's logo has across (its box is [HEADER_TITLE_H] tall). Beside the live picture it's Home's own
+     * (205 dp, inside the 249 dp words): the logo isn't decoded again as the picture comes and goes.
+     */
+    fun headerLogoW(cardW: Float): Float =
+        if (beside(cardW)) headerLogoW(homeHeaderW()) else min(storyW(cardW) * HEADER_LOGO_SHARE, HEADER_LOGO_MAX)
+
+    /**
+     * The rotation's dots' box, its left edge in a banner [cardW] wide (the dots are centred in it): centred in the
+     * card, or beside the live picture, at its bottom right under the clear picture, clear of the buttons.
+     */
+    fun headerDotsX(cardW: Float): Float = if (beside(cardW)) cardW - HEADER_INSET - DOTS_W else (cardW - DOTS_W) / 2f
 
     /** The story's box: its lines with their gaps (Figtree's line is 1.2 x its size). */
     fun headerStoryH(): Float = HEADER_STORY_LINES * (STORY.lineSp + STORY.lineGap)

@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
 import android.text.format.DateFormat
@@ -21,6 +22,7 @@ import app.fireplayer.live.Programme
 import app.fireplayer.live.ui.LogoCache
 import app.fireplayer.live.ui.LogoView
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.DrawnSpan
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
 import java.util.Date
@@ -35,6 +37,10 @@ import java.util.concurrent.Executors
  *
  * Focus comes in from the banner's Details ([takeFocus]); Up and Down move through the channels, Left goes back
  * ([onLeft]), Down past the last one leaves ([onDown]) and OK picks the channel ([onPick]).
+ *
+ * The live picture's wider window becomes it again when the picture closes: its surface is drawn reaching left of
+ * where it's laid out, back to its own width in one motion ([drawFrom]), its contents hidden meanwhile and fading in
+ * once it's there ([showContents]).
  */
 @SuppressLint("ViewConstructor")
 class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(context) {
@@ -61,6 +67,14 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
     private val rowH = t.dp(VodSizes.RECENT_ROW_H)
     private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bar = RectF()
+
+    /** Its surface (glass or classic), drawn here so it can reach past its left edge ([drawFrom]). */
+    private var surface: Drawable? = null
+    /** Where its surface's left edge is drawn, px from its own: 0 at rest, less while the picture's window narrows. */
+    private var drawnLeft = 0f
+    /** How much of its contents (the heading, the channels, the scrollbar) shows: they wait for its own width. */
+    private var contents = 1f
+    private var contentsFade: android.animation.ValueAnimator? = null
 
     /** One channel's row: draws its own focus shape and the fine line under it. */
     private inner class Line(context: Context) : LinearLayout(context) {
@@ -173,7 +187,47 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
     }
 
     fun applyLook() {
-        Glass.background(this, Glass.Kind.PANEL)
+        surface?.callback = null
+        surface = Glass.surface(context, Glass.Kind.PANEL).also { it.callback = this }
+        invalidate()
+    }
+
+    override fun draw(canvas: Canvas) {
+        surface?.let { d ->
+            val b = d.bounds
+            if (b.left != 0 || b.top != 0 || b.right != width || b.bottom != height) d.setBounds(0, 0, width, height)
+            DrawnSpan.draw(canvas, d, drawnLeft, width.toFloat())
+        }
+        super.draw(canvas)
+    }
+
+    override fun verifyDrawable(who: Drawable): Boolean = who === surface || super.verifyDrawable(who)
+
+    /** Its surface drawn from [leftPx] (px from its own left edge; 0 at rest): drawing only, nothing laid out. */
+    fun drawFrom(leftPx: Float) {
+        if (drawnLeft == leftPx) return
+        drawnLeft = leftPx
+        invalidate()
+    }
+
+    /** Its contents hidden at once ([on] false), or shown: fading in with [animate] (its window has its width now). */
+    fun showContents(on: Boolean, animate: Boolean) {
+        contentsFade?.cancel()
+        contentsFade = null
+        val to = if (on) 1f else 0f
+        if (!animate || contents == to) return setContents(to)
+        contentsFade = android.animation.ValueAnimator.ofFloat(contents, to).apply {
+            duration = VodSizes.RECENT_FADE_IN_MS
+            addUpdateListener { setContents(it.animatedValue as Float) }
+            start()
+        }
+    }
+
+    private fun setContents(a: Float) {
+        contents = a
+        for (i in 0 until childCount) getChildAt(i).alpha = a
+        // The scrollbar is drawn here.
+        invalidate()
     }
 
     /** Focus to the channel chosen last (the first, at first); false with none to take it. */
@@ -252,13 +306,14 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         super.dispatchDraw(canvas)
         val n = shown.size
         val showing = VodSizes.RECENT_ROWS_SHOWN
-        if (n <= showing) return
+        if (n <= showing || contents <= 0f) return
         val w = t.dpf(VodSizes.RECENT_BAR_W)
         val right = width - t.dpf(VodSizes.RECENT_BAR_RIGHT)
         val top = body.top.toFloat()
         val h = body.height.toFloat()
         bar.set(right - w, top, right, top + h)
         barPaint.color = GlassStyle.ROW_FILL
+        barPaint.alpha = (barPaint.alpha * contents).toInt()
         canvas.drawRoundRect(bar, w / 2f, w / 2f, barPaint)
         val thumbH = h * showing / n
         val most = ((n - showing) * rowH).toFloat()
@@ -266,6 +321,7 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
         val y = top + (h - thumbH) * at
         bar.set(right - w, y, right, y + thumbH)
         barPaint.color = GlassStyle.HIGHLIGHT
+        barPaint.alpha = (barPaint.alpha * contents).toInt()
         canvas.drawRoundRect(bar, w / 2f, w / 2f, barPaint)
     }
 

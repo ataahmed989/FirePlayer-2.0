@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,6 +22,7 @@ import app.fireplayer.R
 import app.fireplayer.data.Prefs
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
+import app.fireplayer.ui.DrawnSpan
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ImageLoader
@@ -35,6 +37,11 @@ import app.fireplayer.vod.Title
  * genres, rating, length) and two lines of story; at the bottom left the Watch now and Details buttons ([actions]);
  * and, centred near the bottom, dots for the rotation. A fine outline is drawn over the picture ([Glass.edge]).
  *
+ * Home's banner has two widths: beside Recent channels, and narrower beside the live picture's 16:9 window
+ * ([VodSizes.homeHeaderW]). It changes from one to the other in one motion with nothing laid out on the way
+ * ([drawAt]: its surface is drawn to a moving right edge, its picture's box and dots move with it, its words fade out),
+ * and is laid out once for the new width at the end ([setNarrow]), its words fading back in ([veilWords]).
+ *
  * While idle it goes through the page's feed (Top 10, or Popular's first 10) every few seconds ([HeaderRotation];
  * Settings › Home Header › Time on each title, 8 s by default), the words and the logo fading out and in together
  * and the picture crossfading; while focus is in the page's Continue row it shows the chosen card's title instead (only there: [HeaderFollow]; the page decides): the words at once, the
@@ -47,11 +54,17 @@ import app.fireplayer.vod.Title
 class VodHeader(
     context: Context,
     private val t: Tokens,
-    private val cardW: Float,
+    /** Its width, dp (Home's: beside Recent channels). */
+    private val wideW: Float,
     private val heightDp: Float = VodSizes.HEADER_H,
     /** Whether it has the Watch now and Details buttons (My List's follows the chosen poster and has none). */
     private val actions: Boolean = true,
+    /** Home's: its width beside the live picture ([setNarrow], [drawAt]); every other banner's never changes. */
+    private val narrowW: Float = wideW,
 ) : FrameLayout(context) {
+
+    /** The width it's laid out at now, dp. */
+    private var cardW = wideW
 
     enum class Button { WATCH, DETAILS }
 
@@ -77,10 +90,23 @@ class VodHeader(
     /** Whether anything else (a window, the settings window) asks it to hold still; asked at each turn. */
     var blocked: () -> Boolean = { false }
 
-    /** The picture fills the card, or is a box at its right whose left edge is eased away (every page's card now). */
-    private val whole = VodSizes.backdropW(cardW) >= cardW
+    /**
+     * The picture fills the card, or is a box at its right whose left edge is eased away (every page's card now; at
+     * both of Home's widths the same box, so the picture isn't decoded again as it changes).
+     */
+    private val whole = VodSizes.backdropW(wideW) >= wideW
     private val art = HeaderArt(context, HeaderArt.ArtSpec.BANNER).apply { if (!whole) leftFade = VodSizes.BANNER_FADE_LEFT_TO }
-    private val shade = Shade(context, t, cardW)
+    private val shade = Shade(context, t, wideW)
+
+    /**
+     * The card's surface (glass or classic) and, over everything, its glass outline: drawn here rather than as the
+     * view's background and foreground, so they can be drawn to the moving right edge ([DrawnSpan], [drawAt]).
+     */
+    private var surface: Drawable? = null
+    private var outline: Drawable? = null
+    /** How much wider (px; narrower below 0) the card is drawn than it's laid out: 0 at rest. */
+    private var drawnShift = 0f
+    private val backingNow = RectF()
 
     /**
      * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade]):
@@ -96,9 +122,18 @@ class VodHeader(
         override fun hasOverlappingRendering() = false
     }.apply { orientation = LinearLayout.VERTICAL }
 
+    /**
+     * The words' own fade while the card changes width ([veilWords]), apart from the rotation's (on [words]), so
+     * neither undoes the other. The whole card, so the words move inside it as they always did ([setHiddenTop]).
+     */
+    private val veil = object : FrameLayout(context) {
+        override fun hasOverlappingRendering() = false
+    }
+
     /** The words' column: the title's box, the facts and the story are all this wide. */
-    private val textW = t.dp(VodSizes.storyW(cardW))
-    private val title = HeaderTitle(context, t, cardW)
+    private var textW = t.dp(VodSizes.storyW(cardW))
+    /** The logo's box is the same at both of Home's widths ([VodSizes.headerLogoW]): made once. */
+    private val title = HeaderTitle(context, t, wideW)
     private val facts = t.label(context, VodSizes.FACTS)
     /** A facts line's width as it's drawn: only whole facts are shown ([VodSizes.headerFacts]). */
     private val factsWidth: (String) -> Float = { facts.paint.measureText(it) }
@@ -124,6 +159,8 @@ class VodHeader(
     private val dots = Dots(context, t)
     /** What the words show now: the buttons act on it. */
     private var shown: Title? = null
+    /** The followed Continue card's line for its facts (its episode), with [shown]. */
+    private var shownCaption: String? = null
 
     init {
         clipChildren = true
@@ -138,11 +175,12 @@ class VodHeader(
         words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.HEADER_FACTS_GAP) })
         words.addView(story, LinearLayout.LayoutParams(textW, story.lineHeight * VodSizes.HEADER_STORY_LINES).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
         // The words at the card's top left, whatever its height; the buttons at its bottom left.
-        addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
+        veil.addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = t.dp(VodSizes.HEADER_INSET)
             topMargin = t.dp(VodSizes.HEADER_TOP)
         })
+        addView(veil, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         if (actions) {
             buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)))
             buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)).apply {
@@ -169,7 +207,8 @@ class VodHeader(
             }
         }
         addView(dots, LayoutParams(t.dp(VodSizes.DOTS_W), t.dp(VodSizes.DOTS_H)).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.BOTTOM or Gravity.START
+            leftMargin = t.dp(VodSizes.headerDotsX(cardW))
             bottomMargin = t.dp(VodSizes.DOTS_BOTTOM)
         })
         applyLook()
@@ -180,8 +219,17 @@ class VodHeader(
      * picture 1 dp inside its border. The picture and the shading follow the card's corners.
      */
     fun applyLook() {
-        Glass.background(this, Glass.Kind.PANEL)
-        Glass.edge(this, Glass.Kind.PANEL)
+        surface?.callback = null
+        outline?.callback = null
+        surface = Glass.surface(context, Glass.Kind.PANEL).also { it.callback = this }
+        outline = Glass.edge(context, Glass.Kind.PANEL)?.also { it.callback = this }
+        placeParts()
+        watch.applyLook()
+        details.applyLook()
+    }
+
+    /** The picture, the shading and the backing for the width it's laid out at ([cardW]). */
+    private fun placeParts() {
         val inset = if (Glass.on) 0 else t.dp(VodSizes.HEADER_ART_INSET)
         val r = Glass.cornerRadius(context, Glass.Kind.PANEL, t.dp(cardW), t.dp(heightDp)) - inset
         art.radius = r
@@ -194,13 +242,88 @@ class VodHeader(
         if (whole) backing.setEmpty()
         else backing.set(inset.toFloat(), inset.toFloat(), t.dp(cardW) - inset - artW + 2 * r, (inset + h).toFloat())
         invalidate()
-        watch.applyLook()
-        details.applyLook()
     }
+
+    override fun draw(canvas: Canvas) {
+        val right = width + drawnShift
+        surface?.let { drawSurface(canvas, it, right) }
+        super.draw(canvas)
+        outline?.let { drawSurface(canvas, it, right) }
+    }
+
+    private fun drawSurface(canvas: Canvas, d: Drawable, right: Float) {
+        val b = d.bounds
+        if (b.left != 0 || b.top != 0 || b.right != width || b.bottom != height) d.setBounds(0, 0, width, height)
+        DrawnSpan.draw(canvas, d, 0f, right)
+    }
+
+    override fun verifyDrawable(who: Drawable): Boolean = who === surface || who === outline || super.verifyDrawable(who)
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (!backing.isEmpty) canvas.drawRoundRect(backing, backingRadius, backingRadius, backingPaint)
+        if (backing.isEmpty) return
+        // It ends under the picture's box, so it moves with it.
+        backingNow.set(backing)
+        backingNow.right += drawnShift
+        if (backingNow.right > backingNow.left) canvas.drawRoundRect(backingNow, backingRadius, backingRadius, backingPaint)
+    }
+
+    // ---- Home's two widths ---------------------------------------------------------------------------------------
+
+    /**
+     * Drawn [p] of the way from its width beside Recent channels (0) to its width beside the live picture (1),
+     * whatever width it's laid out at: the surface's right edge, the picture's box and the backing that move with it,
+     * the shading (its oval round the words easing to the new width's) and the dots. Translations and drawing only.
+     */
+    fun drawAt(p: Float) {
+        val shift = VodSizes.mix(t.dp(wideW).toFloat(), t.dp(narrowW).toFloat(), p) - t.dp(cardW)
+        val dotsAt = VodSizes.mix(t.dp(VodSizes.headerDotsX(wideW)).toFloat(), t.dp(VodSizes.headerDotsX(narrowW)).toFloat(), p)
+        val shadeX = VodSizes.mix(VodSizes.headerShadeX(wideW), VodSizes.headerShadeX(narrowW), p)
+        dots.translationX = dotsAt - t.dp(VodSizes.headerDotsX(cardW))
+        art.translationX = shift
+        shade.drawAs(shift, shadeX / VodSizes.headerShadeX(cardW))
+        // Drawn wider than it's laid out, the shading reaches past its own bounds.
+        clipChildren = shift <= 0f
+        if (drawnShift != shift) {
+            drawnShift = shift
+            invalidate()
+        }
+    }
+
+    /** Laid out beside the live picture ([narrow]) or beside Recent channels: once, as a motion between them ends. */
+    fun setNarrow(narrow: Boolean) {
+        val w = if (narrow) narrowW else wideW
+        if (w == cardW) return
+        cardW = w
+        textW = t.dp(VodSizes.storyW(w))
+        for (v in listOf(words, title, facts, story)) {
+            val lp = v.layoutParams
+            lp.width = textW
+            v.layoutParams = lp
+        }
+        (dots.layoutParams as LayoutParams).let {
+            it.leftMargin = t.dp(VodSizes.headerDotsX(w))
+            dots.layoutParams = it
+        }
+        shade.cardW = w
+        layoutParams?.let {
+            it.width = t.dp(w)
+            layoutParams = it
+        }
+        placeParts()
+        // The facts line holds the facts that fit the new column.
+        facts.text = factsOf(shown, shownCaption)
+    }
+
+    /** The words fade out while the card changes width ([hidden]) and back in once it's laid out for the new one. */
+    fun veilWords(hidden: Boolean, animate: Boolean) {
+        val to = if (hidden) 0f else 1f
+        veil.animate().cancel()
+        if (!animate) {
+            veil.alpha = to
+            return
+        }
+        if (veil.alpha != to) veil.animate().alpha(to).setDuration(VodSizes.HEADER_TEXT_FADE_MS).start()
     }
 
     /** [v] at the card's right, [inset] inside its top and right edges; laid out again only when that changes. */
@@ -423,9 +546,10 @@ class VodHeader(
         words.animate().cancel()
         words.alpha = 1f
         shown = title
+        shownCaption = caption
         // Off screen (paused) the logo waits, as the picture does: [resume] shows it then.
         if (rotation.paused) this.title.release() else this.title.show(title)
-        facts.text = title?.let { VodSizes.headerFacts(RowRules.facts(it, caption), textW.toFloat(), factsWidth) }.orEmpty()
+        facts.text = factsOf(title, caption)
         story.text = title?.description.orEmpty()
         // No title, no buttons (and nothing for focus to land on); focus on one moves on before they hide (a hidden
         // view holding focus would hand it anywhere).
@@ -434,6 +558,9 @@ class VodHeader(
             buttons.visibility = if (title == null) INVISIBLE else VISIBLE
         }
     }
+
+    private fun factsOf(title: Title?, caption: String?): String =
+        title?.let { VodSizes.headerFacts(RowRules.facts(it, caption), textW.toFloat(), factsWidth) }.orEmpty()
 
     private fun now() = SystemClock.uptimeMillis()
 
@@ -449,7 +576,7 @@ class VodHeader(
      * [VodSizes.HEADER_SHADE_BOTTOM_ALPHAS]). Both ease out to nothing and are dithered, so neither ends in a line and
      * the rest of the picture is left clear. Its shaders are made once per size; it never moves.
      */
-    private class Shade(context: Context, private val t: Tokens, private val cardW: Float) : View(context) {
+    private class Shade(context: Context, private val t: Tokens, var cardW: Float) : View(context) {
         var radius = 0f
             set(v) {
                 if (field == v) return
@@ -459,13 +586,36 @@ class VodHeader(
         private val round = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
         private val below = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
         private val box = RectF()
+        /** The oval's own stretch, and that stretch widened [across] times while the card changes width ([drawAs]). */
+        private val oval = Matrix()
+        private val ovalNow = Matrix()
+        private var across = 1f
+        /** How much wider (px; narrower below 0) than its bounds it's drawn. */
+        private var shift = 0f
+
+        /**
+         * Drawn [shift] px wider than it's laid out (narrower below 0), with its oval round the words [across] times as
+         * wide (scaled from the card's left edge, where it's centred): what's drawn changes, nothing is made.
+         */
+        fun drawAs(shift: Float, across: Float) {
+            if (this.shift == shift && this.across == across) return
+            this.shift = shift
+            if (this.across != across) {
+                this.across = across
+                ovalNow.set(oval)
+                ovalNow.postScale(across, 1f)
+                round.shader?.setLocalMatrix(ovalNow)
+            }
+            box.right = width + shift
+            invalidate()
+        }
 
         init {
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         }
 
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-            box.set(0f, 0f, w.toFloat(), h.toFloat())
+            box.set(0f, 0f, w + shift, h.toFloat())
             val rgb = GlassStyle.WINDOW_SOLID and 0x00FFFFFF
             // The oval: a circle of shade about its centre, stretched down to its reach ([VodSizes.headerShadeAt]).
             val bx = t.dpf(VodSizes.headerShadeX(cardW))
@@ -474,10 +624,13 @@ class VodHeader(
             val cy = VodSizes.HEADER_SHADE_CY * by
             val rx = VodSizes.HEADER_SHADE_RX * bx
             val ry = VodSizes.HEADER_SHADE_RY * by
+            oval.setScale(1f, ry / rx, cx, cy)
+            ovalNow.set(oval)
+            ovalNow.postScale(across, 1f)
             round.shader = RadialGradient(
                 cx, cy, rx,
                 IntArray(VodSizes.HEADER_SHADE_ALPHAS.size) { (VodSizes.HEADER_SHADE_ALPHAS[it] shl 24) or rgb }, null, Shader.TileMode.CLAMP,
-            ).apply { setLocalMatrix(Matrix().apply { setScale(1f, ry / rx, cx, cy) }) }
+            ).apply { setLocalMatrix(ovalNow) }
             below.shader = LinearGradient(
                 0f, h * VodSizes.HEADER_SHADE_BOTTOM_FROM, 0f, h.toFloat(),
                 IntArray(VodSizes.HEADER_SHADE_BOTTOM_ALPHAS.size) { (VodSizes.HEADER_SHADE_BOTTOM_ALPHAS[it] shl 24) or rgb }, null, Shader.TileMode.CLAMP,

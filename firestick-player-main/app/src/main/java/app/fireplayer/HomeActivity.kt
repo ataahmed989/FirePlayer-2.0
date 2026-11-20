@@ -436,6 +436,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private var pipErrorSaid: String? = null
     /** Whether a SurfaceView follows its view's transforms here (Android 7 and later): else the picture waits at rest. */
     private val canFollow = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
+    /**
+     * Home's window for the picture is changing width ([VodPage.Host.pipResize]): the picture follows it frame by frame
+     * by its transforms, laid out where it was put last, until the window's [pipMoved] at the end.
+     */
+    private var pipSizing = false
+    /** Where the window is drawn this frame (at rest, without the page's shift), and the picture fitted in it. */
+    private val sizingSpot = RectF()
+    private val sizingPicture = app.fireplayer.live.ui.PictureMotion.Box()
 
     private fun pipPageOf(tab: NavRail.Tab): PipRules.Page = when (tab) {
         NavRail.Tab.SEARCH -> PipRules.Page.SEARCH
@@ -484,6 +492,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             motion.hole.set(motion.hole.left, motion.hole.top + pipShift, motion.hole.right, motion.hole.bottom + pipShift)
         }
         pipShift = 0f
+        pipSizing = false
         pipVeiled = false
         pipMuted = false
         player.setMuted(false)
@@ -517,6 +526,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     /** Puts the picture in the page's box (its place at rest, moved by the page's shift), or under the wallpaper. */
     override fun pipMoved() {
         if (!pipOn) return
+        // Laid out where its window is now: the frames that follow (if it's still changing) start from there.
+        pipSizing = false
         val page = vodPages.current
         val spot = page?.pipSpot()
         if (page == null || spot == null) {
@@ -538,9 +549,55 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         showPipShift()
     }
 
+    override fun pipResize() {
+        if (!pipOn) return
+        val page = vodPages.current ?: return
+        if (!page.pipSpotNow(sizingSpot)) return
+        val frame = pages.layoutParams as ViewGroup.MarginLayoutParams
+        sizingSpot.offset(frame.marginStart.toFloat(), frame.topMargin.toFloat())
+        pipShift = page.pipShift()
+        pipSizing = true
+        showPipSizing()
+    }
+
+    /**
+     * One frame of Home's window changing width: the picture fitted in it where it's drawn now, shown there by the
+     * surface's scale and translation from where it's laid out (never resized frame by frame), the wallpaper's hole
+     * the window's bounds, both moved by the page's shift. Kept as where the picture is ([motion]), so a move that
+     * starts now (full screen) sets off from here. Where a surface can't follow transforms, it waits unseen.
+     */
+    private fun showPipSizing() {
+        if (videoFull || mover != null) return
+        val laid = laidAt ?: return
+        val s = sizingSpot
+        if (!canFollow || !PipRules.pictureShows(pipVeiled, pipShift, canFollow)) {
+            wallpaper.setHole(null, 0f)
+            busy.away()
+            return
+        }
+        val size = lastSize
+        val aspect = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 0f
+        app.fireplayer.live.ui.LivePicture.fit(s.left, s.top, s.width(), s.height(), aspect, sizingPicture)
+        motion.picture.set(sizingPicture)
+        motion.hole.set(s.left, s.top, s.right, s.bottom)
+        endHole.set(s.left, s.top, s.right, s.bottom)
+        app.fireplayer.live.ui.PictureMotion.transform(laid, sizingPicture, transformNow)
+        surface.pivotX = 0f
+        surface.pivotY = 0f
+        surface.scaleX = transformNow[0]
+        surface.scaleY = transformNow[1]
+        surface.translationX = transformNow[2]
+        surface.translationY = transformNow[3] + pipShift
+        holeNow.set(s.left, s.top + pipShift, s.right, s.bottom + pipShift)
+        wallpaper.setHole(holeNow, videoRadius, full = false)
+        busy.place(holeNow.centerX(), holeNow.centerY(), 0f)
+    }
+
     /** The picture where the page has moved its box to, by translation only (or unseen; see [PipRules.pictureShows]). */
     private fun showPipShift() {
         if (!pipOn || videoFull || mover != null || laidAt == null) return
+        // Its window changing width too: the frame's transforms carry the shift.
+        if (pipSizing) return showPipSizing()
         if (canFollow && surface.translationY != pipShift) surface.translationY = pipShift
         if (!PipRules.pictureShows(pipVeiled, pipShift, canFollow) || endHole.width <= 0f) {
             wallpaper.setHole(null, 0f)
@@ -984,7 +1041,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val size = player.status().videoSize
         val aspect = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 0f
         val mode = if (videoFull) videoPrefs.displayMode else PictureFit.NORMAL
-        val at = LivePicture.place(target.left, target.top, target.width(), target.height(), aspect, videoFull, mode)
+        // The live picture on Home and Search fills its 16:9 window when the channel is 16:9 (no hairline of bars).
+        val at = LivePicture.place(target.left, target.top, target.width(), target.height(), aspect, videoFull, mode, fill = pipOn && !videoFull)
         val radius = if (videoFull) 0f else videoRadius
         endHole.set(target.left, target.top, target.right, target.bottom)
         val running = mover
