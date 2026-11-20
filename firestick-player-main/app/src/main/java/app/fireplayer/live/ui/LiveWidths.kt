@@ -88,6 +88,115 @@ internal object LiveWidths {
     const val MV_ADD_GAP = 10
     /** The pictures moving to a new layout (translation and scale only), and the channel picker's dark backdrop. */
     const val MV_MOVE_MS = 260L
-    const val MV_PICKER_SCRIM = 0xEB06080B.toInt()
+    /**
+     * The search page over Multiview and its ready picture: see-through, so the pictures show under it (the user's
+     * TiviMate photo 3). Classic: as dark as before.
+     */
+    const val MV_PICKER_SCRIM = 0xB806080B.toInt()
+    const val MV_PICKER_SCRIM_CLASSIC = 0xEB06080B.toInt()
     const val MV_PICKER_TITLE_SP = 18f
+    /** Every Multiview picture's corners (and its ring's inside edge): the miniature's. */
+    const val MV_RADIUS = 12f
+
+    // ---- The miniature, and Multiview's ready picture -----------------------------------------------------------------
+
+    /** The miniature's height (368 x 207 dp, the TV's shape) and its corners. */
+    const val MINI_H = 207
+    const val MINI_RADIUS = 12f
+
+    // ---- The channel list over full screen and Multiview ([LiveOverlay]) ---------------------------------------------
+
+    /**
+     * Its columns, left to right: the playing playlist's groups (as wide as the guide's groups column), the channels
+     * (number, logo, name over the programme on now, its progress line), the focused channel's programmes. Beside the
+     * groups, the channels column ends at 524 dp: clear of Multiview's ready picture at the top right (580 dp on).
+     */
+    const val OV_GROUPS_W = COLUMN
+    const val OV_CHANNELS_W = 300
+    const val OV_PROGRAMMES_W = 250
+    /** A column's header line (the playlist, its group, or the focused channel) and the room above it. */
+    const val OV_TOP = 10
+    const val OV_HEAD_H = 40
+    /** The channel header over the programmes: the channel's logo beside its number and name over its playlist. */
+    const val OV_CHANNEL_HEAD_H = 52
+    /** Channel rows: this many fill the column under its header (TiviMate shows eight or nine). */
+    const val OV_CHANNEL_ROWS = 9
+    /** A group's row (the guide's groups column's) and a programme's. */
+    const val OV_GROUP_ROW = 39
+    const val OV_PROGRAMME_ROW = 36
+    /** Inside a column: its sides, and a row's content inside the white pill. */
+    const val OV_PAD_X = 10
+    const val OV_ROW_PAD_X = 10
+    /** A channel row: its number (right-aligned in this width), the logo (the guide's), the gaps. */
+    const val OV_NUMBER_W = 30
+    const val OV_LOGO_W = 50
+    const val OV_LOGO_H = 28
+    const val OV_GAP = 9
+    /** Its progress line under the name and programme, and the gap above it. */
+    const val OV_PROGRESS_H = 2.5f
+    const val OV_PROGRESS_GAP = 5
+    /** The header over the programmes: the channel's logo on its plate. */
+    const val OV_HEAD_LOGO_W = 64
+    const val OV_HEAD_LOGO_H = 34
+    /** The programme column: the start time's width before the title. */
+    const val OV_TIME_W = 74
+    /** Text: names and groups as the guide's, the programme lines a little smaller. */
+    const val OV_NAME_SP = 15.5f
+    const val OV_SUB_SP = 14f
+    const val OV_GROUP_SP = 16f
+    const val OV_HEAD_SP = 15f
+    const val OV_PROGRAMME_SP = 15f
+    /** The white pill's corners (the groups column's). */
+    const val OV_PILL_RADIUS = 11f
+    /**
+     * The see-through glass over the picture, darkest at the screen's edge (groups) and lightest beside the picture
+     * (programmes); Classic: solid dark.
+     */
+    const val OV_TINT_GROUPS = 0xE60C0E12.toInt()
+    const val OV_TINT_CHANNELS = 0xCC0C0E12.toInt()
+    const val OV_TINT_PROGRAMMES = 0x990C0E12.toInt()
+    const val OV_CLASSIC_GROUPS = 0xFF0F1216.toInt()
+    const val OV_CLASSIC_CHANNELS = 0xFF161A1F.toInt()
+    const val OV_CLASSIC_PROGRAMMES = 0xFF1B2026.toInt()
+    /** The focused programme's details at the top right, in their own glass card. */
+    const val OV_DETAILS_GAP = 12
+    const val OV_DETAILS_PAD = 14
+    const val OV_DETAILS_TITLE_SP = 19f
+    const val OV_DETAILS_SP = 14.5f
+    const val OV_DETAILS_LINES = 4
+    /** Its time line: the times, the progress line, the minutes left. */
+    const val OV_DETAILS_TIME_W = 140
+    const val OV_DETAILS_BAR_W = 80
+    const val OV_DETAILS_BAR_H = 10
+    const val OV_DETAILS_LINE_GAP = 6
+    const val OV_DETAILS_RADIUS = 15f
+    const val OV_DETAILS_TINT = 0xB30C0E12.toInt()
+    const val OV_DETAILS_CLASSIC = 0xFF161A1F.toInt()
+    /** The columns sliding and fading as Left and Right step between them (translation and alpha only). */
+    const val OV_SLIDE_MS = 180L
+    /** Opening and closing: the list fades and slides in from this far to the left. */
+    const val OV_ENTER_DX = 24
+    /** Up and Down: the rows scroll and the white pill glides as the guide's do (a held key's moves are quicker). */
+    const val OV_MOVE_MS = 150L
+    const val OV_REPEAT_MS = 80L
+    /** A move further than a screen glides only this many rows (the rest is a jump), as the guide's. */
+    const val OV_LONG_GLIDE_ROWS = 3
+    /** The programme on now is read for the rows on screen and this many before and after them. */
+    const val OV_NOW_AROUND = 12
+    /** The rows' programmes and progress lines are looked at again this often while the list shows. */
+    const val OV_TICK_MS = 30_000L
+    /** Programme lists kept for channels focused lately (moving back and forth shows them at once). */
+    const val OV_KEPT_LISTS = 24
+    /** Track under a row's progress line, on the glass and on the white pill. */
+    const val OV_TRACK = 0x40FFFFFF
+    const val OV_TRACK_ON_PILL = 0x26000000
+    /** Past programmes and "No information". */
+    const val OV_TEXT_DIM = 0x99F4F2EE.toInt()
+    /** A group's channels show this long after the selection rests on it (the guide's groups column's pause). */
+    const val OV_PREVIEW_MS = 350L
+    /** The focused channel's programmes are read once the selection has rested on it this long. */
+    const val OV_PROGRAMMES_AFTER_MS = 180L
+    /** The programme column reads from this long before now to this long after. */
+    const val OV_PROGRAMMES_BEFORE_MS = 3 * 60 * 60_000L
+    const val OV_PROGRAMMES_AHEAD_MS = 12 * 60 * 60_000L
 }
