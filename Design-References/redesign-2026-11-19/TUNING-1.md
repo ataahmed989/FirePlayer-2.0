@@ -94,7 +94,8 @@ They move **within the playing channel's group** (the group it was started from)
 ### 5. Search glass (`vod/ui/SearchBar.kt`, `SearchHistoryList.kt`, the glass kinds)
 
 The search bar and the history pods use the **same glass material as the guide's programme cells** (one shared kind,
-not copied values), with the focused state the app uses elsewhere.
+not copied values), with the focused state the app uses elsewhere. Corners (the user, after the mock-ups): the search
+bar takes the programme cells' softer corners; the history pods keep fully rounded ends (pills).
 
 ### 6. Designs to agree before building (mock-ups, not code)
 
