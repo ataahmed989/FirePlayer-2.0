@@ -56,7 +56,7 @@ and continue from the first unfinished step. Update the status lines here as ste
    idle (never while `PlayerActivity` or a channel is in front: at 03:00 a film was playing and blind key presses
    interrupted it for a few seconds and rewound it - ALWAYS read `dumpsys window | grep mCurrentFocus` and take a
    screenshot before sending any key): for each add-on that has a link set, open a film not in Continue Watching,
-   see its sources listed under that add-on's name (the user: use The Odyssey (2026) for this check; it is in Continue Watching, so open its title page, never Watch now, and do not move its resume point: play from Sources for under 30 s only if that leaves the resume point as it was, else just confirm the sources list and the log), play one for under 30 s (no resume point is left), read the log
+   see its sources listed under that add-on's name (the user: use The Odyssey (2026); its resume point does not matter. Play one add-on's source, then switch to the other add-on's source from the player's Sources, and so on for each add-on set; the user offered to switch for us if needed), play one for under 30 s (no resume point is left), read the log
    (first frame, the host line from 1c, no error), Back. Never capture the Add-ons settings window. Report per add-on.
    Status: not started.
 2. **Movies & TV Shows search:** the row holding the best match comes first (a show: TV Shows first; a film: Movies).
