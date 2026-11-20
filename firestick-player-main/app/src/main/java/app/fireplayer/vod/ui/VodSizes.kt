@@ -531,6 +531,15 @@ internal object VodSizes {
     const val TITLE_HEADER_H = 216f
     const val TITLE_HEADER_GAP = 0f
 
+    // Sources: the panel opened from the title page's Sources pill and the player, in the wide settings window (0.44 of
+    // the screen, about 360 dp of row inside its padding) with the app's two-line rows.
+    /**
+     * What a Sources row's two lines have room for, in characters, so neither is ever cut inside a word: the main line
+     * (13 sp, beside the marks on the right) and the quieter second line (10.5 sp, over its two lines).
+     */
+    const val SOURCES_LINE_CHARS = 40
+    const val SOURCES_NOTE_CHARS = 80
+
     // The stage under the text block: the action column on the left; right of it a show's season dropdown, the
     // "Episodes" heading and the episode pods, or a film's More Like This.
     /**
