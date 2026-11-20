@@ -116,12 +116,6 @@ internal object VodSizes {
     /** Where the rail's floating window ends on the screen (every tab but Live TV, whose strip is attached). */
     const val RAIL_WINDOW_END = RAIL - RailShape.FLOAT_SIDE_DP
     /**
-     * Home's banner reaches out towards the rail's window, its words (at [HEADER_INSET] inside it) in line with the
-     * rows' titles under it: page-local x, and its distance from the rail's window (19 dp).
-     */
-    const val HOME_HEADER_X = PAGE_X - HEADER_INSET
-    const val HOME_HEADER_SCREEN_X = RAIL + HOME_HEADER_X
-    /**
      * The backdrop box: at most this many header heights wide, right-aligned in the card. In the classic look it sits
      * this far inside the card's edge (its border shows round it); in the glass look it fills the card and the outline
      * is drawn over it.
@@ -215,6 +209,12 @@ internal object VodSizes {
     // the facts line and two lines of story, in one column ([storyW]); at the bottom left the Watch now and Details
     // buttons; the dots centred near the bottom. One margin on the left, the top and under the buttons.
     const val HEADER_INSET = 24f
+    /**
+     * Home's banner reaches out towards the rail's window, its words (at [HEADER_INSET] inside it) in line with the
+     * rows' titles under it: page-local x, and on the screen (19 dp from the rail's window, [RAIL_WINDOW_END]).
+     */
+    const val HOME_HEADER_X = PAGE_X - HEADER_INSET
+    const val HOME_HEADER_SCREEN_X = RAIL + HOME_HEADER_X
     const val HEADER_TOP = 24f
     /** The title's box: the logo stands in it at the left and bottom (its visible part), or the name does. */
     const val HEADER_TITLE_H = 52f
