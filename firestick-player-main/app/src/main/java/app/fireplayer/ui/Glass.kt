@@ -65,6 +65,13 @@ object Glass {
     }
 
     /**
+     * The surface [background] would give, for a view that draws it itself ([DrawnSpan]: a window that changes width
+     * in one motion): glass when the look is on, otherwise the classic one ([classic]).
+     */
+    fun surface(context: Context, kind: Kind, classic: Int = classicRes(kind)): Drawable =
+        if (on) drawable(context, kind) else requireNotNull(context.getDrawable(classic))
+
+    /**
      * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on: the glass shape's own
      * ([GlassBakes.radius]) or the classic drawable's (res/drawable/bg_*.xml, whose corners are the radius_* dimens read
      * here: panels and popups 15 dp, pills 20 dp, chips 5 dp, rows 9 dp; circles round; never more than half the

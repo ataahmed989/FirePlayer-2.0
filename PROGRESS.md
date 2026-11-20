@@ -255,6 +255,19 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       TV playing on Home and Search" (On) and "Start with sound" (On). Leaving Live TV from full screen now returns
       to its guide next time (it came back to an empty full screen). A channel paused on Live TV doesn't follow (it
       would sit still in the corner with nothing there to start it): it stops, remembered, as before (review, 2026-11-20).
+- [~] **Home's live picture in a 16:9 window** (user, 2026-11-20; built on `feat/pip-16x9`, unit-tested, not yet on
+      the Stick): while it plays on Home its window is the picture's own shape, 405 x 228 dp (as tall as the banner,
+      ending where Recent channels ends, 24 dp from the edge), and a 16:9 channel fills it with no bars (a shape within
+      2% fills exactly; others are fitted inside it). The banner narrows to 445 dp (70..515), keeping the 16 dp gap: the
+      same picture box at its right (not decoded again), its words 249 dp (ending 172 dp from its right edge, as on
+      every banner) over the picture's eased edge and the shade, the same 205 dp logo, the buttons where they were, the
+      dots at its bottom right. The strip now lies over the picture's bottom edge (glass in Glass, solid in Classic).
+      As the picture comes (leaving Live TV with a channel playing) the banner narrows and the window widens together;
+      as it closes (Close, or a page that stops it) the window becomes Recent channels and both go back, its channels
+      fading in once it has its width. One motion, the rail's time and curve (280 ms), turning back from where it is if
+      interrupted; nothing laid out on the way (surfaces drawn to the moving edges, the picture moved by transforms and
+      its hole with it), laid out once at the end; the banner's words fade out and back for their new width. Search's
+      picture is unchanged. To check on the Stick: the motion's smoothness, the picture and hole lined up throughout.
 - [x] Glass Home integration (2026-11-19): FirePlayer 2.0 serves its Films & Shows Continue Watching to Glass Home and
       resumes straight from it (verified on the Max: cold start to first frame in ~5 s, resumed at the saved point,
       Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when

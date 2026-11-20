@@ -28,11 +28,14 @@ class VodSizesPipTest {
         assertTrue(VodSizes.searchBarW(pip = true) in 400f..VodSizes.searchBarW())
     }
 
-    @Test fun onHomeAWidePictureLeavesABandUnderItWhereTheStripFits() {
-        // Recent channels' box: 16:9 across its width, centred in its height.
-        val pictureH = VodSizes.WINDOW_W * 9f / 16f
-        val band = (VodSizes.HEADER_H - pictureH) / 2f
-        assertTrue(VodSizes.PIP_STRIP_H + VodSizes.PIP_STRIP_INSET <= band)
+    @Test fun onHomeTheStripSitsOverThePicturesBottomEdge() {
+        // The window is the picture's shape, so there's no band: the strip lies over the picture, inside the window.
+        val stripTop = VodSizes.HEADER_H - VodSizes.PIP_STRIP_INSET - VodSizes.PIP_STRIP_H
+        assertTrue(stripTop > VodSizes.HEADER_H * 3f / 4f)
+        val buttons = 3 * VodSizes.PIP_BUTTON + 2 * VodSizes.PIP_BUTTON_GAP
+        val words = VodSizes.PIP_WINDOW_W - 2 * VodSizes.PIP_STRIP_INSET - VodSizes.PIP_STRIP_PAD_L - VodSizes.PIP_STRIP_PAD_R -
+            VodSizes.PIP_WORDS_GAP - buttons
+        assertTrue("room for the channel and programme on Home: $words dp", words >= 250f)
     }
 
     @Test fun theStripsButtonsFitItAndItsWordsHaveRoom() {

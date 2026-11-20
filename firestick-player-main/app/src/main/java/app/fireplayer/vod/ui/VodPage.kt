@@ -8,6 +8,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.Gravity
+import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -24,6 +25,7 @@ import app.fireplayer.live.ui.LiveSearchView
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.PressHold
+import app.fireplayer.shell.RailMotion
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.FireDialog
@@ -105,6 +107,11 @@ class VodPage(
         fun pipButton(button: PipRules.Button) {}
         /** The live picture's box was laid out, covered or uncovered: the picture is put there again ([pipSpot]). */
         fun pipMoved() {}
+        /**
+         * One frame of Home's live picture's window changing width ([pipSpotNow] has where it's drawn now): the picture
+         * follows it by transforms only; [pipMoved] puts it there for good at the end.
+         */
+        fun pipResize() {}
         /** The page glides: the live picture moves with its box by [dy] px (0 at rest, less while the rows are up). */
         fun pipFollow(dy: Float) {}
         /** The live picture's strip is showing (focus came to it): what's on is read again for it. */
@@ -131,7 +138,11 @@ class VodPage(
     private val headerW = if (page == Page.HOME) VodSizes.homeHeaderW() else VodSizes.tabHeaderW()
     /** My List's banner holds still above its rows: shorter, and without buttons ([VodSizes.MY_LIST_HEADER_H]). */
     private val headerH = if (myList) VodSizes.MY_LIST_HEADER_H else VodSizes.HEADER_H
-    private val header = VodHeader(ctx, t, headerW, headerH, actions = !myList)
+    /** Home's narrows beside the live picture's 16:9 window ([VodSizes.homeHeaderW] (pip), [topRight]). */
+    private val header = VodHeader(
+        ctx, t, headerW, headerH, actions = !myList,
+        narrowW = if (page == Page.HOME) VodSizes.homeHeaderW(pip = true) else headerW,
+    )
     /** OK on one of the banner's buttons: its release acts on the title that showed when it went down. */
     private val headerPress = HeaderPress<VodHeader.Button, Card>()
     private val window: RecentWindow? = if (page == Page.HOME) RecentWindow(ctx, t) else null
@@ -193,8 +204,9 @@ class VodPage(
     }
 
     /**
-     * The live picture's box ([PipRules]): on Home in Recent channels' place, on Search in the top right beside the
-     * page's name; shown while a channel plays on in it ([setPip]). The picture is the shell's (behind the window).
+     * The live picture's box ([PipRules]): on Home in Recent channels' place, 16:9 (wider than Recent channels: the
+     * banner narrows beside it, [topRight]), on Search in the top right beside the page's name; shown while a channel
+     * plays on in it ([setPip]). The picture is the shell's (behind the window).
      */
     private val pipBox: PipBox? = if (page == Page.HOME || search) PipBox(ctx, t) else null
     /** The live picture is on this page. */
@@ -202,6 +214,18 @@ class VodPage(
     /** Where focus was when it came to the picture's strip: Back (and Left from Volume) go back there. */
     private var pipFrom: View? = null
     private var pipBackDown = false
+
+    /**
+     * Home's top right: 0 the banner at its full width beside Recent channels, 1 the narrower banner beside the live
+     * picture's 16:9 window. Between the two while they change places in one motion ([RailMotion]: the rail's time and
+     * curve), drawn frame by frame with nothing laid out ([drawTopRight]) and laid out once at its end
+     * ([settleTopRight]); aimed the other way part-way, it turns back from where it is.
+     */
+    private val topRight = RailMotion(0f)
+    private var topRightTicking = false
+    private var topRightFirst = false
+    private var topRightLastNanos = 0L
+    private val topRightFrame = Choreographer.FrameCallback { onTopRightFrame(it) }
 
     /** Where the open title pages were opened from: focus goes back there when the last one closes. */
     private sealed class Origin {
@@ -307,10 +331,11 @@ class VodPage(
         // place is its margins ([pipSpot]).
         pipBox?.let { box ->
             box.visibility = View.INVISIBLE
-            val w = if (search) VodSizes.SEARCH_PIP_W else VodSizes.WINDOW_W
+            // Home's laid out where the picture stays (its 16:9 window); drawn narrower as it widens there.
+            val w = if (search) VodSizes.SEARCH_PIP_W else VodSizes.windowW(pip = true)
             val h = if (search) VodSizes.SEARCH_PIP_H else VodSizes.HEADER_H
             root.addView(box, FrameLayout.LayoutParams(t.dp(w), t.dp(h)).apply {
-                leftMargin = t.dp(if (search) VodSizes.searchPipX() else VodSizes.windowX())
+                leftMargin = t.dp(if (search) VodSizes.searchPipX() else VodSizes.windowX(pip = true))
                 topMargin = t.dp(if (search) VodSizes.SEARCH_PIP_TOP else VodSizes.VIEWPORT_TOP)
             })
             box.onButton = { host.pipButton(it) }
@@ -432,6 +457,7 @@ class VodPage(
 
     fun release() {
         pause()
+        stopTopRightFrames()
         released = true
         repo?.removeRowsListener(rowsListener)
         for (row in rows) row.cancel?.cancel()
@@ -467,6 +493,8 @@ class VodPage(
     }
 
     private fun pause() {
+        // Out of sight, Home's top right is where it was heading, at once.
+        finishTopRight()
         if (!resumed) return
         resumed = false
         repo?.removeLibraryListener(libraryListener)
@@ -763,8 +791,14 @@ class VodPage(
         val watch = button == VodHeader.Button.WATCH
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> if (watch) host.focusRail() else header.focusButton(VodHeader.Button.WATCH)
-            // Right from Details: the live picture when it plays here (its strip, on Volume), else Recent channels.
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) header.focusButton(VodHeader.Button.DETAILS) else if (!focusPip()) window?.takeFocus()
+            // Right from Details: the live picture when it plays here (its strip, on Volume), else Recent channels
+            // (where Home's top right was going, at once: focus lands on it as it will stay).
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) {
+                header.focusButton(VodHeader.Button.DETAILS)
+            } else {
+                finishTopRight()
+                if (!focusPip()) window?.takeFocus()
+            }
             KeyEvent.KEYCODE_DPAD_DOWN -> firstRowWithItems()?.focusChosen()
             // The banner moves on to its next title (a held Up: one per change, never mid-change).
             KeyEvent.KEYCODE_DPAD_UP -> header.stepUp(repeat = event.repeatCount > 0)
@@ -1733,6 +1767,9 @@ class VodPage(
         }
         narrowSearch(true)
         box.translationY = -pageSpring.value
+        // Home: the picture's window widens from Recent channels' as the banner narrows (drawn from there first, so
+        // the picture is put there below).
+        shapeTopRight(pip = true)
         syncPip()
     }
 
@@ -1761,6 +1798,8 @@ class VodPage(
         box.hideStrip()
         box.visibility = View.INVISIBLE
         box.translationY = 0f
+        // Home: Recent channels narrows back from the picture's window as the banner widens, then its channels show.
+        shapeTopRight(pip = false)
     }
 
     /** The strip's Volume shows the picture's sound off ([muted]) or on. */
@@ -1777,11 +1816,19 @@ class VodPage(
      * Where the live picture goes: its box with the page at rest (the shell moves it with the page itself, [pipShift]),
      * in this page's coordinates, from the box's own layout (known before any layout pass); null while it isn't here.
      */
-    fun pipSpot(): RectF? {
-        val box = pipBox ?: return null
-        if (!pipOn) return null
+    fun pipSpot(): RectF? = RectF().takeIf { pipSpotNow(it) }
+
+    /**
+     * [pipSpot] into [out] (nothing made: it's asked each frame while Home's window changes width, where it's drawn
+     * then); false while the picture isn't here.
+     */
+    fun pipSpotNow(out: RectF): Boolean {
+        val box = pipBox ?: return false
+        if (!pipOn) return false
         val lp = box.layoutParams as FrameLayout.LayoutParams
-        return RectF(lp.leftMargin.toFloat(), lp.topMargin.toFloat(), (lp.leftMargin + lp.width).toFloat(), (lp.topMargin + lp.height).toFloat())
+        val left = if (window != null) windowLeftPx(topRight.value) else lp.leftMargin.toFloat()
+        out.set(left, lp.topMargin.toFloat(), (lp.leftMargin + lp.width).toFloat(), (lp.topMargin + lp.height).toFloat())
+        return true
     }
 
     /** The picture's corners: the box's (Recent channels' window shape). */
@@ -1805,6 +1852,8 @@ class VodPage(
     /** Focus to the picture's strip, on Volume (Right from the banner's Details, or from Search's bin). */
     private fun focusPip(): Boolean {
         val box = pipBox ?: return false
+        // Its window at its full width first: the strip shows across it.
+        if (pipOn) finishTopRight()
         if (!pipOn || box.visibility != View.VISIBLE) return false
         val from = root.findFocus()
         if (!box.takeFocus()) return false
@@ -1841,6 +1890,110 @@ class VodPage(
         if (!show) box.hideStrip()
         box.visibility = if (show) View.VISIBLE else View.INVISIBLE
         host.pipMoved()
+    }
+
+    // ---- Home's top right: Recent channels, or the live picture's 16:9 window ([topRight]) ------------------------
+
+    /**
+     * Home's top right heads for the live picture's layout ([pip]) or Recent channels': in one motion while the page is
+     * on screen, otherwise there at once. The banner's words fade out meanwhile; Recent channels' contents wait for
+     * its own width.
+     */
+    private fun shapeTopRight(pip: Boolean) {
+        val w = window ?: return
+        val to = if (pip) 1f else 0f
+        if (!canMoveTopRight()) {
+            stopTopRightFrames()
+            topRight.snap(to)
+            settleTopRight(animate = false)
+            return
+        }
+        topRight.aim(to)
+        if (!topRight.running) {
+            // Already there (or never left).
+            stopTopRightFrames()
+            settleTopRight(animate = true)
+            return
+        }
+        header.veilWords(true, animate = true)
+        if (!pip) w.showContents(false, animate = false)
+        // Where everything stands now, this frame (the picture is put in its window by the caller).
+        drawTopRight(follow = false)
+        if (topRightTicking) return
+        topRightTicking = true
+        topRightFirst = true
+        Choreographer.getInstance().postFrameCallback(topRightFrame)
+    }
+
+    /** Whether Home's top right can move now: the page on screen and laid out, the TV's animations on. */
+    private fun canMoveTopRight(): Boolean =
+        shown && started && !released && root.isShown && root.isLaidOut && root.windowVisibility == View.VISIBLE &&
+            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O || android.animation.ValueAnimator.areAnimatorsEnabled())
+
+    private fun onTopRightFrame(nanos: Long) {
+        if (!topRightTicking) return
+        // A frame at a time, never more than two frames' worth at once (as the rail: after a slow frame it carries on).
+        val dt = if (topRightFirst) app.fireplayer.shell.RailShape.FRAME_MS
+        else app.fireplayer.shell.RailShape.stepMs((nanos - topRightLastNanos) / 1_000_000f)
+        topRightFirst = false
+        topRightLastNanos = nanos
+        if (!canMoveTopRight()) return finishTopRight()
+        topRight.step(dt)
+        if (topRight.running) {
+            drawTopRight(follow = true)
+            Choreographer.getInstance().postFrameCallback(topRightFrame)
+        } else {
+            topRightTicking = false
+            settleTopRight(animate = true)
+        }
+    }
+
+    private fun stopTopRightFrames() {
+        if (!topRightTicking) return
+        topRightTicking = false
+        Choreographer.getInstance().removeFrameCallback(topRightFrame)
+    }
+
+    /** A motion of Home's top right under way ends where it was heading, at once (focus is going there, or it's hidden). */
+    private fun finishTopRight() {
+        if (window == null || (!topRightTicking && !topRight.running)) return
+        stopTopRightFrames()
+        topRight.snap(topRight.target)
+        settleTopRight(animate = false)
+    }
+
+    /** The window's left edge [p] of the way from Recent channels' (0) to the picture's (1), px in the page. */
+    private fun windowLeftPx(p: Float): Float =
+        VodSizes.mix(t.dp(VodSizes.windowX(pip = false)).toFloat(), t.dp(VodSizes.windowX(pip = true)).toFloat(), p)
+
+    /**
+     * Home's top right drawn where the motion has it now: the banner's right edge, and the window's left edge drawn on
+     * Recent channels (reaching left of it) and on the picture's box (starting right of its left edge); with [follow],
+     * the picture told to follow ([Host.pipResize]). Drawing only.
+     */
+    private fun drawTopRight(follow: Boolean) {
+        val w = window ?: return
+        val p = topRight.value
+        header.drawAt(p)
+        val left = windowLeftPx(p)
+        w.drawFrom(left - t.dp(VodSizes.windowX(pip = false)))
+        pipBox?.drawFrom(left - t.dp(VodSizes.windowX(pip = true)))
+        if (follow && pipOn) host.pipResize()
+    }
+
+    /**
+     * The motion's end (or there at once): the banner laid out for its new width, everything drawn as laid out, the
+     * words back, Recent channels' contents in ([animate]: fading), and the picture put in its window for good.
+     */
+    private fun settleTopRight(animate: Boolean) {
+        val w = window ?: return
+        val pip = topRight.target == 1f
+        header.setNarrow(pip)
+        drawTopRight(follow = false)
+        header.veilWords(false, animate)
+        if (!pip) w.showContents(true, animate)
+        // Only this page's picture, while it's the one on screen.
+        if (pipOn && shown) host.pipMoved()
     }
 
     /** Search: the bar and the history shortened to clear the picture in the top right ([pip]), or full width again. */
