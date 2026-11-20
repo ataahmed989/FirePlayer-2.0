@@ -2,16 +2,23 @@ package app.fireplayer.vod.ui
 
 /**
  * When the page header moves on to its next title (pure, unit-tested; the clock is passed in). While idle it goes
- * through the page's feed (Top 10, or Popular's first 10) every [everyMs], round and round. It holds still while
- * paused (the page hidden, the header scrolled away, a window open) and while it follows the chosen title of the
+ * through the page's feed (Top 10, or Popular's first 10) every [everyMs], round and round. [everyMs] is asked at the
+ * start of each wait (Settings › Home Header › Time on each title, [HeaderIdle]): a new time applies from the next
+ * one. It holds still while paused (the page hidden, the header scrolled away, a window open) and while it follows the chosen title of the
  * page's Continue row; when either ends, the full wait starts again.
  *
  * With focus on one of the banner's buttons it doesn't stop (tuning round 1): once [everyMs] has passed with no key
  * pressed it moves on, and keeps going. Every key on the buttons starts the wait again ([key]), as do focus arriving
  * there and leaving ([focusButtons], [leaveButtons]). A Continue card's title it was following there is left the same
  * way: the feed goes on from where it was.
+ *
+ * D-pad Up on the buttons moves on at once ([step]), the same change as a turn of its own, the full wait starting
+ * again from it. A held Up moves one title per repeat, but no repeat while a change is under way ([changeMs]).
  */
-class HeaderRotation(private val everyMs: Long = EVERY_MS) {
+class HeaderRotation(
+    private val everyMs: () -> Long = { EVERY_MS },
+    private val changeMs: Long = VodSizes.HEADER_CHANGE_MS,
+) {
 
     /** Titles in the feed. */
     var count = 0
@@ -32,6 +39,9 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
         private set
 
     private var nextAt = NEVER
+
+    /** Until when the last change (a turn, or Up) is under way. */
+    private var changingUntil = Long.MIN_VALUE
 
     /**
      * Moving on by itself: a feed of two or more, not paused, and not following a Continue card, unless focus is on
@@ -108,7 +118,24 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
         if (!running || now < nextAt) return false
         index = nextIndex(followedIsCurrent)
         following = false
-        nextAt = now + everyMs
+        changingUntil = now + changeMs
+        nextAt = now + everyMs()
+        return true
+    }
+
+    /**
+     * D-pad Up on one of the banner's buttons ([repeat]: a held key's repeat): true when the header must now show the
+     * feed's title [index], as [advanceIfDue] would (from a Continue card it was following, the feed's next title), the
+     * full wait starting again. Nothing with one title or none, off the buttons, while paused, or for a repeat while
+     * the last change is still under way.
+     */
+    fun step(now: Long, repeat: Boolean, followedIsCurrent: Boolean = false): Boolean {
+        if (paused || !onButtons || count <= 1) return false
+        if (repeat && now < changingUntil) return false
+        index = nextIndex(followedIsCurrent)
+        following = false
+        changingUntil = now + changeMs
+        reschedule(now)
         return true
     }
 
@@ -120,14 +147,21 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
     }
 
     private fun reschedule(now: Long) {
-        nextAt = if (running) now + everyMs else NEVER
+        nextAt = if (running) now + everyMs() else NEVER
     }
 
     companion object {
-        /** Glass Home's hero: a new title every 8 s. */
-        const val EVERY_MS = 8_000L
+        /** Glass Home's hero: a new title every 8 s (Time on each title's default). */
+        const val EVERY_MS = VodSizes.HEADER_IDLE_DEFAULT_SEC * 1_000L
         private const val NEVER = Long.MAX_VALUE
     }
+}
+
+/** Settings › Home Header › Time on each title (pure, unit-tested): the banner's idle wait for a saved choice. */
+object HeaderIdle {
+    /** [seconds] as milliseconds; anything not among [VodSizes.HEADER_IDLE_SECONDS] is the default, 8 s. */
+    fun ms(seconds: Int): Long =
+        (if (seconds in VodSizes.HEADER_IDLE_SECONDS) seconds else VodSizes.HEADER_IDLE_DEFAULT_SEC) * 1_000L
 }
 
 /**

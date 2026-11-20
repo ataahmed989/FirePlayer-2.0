@@ -710,7 +710,8 @@ class VodPage(
             KeyEvent.KEYCODE_DPAD_LEFT -> if (watch) host.focusRail() else header.focusButton(VodHeader.Button.WATCH)
             KeyEvent.KEYCODE_DPAD_RIGHT -> if (watch) header.focusButton(VodHeader.Button.DETAILS) else window?.takeFocus()
             KeyEvent.KEYCODE_DPAD_DOWN -> firstRowWithItems()?.focusChosen()
-            KeyEvent.KEYCODE_DPAD_UP -> Unit
+            // The banner moves on to its next title (a held Up: one per change, never mid-change).
+            KeyEvent.KEYCODE_DPAD_UP -> header.stepUp(repeat = event.repeatCount > 0)
             else -> return false
         }
         return true

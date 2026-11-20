@@ -96,6 +96,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("home_header_match_continue", true)
         set(v) = sp.edit().putBoolean("home_header_match_continue", v).apply()
 
+    /**
+     * Settings › Home Header › Time on each title: seconds every tab's banner shows a title while idle (one of
+     * [app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_SECONDS]).
+     */
+    var headerIdleSec: Int
+        get() = sp.getInt("header_idle_sec", app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_DEFAULT_SEC)
+        set(v) = sp.edit().putInt("header_idle_sec", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()

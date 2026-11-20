@@ -374,6 +374,17 @@ internal object VodSizes {
     const val HEADER_TEXT_FADE_MS = 120L
     const val FOLLOW_ART_MS = 500L
     const val WARM_AHEAD_MS = 1_500L
+    /**
+     * Settings › Home Header › Time on each title: how long every tab's banner (Home, Movies, TV Shows) shows a title
+     * while idle, in seconds; 8 by default.
+     */
+    val HEADER_IDLE_SECONDS = listOf(5, 8, 12, 20)
+    const val HEADER_IDLE_DEFAULT_SEC = 8
+    /**
+     * A banner's change to its next title takes this long (the picture's crossfade; the words fade out and in within
+     * it): D-pad Up held on its buttons moves on no faster.
+     */
+    const val HEADER_CHANGE_MS = HERO_FADE_MS
     /** Faces sit high in most backdrops: the crop keeps a little more of the top. */
     const val ART_CROP_Y = 0.4f
     /** The backdrop's baked fade: alpha at the eased stops (clear → solid), and the step 1 header's spans. */

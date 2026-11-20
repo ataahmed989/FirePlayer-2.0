@@ -56,8 +56,9 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
     ),
     // Films & Shows' pages: which rows Home, Movies and TV Shows show, in what order (Settings › Rows).
     ROWS("Rows", R.drawable.ic_head_list, listOf("Home", "Movies", "TV Shows")),
-    // Home's banner: whether it shows the focused Continue Watching title or always goes through its own.
-    HOME_HEADER("Home Header", R.drawable.ic_head_banner, listOf("Match the focused Continue Watching title")),
+    // Home's banner: whether it shows the focused Continue Watching title or always goes through its own; and how long
+    // every tab's banner shows each title while idle.
+    HOME_HEADER("Home Header", R.drawable.ic_head_banner, listOf("Match the focused Continue Watching title", "Time on each title")),
     // Films & Shows' sources (design-brief.md §6.1, 6.5): the two add-ons, and how sources are ranked for this TV.
     ADDONS("Add-ons", R.drawable.ic_server, listOf("Torrentio", "MediaFusion")),
     THIS_TV("This TV", R.drawable.ic_display, listOf("Check again", "Best for this TV")),
@@ -72,8 +73,11 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         /** The Settings tab's last row, after the categories: a tool rather than settings. */
         const val OPEN_A_LINK = "Open a link"
 
-        /** Home Header's one switch. */
-        val HOME_HEADER_MATCH: String get() = HOME_HEADER.settings.single()
+        /** Home Header's switch. */
+        val HOME_HEADER_MATCH: String get() = HOME_HEADER.settings[0]
+
+        /** Home Header's idle time: how long every tab's banner shows each title. */
+        val HOME_HEADER_TIME: String get() = HOME_HEADER.settings[1]
 
         /** The window listing the categories, with the Search bubble at its top (Menu, and App › Search and App Settings in the player windows). */
         const val LIST_TITLE = "Search and App Settings"
