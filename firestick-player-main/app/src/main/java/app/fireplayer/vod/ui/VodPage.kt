@@ -15,6 +15,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.LinearLayout
 import app.fireplayer.R
+import app.fireplayer.data.Prefs
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveDb
 import app.fireplayer.live.LiveSearch
@@ -154,6 +155,9 @@ class VodPage(
     private var seeAll: SeeAllPage? = null
     /** The row and item See all was opened from. */
     private var seeAllFrom: Pair<TitleRow, Int>? = null
+    /** Search: each row's answer for the words now, until both have come ([holdSearchAnswer]). */
+    private val heldAnswers = HashMap<TitleRow, Pair<List<Card>, Boolean>>()
+    private val prefs by lazy { Prefs(ctx) }
 
     private val empty = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
     private val emptyText = t.label(ctx, VodSizes.EMPTY).apply { maxLines = 3; gravity = Gravity.CENTER }
@@ -226,7 +230,9 @@ class VodPage(
 
         // The header band: the header card, and on Home the window beside it.
         headerBand.clipChildren = false
-        headerBand.addView(header, FrameLayout.LayoutParams(t.dp(headerW), t.dp(headerH)).apply { leftMargin = pageX })
+        // Home's reaches out towards the rail, its words in line with the rows' titles ([VodSizes.HOME_HEADER_X]).
+        val headerX = if (page == Page.HOME) t.dp(VodSizes.HOME_HEADER_X) else pageX
+        headerBand.addView(header, FrameLayout.LayoutParams(t.dp(headerW), t.dp(headerH)).apply { leftMargin = headerX })
         window?.let {
             headerBand.addView(it, FrameLayout.LayoutParams(t.dp(VodSizes.WINDOW_W), t.dp(VodSizes.HEADER_H)).apply {
                 leftMargin = t.dp(VodSizes.windowX())
@@ -595,11 +601,8 @@ class VodPage(
         focusedRow = row
         lastRow = row
         pageSpring.glideTo(targetFor(row))
-        if ((row.spec.continueRow || myList) && !row.isSeeAll(index)) {
-            row.cards.getOrNull(index)?.let { followCard(it) }
-        } else if (!myList) {
-            header.unfollow()
-        }
+        val card = if (row.isSeeAll(index)) null else row.cards.getOrNull(index)
+        if (card != null && (myList || followsContinue(row))) followCard(card) else if (!myList) header.unfollow()
         updateHeaderPause()
         updateImages()
     }
@@ -613,8 +616,8 @@ class VodPage(
         press.cancel()
         // New cards held back while the viewer was in the row.
         row.pending?.let { (cards, seeAll) -> showCards(row, cards, seeAll) }
-        // Up to the banner's buttons: it stays on the card's title, which they act on (until it turns by itself).
-        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true && !header.hasButtonFocus) header.unfollow()
+        // Anywhere but another Continue card (the banner's buttons too): the banner goes back to its feed.
+        if (row.spec.continueRow && focusedRow?.spec?.continueRow != true) header.unfollow()
         return true
     }
 
@@ -1024,9 +1027,11 @@ class VodPage(
         headerCancel?.cancel()
         // My List's header only follows the focused title; Search has none.
         headerCancel = page?.let { p -> r.header(p) { feed -> if (!released) header.setFeed(feed.titles) } }
+        // Search: every row waits for its new answer before any shows ([holdSearchAnswer]).
+        heldAnswers.clear()
+        if (!search || query.isNotEmpty()) for (row in rows) row.answered = false
         for (row in rows) {
             if (search && query.isEmpty()) continue
-            row.answered = false
             load(row)
         }
         checkEmpty()
@@ -1069,12 +1074,58 @@ class VodPage(
         row.answered = true
         val shownCards = cards.take(ROW_CARDS)
         val seeAll = RowRules.seeAll(row.spec.source, cards.size)
+        if (search) {
+            holdSearchAnswer(row, shownCards, seeAll)
+            return
+        }
+        applyAnswer(row, shownCards, seeAll)
+    }
+
+    /** [cards] into [row], unless the viewer is in it and they would move what they're on: then when they leave. */
+    private fun applyAnswer(row: TitleRow, shownCards: List<Card>, seeAll: Boolean) {
         // The viewer is in this row and the new cards would move what they're on: held until they leave it.
         if (!RowRules.keepsFocus(row.focusedIndex(), row.cards, row.hasSeeAll, shownCards, seeAll)) {
             row.pending = shownCards to seeAll
             return
         }
         showCards(row, shownCards, seeAll)
+    }
+
+    /**
+     * Search: the Movies and TV Shows rows' answers are held until both have come; then the rows take their order for
+     * these words ([orderSearchRows]) and both show together.
+     */
+    private fun holdSearchAnswer(row: TitleRow, cards: List<Card>, seeAll: Boolean) {
+        heldAnswers[row] = cards to seeAll
+        if (!rows.all { it.answered && heldAnswers.containsKey(it) }) return
+        orderSearchRows()
+        // In the rows' order now: the first shown takes focus asked for, as before.
+        for (r in ArrayList(rows)) {
+            val (c, s) = heldAnswers.remove(r) ?: continue
+            applyAnswer(r, c, s)
+        }
+        heldAnswers.clear()
+    }
+
+    /**
+     * Search: the row holding the best match for the words first ([SearchRules.showsFirst]: a show, TV Shows above
+     * Movies; a film, Movies above). Decided once per answer, as both rows change together; never while the viewer
+     * is in one of them (what they're on would jump).
+     */
+    private fun orderSearchRows() {
+        if (rows.size != 2 || rows.any { it.hasFocus() }) return
+        val showsRow = rows.firstOrNull { (it.spec.source as? Source.Search)?.kind == Kind.SERIES } ?: return
+        val moviesRow = rows.firstOrNull { it !== showsRow } ?: return
+        val names = { r: TitleRow -> heldAnswers[r]?.first.orEmpty().map { it.title.name } }
+        val first = if (SearchRules.showsFirst(names(moviesRow), names(showsRow), query)) showsRow else moviesRow
+        if (rows[0] === first) return
+        rows.reverse()
+        // In the new order, after the bar (the column's first child).
+        rows.forEachIndexed { i, r ->
+            if (column.indexOfChild(r) == i + 1) return@forEachIndexed
+            column.removeView(r)
+            column.addView(r, i + 1, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, r.bandHeight))
+        }
     }
 
     /**
@@ -1104,7 +1155,7 @@ class VodPage(
         }
         // In the Continue row, a card taken away: the header follows the card now chosen.
         val at = row.focusedIndex()
-        if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.let { header.follow(it) } ?: header.unfollow()
+        if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.takeIf { followsContinue(row) }?.let { header.follow(it) } ?: header.unfollow()
         if (myList && at >= 0) row.cards.getOrNull(at)?.let { followCard(it) }
         checkEmpty()
         updateImages()
@@ -1222,6 +1273,13 @@ class VodPage(
         updateHeaderPause()
         updateImages()
     }
+
+    /**
+     * Whether the banner shows the title of the focused card in [row] ([HeaderFollow]): a Continue Watching row's, and on
+     * Home only while Settings › Home Header lets it (read each time, so a change applies at once).
+     */
+    private fun followsContinue(row: TitleRow): Boolean =
+        HeaderFollow.follows(row.spec.continueRow, page == Page.HOME, page != Page.HOME || prefs.homeHeaderMatchesContinue)
 
     /** The header rotates only while it shows and nothing is open over the page. */
     private fun updateHeaderPause() {
@@ -1426,13 +1484,15 @@ class VodPage(
         if (q == query) return
         query = q
         noticeFor = null
+        heldAnswers.clear()
         val specs = TabRows.search(q)
         rows.forEachIndexed { i, row ->
             row.cancel?.cancel()
             row.cancel = null
             row.generation++
             row.pending = null
-            specs.getOrNull(i)?.let { row.spec = it }
+            // By its key: the two rows may have changed places for the last words ([orderSearchRows]).
+            (specs.firstOrNull { it.key == row.spec.key } ?: specs.getOrNull(i))?.let { row.spec = it }
             // A new search starts at its first card.
             row.chosen = 0
             if (row.items.isNotEmpty()) row.motion.snap(0, isGrown = false)

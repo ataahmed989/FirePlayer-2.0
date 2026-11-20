@@ -1,6 +1,7 @@
 package app.fireplayer.vod.ui
 
 import android.view.KeyEvent
+import app.fireplayer.live.LiveSearchRules
 
 /**
  * The Search page's two kinds, switched by the two pills above its bar: films and shows (Cinemeta, as the page has
@@ -40,6 +41,37 @@ object SearchRules {
         }
         return SearchKind.entries.getOrNull(i)
     }
+
+    /**
+     * Movies & TV Shows search: whether the TV Shows row goes above the Movies row, decided once both have answered.
+     * The row whose best title matches the words searched best comes first, by the app's one name ranking
+     * ([LiveSearchRules.rank]: the same name, starts with it, a word starts with it, holds it); the same rank: the one
+     * whose best title sits earlier in its row; still the same (or neither matches): Movies first.
+     */
+    fun showsFirst(movies: List<String>, shows: List<String>, query: String): Boolean {
+        val m = bestMatch(movies, query)
+        val s = bestMatch(shows, query)
+        return s < m
+    }
+
+    /**
+     * A row's best match as one number to compare (lower is better): its best rank first, then that title's place in
+     * the row; [Long.MAX_VALUE] when nothing in it matches.
+     */
+    fun bestMatch(names: List<String>, query: String): Long {
+        var best = Long.MAX_VALUE
+        names.forEachIndexed { i, name ->
+            val r = LiveSearchRules.rank(name, query)
+            if (r >= 0) {
+                val v = r.toLong() * PLACES + i
+                if (v < best) best = v
+            }
+        }
+        return best
+    }
+
+    /** More places than any row has (a row asks for 16 at most). */
+    private const val PLACES = 1_000_000L
 
     /**
      * Each kind's last words while the page shows: kept when the other kind is chosen and given back when this one

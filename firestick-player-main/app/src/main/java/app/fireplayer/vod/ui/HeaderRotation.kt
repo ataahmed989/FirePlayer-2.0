@@ -131,6 +131,18 @@ class HeaderRotation(private val everyMs: Long = EVERY_MS) {
 }
 
 /**
+ * Whether a page's banner shows the focused card's title rather than going through its feed (pure, unit-tested). It
+ * idles (goes through its feed) whenever focus is not on a Continue Watching card: on the other rows, on its own
+ * buttons, in the rail, in Recent channels. Only a Continue card with focus ([continueCard]; never its See all) is
+ * shown, and on Home only while Settings › Home Header lets it ([matchOnHome]); Movies and TV Shows always match. My
+ * List's banner, which has no feed, shows whichever of its cards has focus.
+ */
+object HeaderFollow {
+    fun follows(continueCard: Boolean, home: Boolean, matchOnHome: Boolean): Boolean =
+        continueCard && (!home || matchOnHome)
+}
+
+/**
  * OK on one of the banner's buttons (pure, unit-tested). The buttons act on the title whose words are showing. While
  * the banner turns, the old words fade out, change, and the new ones fade in: the change, in the middle of the fade
  * with nothing showing, is the moment the title changes. A press belongs to the title showing when OK went down: its

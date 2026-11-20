@@ -201,6 +201,7 @@ class SettingsPanels(
             SettingsCategory.LOOK -> lookSection(this)
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
             SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity)
+            SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
             SettingsCategory.ADDONS -> app.fireplayer.vod.ui.AddonsSettings.render(this, activity, app.fireplayer.vod.Sources.get(activity).addons)
             SettingsCategory.THIS_TV -> app.fireplayer.vod.ui.ThisTvSettings.render(this, app.fireplayer.vod.Sources.get(activity).thisTv)
             SettingsCategory.TITLES -> renderTitles(this)
@@ -244,6 +245,20 @@ class SettingsPanels(
         header("Remote")
         menuButtonRow(this, activity)
         more()
+    }
+
+    /**
+     * Settings › Home Header: whether Home's banner shows the Continue Watching title that has focus (on, as Movies' and
+     * TV Shows' do) or always goes through its own titles while it shows. Read by Home each time focus moves, so it
+     * applies at once.
+     */
+    private fun homeHeaderSection(panel: SidePanel): Unit = with(panel) {
+        header(SettingsCategory.HOME_HEADER.title, SettingsCategory.HOME_HEADER.icon)
+        row(SettingsCategory.HOME_HEADER_MATCH, onOff(prefs.homeHeaderMatchesContinue), twoLines = true) {
+            prefs.homeHeaderMatchesContinue = !prefs.homeHeaderMatchesContinue
+            refresh()
+        }
+        message("Off: Home's banner keeps going through its titles while it shows, wherever focus is.")
     }
 
     fun lookSection(panel: SidePanel): Unit = with(panel) {
