@@ -33,7 +33,7 @@ and continue from the first unfinished step. Update the status lines here as ste
    Status: started.
 1b. **Sources order (the user, 02:10 their time): "I want 4k imax (open matte) ratio files to be at the top of the
    sources list."** After `audit/vod` is merged (same files: `vod/sources/*`): a 4K (2160p) release marked IMAX or
-   open matte (release-name words such as IMAX, "Open Matte", OpenMatte, Open.Matte) ranks above every other source,
+   open matte (release-name words such as IMAX, IMX (the user added: "IMX as well"), "Open Matte", OpenMatte, Open.Matte) ranks above every other source,
    in the Sources list and therefore as the best source, as long as it is one this TV can play and is not marked
    troubled; among themselves, and for everything else, today's order stays. Parser words and the rule as pure,
    unit-tested logic. Status: not started.
@@ -57,7 +57,7 @@ and continue from the first unfinished step. Update the status lines here as ste
    Movies and TV Shows; say so in the row's note); (ii) with focus on Watch now or Details, D-pad Up moves the banner
    on to its next title at once (the usual fade), and the idle wait starts again; Left / Right / Down as today.
    If (ii) was instead a report that Up wrongly moves the banner today, the user will say: the reading was told to
-   them. Status: not started.
+   them. Status: MERGED (8626c8e), 1,137 tests, on the TV as fp-next-58.
 4. **Multiview and the live picture (PiP), without glitches**, plus a settings category to turn automatic PiP on or
    off and whatever else deserves a preference. Designs: `player-fixes-wip/MULTIVIEW-NOTES.md` (2-4 side by side; OK
    on one makes it larger with the others underneath; holding a picture: remove, add (search), change (search), full
