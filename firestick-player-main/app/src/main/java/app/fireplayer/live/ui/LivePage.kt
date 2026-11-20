@@ -163,7 +163,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
-    }
+        logLogos()
+    }.also { LogoCache.useDisk(ctx) }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
     /**
      * The viewer's own changes (favorites, groups) are stored here, not queued behind the guide's reads: the queue the
@@ -543,6 +544,17 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The same for its stages, each logged once per opening: the playlists and groups, and the first listings. */
     private var openGroupsAt = 0L
     private var openProgrammesAt = 0L
+    private var openLogosAt = 0L
+    /** The logo cache's counts (kept on disk, fetched, without one) as they stood when the tab opened. */
+    private val logosAtOpen = IntArray(3)
+
+    /** Once per opening, when the first logos asked for have all landed: how long they took and where they came from. */
+    private fun logLogos() {
+        if (openLogosAt == 0L || logos.pendingCount > 0) return
+        Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
+            "${logos.failedCount - logosAtOpen[2]} without one) ${android.os.SystemClock.uptimeMillis() - openLogosAt} ms after opening")
+        openLogosAt = 0L
+    }
     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
     private var keyAt = 0L
 
@@ -559,6 +571,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         startedAt = openedAt
         openGroupsAt = openedAt
         openProgrammesAt = openedAt
+        openLogosAt = openedAt
+        logosAtOpen[0] = logos.fromDisk
+        logosAtOpen[1] = logos.fromNetwork
+        logosAtOpen[2] = logos.failedCount
         val resume = if (!player.onScreenStarted() && player.currentKey == null) prefs.lastChannel else null
         // Built now, while the channel is read, rather than when it arrives.
         if (resume != null) player.warm()
@@ -827,8 +843,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Listings read before an update are read again; the others stay (a channel in two lists keeps its row), and
         // the list itself asks for what it's missing.
         forgetStaleRows()
-        if (extend) guide.extendChannels(list)
-        else guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
+        val target = focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus
+        // Over its own first screenful, opened on the same channel: the whole list comes in under the rows showing.
+        // (Another channel is wanted by now, say one that started playing meanwhile: the list opens on that one.)
+        if (extend && (target == null || target == guide.focusedChannel()?.key)) guide.extendChannels(list)
+        else guide.setChannels(list, target, reload)
         if (list.isEmpty()) {
             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
                 if (sync.busy) "Updating the playlist…" else "No channels here.")
