@@ -20,11 +20,13 @@ import androidx.core.graphics.ColorUtils
 import app.fireplayer.R
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.PageRow
 
 /**
- * The Search tab's top: the bar, the Settings tab's row ([PageRow]: white with dark words while focused) holding the
- * magnifier and the words typed (or the hint), and beside it the round trash button (the title page's round buttons,
+ * The Search tab's top: the bar, the Settings tab's row ([PageRow]: white with dark words while focused) in the cell
+ * glass of the guide's programme cells ([BAR_GLASS]: the cells' softer corners), holding the magnifier and the words typed (or the hint), and beside
+ * it the round trash button (the title page's round buttons,
  * [Buttons.RoundButton]). OK on the bar opens the TV's keyboard; [onQuery] gets the words [VodSizes.SEARCH_WAIT_MS]
  * after the last change, [onSubmit] at once on the keyboard's Done. The D-pad's arrows go to [onArrow] (the page moves
  * focus itself; the words' cursor never moves).
@@ -44,7 +46,7 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
 
     private val main = Handler(Looper.getMainLooper())
     val input = EditText(context)
-    val bar = PageRow(context, R.drawable.ic_search_rail, input)
+    val bar = PageRow(context, R.drawable.ic_search_rail, input, BAR_GLASS)
     val trash = Buttons.RoundButton(context, t, VodSizes.SEARCH_TRASH, VodSizes.SEARCH_TRASH_ICON).apply {
         set(R.drawable.ic_trash, "Clear history")
     }
@@ -181,5 +183,13 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
 
     companion object {
         const val HINT = "Search films and shows"
+        /**
+         * The Search tab's glass, the history pods' ([SearchHistoryList]): the cell glass, the material of the guide's
+         * programme cells ([app.fireplayer.ui.GlassStyle.CELL]), with round ends. Focused, the app's white row; in the
+         * classic look, the solid row.
+         */
+        val GLASS = Glass.Kind.CELL
+        /** The bar's: the same cell glass, with the programme cells' softer corners ([app.fireplayer.ui.GlassStyle.RADIUS_CELL]). */
+        val BAR_GLASS = Glass.Kind.CELL_BAR
     }
 }

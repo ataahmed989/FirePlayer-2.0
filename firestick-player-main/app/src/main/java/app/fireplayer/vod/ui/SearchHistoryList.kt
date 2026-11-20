@@ -14,9 +14,9 @@ import app.fireplayer.ui.CenterScrollView
 import app.fireplayer.ui.PageRow
 
 /**
- * The Search tab's history under its bar: the searches made, newest first, each a Settings tab row ([PageRow]) in a
- * list that keeps the chosen row in the middle and glides there ([CenterScrollView]); a short line when there are none
- * yet. OK on a row ([onPick]) searches it again; OK held ([onHold]) opens its small window. Up from the first row goes
+ * The Search tab's history under its bar: the searches made, newest first, each a pod (a Settings tab row, [PageRow],
+ * in the bar's glass: [SearchBar.GLASS]) in a list that keeps the chosen row in the middle and glides there
+ * ([CenterScrollView]); a short line when there are none yet. OK on a row ([onPick]) searches it again; OK held ([onHold]) opens its small window. Up from the first row goes
  * to the bar ([onUpFromTop]), Left to the rail ([onLeft]).
  */
 @SuppressLint("ViewConstructor")
@@ -86,7 +86,7 @@ class SearchHistoryList(context: Context, private val t: Tokens) : FrameLayout(c
         bottomMargin = t.dp(PageRow.GAP_DP)
     }
 
-    private fun makeRow(): PageRow = PageRow(context, R.drawable.ic_history).apply {
+    private fun makeRow(): PageRow = PageRow(context, R.drawable.ic_history, kind = SearchBar.GLASS).apply {
         setOnFocusChangeListener { _, has -> if (!has) press.cancel() }
         setOnKeyListener { v, keyCode, event -> onKey(v as PageRow, keyCode, event) }
     }

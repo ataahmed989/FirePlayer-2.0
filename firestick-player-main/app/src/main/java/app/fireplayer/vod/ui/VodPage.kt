@@ -50,7 +50,8 @@ import kotlin.math.abs
  * Moving: Left/Right go card by card along a row, which glides like the Episodes sheet ([TitleRow]); Up/Down go row by
  * row, the page gliding with a Spring: below the first row the header slides away and the chosen row sits just under
  * the name line; back on the first row the header returns. Up from the first row goes to the banner's Watch now and
- * Details buttons ([VodHeader.Listener]); on Home, Right from Details goes into Recent channels ([RecentWindow]).
+ * Details buttons ([VodHeader.Listener]), under which the banner goes on turning while no key is pressed; on Home,
+ * Right from Details goes into Recent channels ([RecentWindow]).
  * Left from a row's first card goes to the rail. OK on a
  * poster opens its title page ([TitleStack], over the page; Back returns to the poster), on a Continue card says
  * playback comes next (a later step), on See all or a genre opens [SeeAllPage]; OK held on a title opens the small
@@ -109,8 +110,8 @@ class VodPage(
     /** My List's banner holds still above its rows: shorter, and without buttons ([VodSizes.MY_LIST_HEADER_H]). */
     private val headerH = if (myList) VodSizes.MY_LIST_HEADER_H else VodSizes.HEADER_H
     private val header = VodHeader(ctx, t, headerW, headerH, actions = !myList)
-    /** OK went down on this one of the banner's buttons: its release acts. */
-    private var headerOkDown: VodHeader.Button? = null
+    /** OK on one of the banner's buttons: its release acts on the title that showed when it went down. */
+    private val headerPress = HeaderPress<VodHeader.Button, Card>()
     private val window: RecentWindow? = if (page == Page.HOME) RecentWindow(ctx, t) else null
     /** Search: the bar and the trash button in the header's place, the history under them, kept on this TV. */
     private val searchBar: SearchBar? = if (search) SearchBar(ctx, t) else null
@@ -139,7 +140,11 @@ class VodPage(
     private val titles = TitleStack(ctx, t, this, titleHost)
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
     /** The column's upward offset, px: 0 shows the header. */
-    private val pageSpring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) { column.translationY = -it }
+    private val pageSpring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) {
+        column.translationY = -it
+        // The banner's words keep clear of its top while the page hides a little of it (My List's holds still).
+        if (!myList && !search) header.setHiddenTop(it)
+    }
 
     /** Where the open title pages were opened from: focus goes back there when the last one closes. */
     private sealed class Origin {
@@ -551,7 +556,7 @@ class VodPage(
         press.cancel()
         // New cards held back while the viewer was in the row.
         row.pending?.let { (cards, seeAll) -> showCards(row, cards, seeAll) }
-        // Up to the banner's buttons: it stays on the card's title, which they act on.
+        // Up to the banner's buttons: it stays on the card's title, which they act on (until it turns by itself).
         if (row.spec.continueRow && focusedRow?.spec?.continueRow != true && !header.hasButtonFocus) header.unfollow()
         return true
     }
@@ -608,7 +613,7 @@ class VodPage(
             if (!myList) pageSpring.glideTo(0f)
             return
         }
-        headerOkDown = null
+        headerPress.cancel()
         // Focus left the buttons: the banner goes back to its feed unless it went back into the Continue row (or into
         // the title page Details opened, which comes back to the button).
         if (!titles.isOpen && focusedRow?.spec?.continueRow != true) header.unfollow()
@@ -621,24 +626,21 @@ class VodPage(
 
     /**
      * A key on Watch now or Details: Left and Right between them (Left from Watch now to the rail; on Home, Right from
-     * Details to Recent channels), Down back to the first row, OK (on its release) plays or opens the title shown.
+     * Details to Recent channels), Down back to the first row, OK (on its release) plays or opens the title whose words
+     * showed when it went down ([HeaderPress]: the banner goes on turning under the buttons).
      */
     override fun onHeaderKey(button: VodHeader.Button, keyCode: Int, event: KeyEvent): Boolean {
         if (isOk(keyCode)) {
             when (event.action) {
-                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) headerOkDown = button
-                KeyEvent.ACTION_UP -> {
-                    val down = headerOkDown
-                    headerOkDown = null
-                    if (down == button && !event.isCanceled) onHeaderPick(button)
-                }
+                KeyEvent.ACTION_DOWN -> headerPress.down(button, header.shownCard, event.repeatCount)
+                KeyEvent.ACTION_UP -> headerPress.up(button, event.isCanceled)?.let { onHeaderPick(button, it) }
             }
             return true
         }
         val dpad = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
             keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
         if (event.action != KeyEvent.ACTION_DOWN) return dpad
-        headerOkDown = null
+        headerPress.cancel()
         val watch = button == VodHeader.Button.WATCH
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> if (watch) host.focusRail() else header.focusButton(VodHeader.Button.WATCH)
@@ -651,11 +653,10 @@ class VodPage(
     }
 
     /**
-     * Watch now: the title shown plays as from a Continue card (a film, or the episode of a series played last, from
+     * Watch now: [card]'s title plays as from a Continue card (a film, or the episode of a series played last, from
      * where it stopped; a series never played opens its title page, which knows its episodes). Details: its title page.
      */
-    private fun onHeaderPick(button: VodHeader.Button) {
-        val card = header.shownCard ?: return
+    private fun onHeaderPick(button: VodHeader.Button, card: Card) {
         val from = Origin.InHeader(button, card.title.id)
         if (button == VodHeader.Button.WATCH) playContinue(card, from) else openTitle(card, from)
     }

@@ -67,7 +67,7 @@ class GlassDrawable(
 
     private val density = context.resources.displayMetrics.density
     private val focusable = !edgeOnly && (style == Glass.Kind.CIRCLE || style == Glass.Kind.PILL ||
-        style == Glass.Kind.MORE_ICON || style == Glass.Kind.ROW)
+        style == Glass.Kind.MORE_ICON || Glass.isRow(style))
     /** Which of [GlassBakes]' drawings the plain look is. */
     private val variant = if (edgeOnly) GlassBakes.EDGE else if (calm) GlassBakes.CALM else GlassBakes.FILM
 
@@ -75,7 +75,7 @@ class GlassDrawable(
     private val source: GlassBackdrop.Kind? = when (style) {
         Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> GlassBackdrop.Kind.PANEL
         Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.CHIP, Glass.Kind.MORE_ICON -> GlassBackdrop.Kind.CONTROL
-        Glass.Kind.ROW -> null
+        Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR -> null
     }
     private val windowLike = source == GlassBackdrop.Kind.PANEL
     private val filmAlpha = if (windowLike || calm) 1f else CONTROL_FILM_ALPHA
@@ -520,7 +520,7 @@ internal object GlassBakes {
             Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> if (calm) CALM_WINDOW_SHADOW.reach else PANEL_SHADOW.reach
             Glass.Kind.CHIP -> if (calm) CALM_CHIP_SHADOW.reach else CHIP_SHADOW.reach
             // The selected row's glow stays inside the row: no room may be added around it.
-            Glass.Kind.ROW -> 0f
+            Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR -> 0f
             Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.MORE_ICON -> when {
                 focused -> max(FOCUS_GLOW.reach, FOCUS_SHADOW.reach)
                 calm -> CALM_CONTROL_SHADOW.reach
@@ -541,6 +541,50 @@ internal object GlassBakes {
             Glass.Kind.CIRCLE, Glass.Kind.MORE_ICON, Glass.Kind.PILL, Glass.Kind.CHIP -> half
             // A pill while one line high; taller rows (search results) keep soft corners instead of round ends.
             Glass.Kind.ROW -> min(GlassStyle.RADIUS_ROW * density, half)
+            // The Search tab's history pods: fully round ends, a pill whatever their height.
+            Glass.Kind.CELL -> half
+            // The Search tab's bar: the programme cells' own softer corners.
+            Glass.Kind.CELL_BAR -> min(GlassStyle.RADIUS_CELL * density, half)
+        }
+    }
+
+    /**
+     * Draws a flat surface of the page ([GlassStyle.Surface]) in [rect], its corners [r] px: its coats of fill, the
+     * faint light from above, the hairline all round and the highlight along the top edge, following the corners.
+     * Software drawing into a bitmap that is kept: the guide's stamped patches and [Glass.Kind.CELL] / [Glass.Kind.CELL_BAR] are all made here,
+     * so what is one material in [GlassStyle] is one drawing too.
+     */
+    fun surface(c: Canvas, rect: RectF, r: Float, look: GlassStyle.Surface, density: Float) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = look.fill
+        for (i in 0 until look.coats) c.drawRoundRect(rect, r, r, p)
+        if (look.sheen) {
+            p.shader = LinearGradient(
+                0f, rect.top, 0f, rect.top + rect.height() * GlassStyle.SHEEN_SHARE,
+                GlassStyle.SHEEN, 0x00FFFFFF, Shader.TileMode.CLAMP,
+            )
+            c.drawRoundRect(rect, r, r, p)
+            p.shader = null
+        }
+        if (look.edge) {
+            val hair = GlassStyle.hairlinePx(density)
+            val half = hair / 2f
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = hair
+            p.color = GlassStyle.HAIRLINE
+            val inner = RectF(rect).apply { inset(half, half) }
+            val ir = (r - half).coerceAtLeast(0f)
+            c.drawRoundRect(inner, ir, ir, p)
+            // The highlight follows the top edge round the corners: the shape less itself moved down a little.
+            val line = Path().apply { addRoundRect(rect, r, r, Path.Direction.CW) }
+            val lower = Path().apply {
+                addRoundRect(RectF(rect).apply { offset(0f, GlassStyle.HIGHLIGHT_DP * density) }, r, r, Path.Direction.CW)
+            }
+            if (line.op(lower, Path.Op.DIFFERENCE)) {
+                p.style = Paint.Style.FILL
+                p.color = look.highlight
+                c.drawPath(line, p)
+            }
         }
     }
 }
@@ -567,7 +611,7 @@ private class Baker(private val density: Float) {
         val r = GlassBakes.radius(kind, w, h, density)
         when {
             !focused && variant == GlassBakes.EDGE -> edge(c, rect, r)
-            kind == Glass.Kind.ROW && focused -> {
+            Glass.isRow(kind) && focused -> {
                 // As the released selected row: a white body 3dp inside the row, its glow in that margin.
                 val margin = px(3f)
                 val body = RectF(rect).apply { inset(margin, margin) }
@@ -579,6 +623,8 @@ private class Baker(private val density: Float) {
                     focusedBody(c, pad, w, h, body, br)
                 }
             }
+            // The cell glass: the very drawing the guide's programme cells are stamped from.
+            kind == Glass.Kind.CELL || kind == Glass.Kind.CELL_BAR -> GlassBakes.surface(c, rect, r, GlassStyle.CELL, density)
             kind == Glass.Kind.ROW -> {
                 fill(c, rect, r, GlassStyle.ROW_FILL)
                 crescent(c, rect, r, px(0.75f), GlassStyle.ROW_HIGHLIGHT)

@@ -55,7 +55,8 @@ class VodSizesTitleTest {
         assertEquals(TextStyle(16f, TextStyle.Weight.BOLD, TextStyle.Ink.OWN, 0xFFE3E9F0.toInt()), VodSizes.ROW_TITLE_STYLE)
         assertEquals(TextStyle(12.5f, TextStyle.Weight.REGULAR, TextStyle.Ink.OWN, 0xFFC3CFDC.toInt()), VodSizes.FACTS)
         assertEquals(TextStyle(13f, TextStyle.Weight.REGULAR, TextStyle.Ink.MUTED, lineGap = 2f), VodSizes.STORY)
-        assertEquals(TextStyle(40f, TextStyle.Weight.BOLD), VodSizes.HEADER_TITLE)
+        // The banner's name where a title has no logo: smaller than the 40 sp it was (tuning round 1).
+        assertEquals(TextStyle(28f, TextStyle.Weight.BOLD), VodSizes.HEADER_TITLE)
         assertEquals(TextStyle(15.5f, TextStyle.Weight.BOLD, TextStyle.Ink.OWN, 0xFFFFFFFF.toInt()), VodSizes.CARD_NAME)
         assertEquals(TextStyle(12f, TextStyle.Weight.SEMIBOLD, TextStyle.Ink.OWN, 0xFFD6DEE8.toInt()), VodSizes.CARD_CAPTION)
         // The header's baked fade: step 1's eased stops.
