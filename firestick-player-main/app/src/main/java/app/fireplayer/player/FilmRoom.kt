@@ -26,8 +26,8 @@ import java.util.concurrent.TimeUnit
  * outside the app's own heap has been freed as well, with how much came back ([FilmMemory.roomGained]). Its player
  * then sizes the buffer again ([FilmMemory.afterRoom]).
  *
- * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected at
- * once, and as it comes down to its new size ([FilmMemory.comingDown]), so the TV has it when it needs it.
+ * The same goes for a film's buffer squeezed while the TV is short of memory: what it gives back is collected as it
+ * comes down to its new size ([FilmMemory.givenBack]), so the TV has it when it needs it.
  *
  * Main thread, but for the collecting itself.
  */

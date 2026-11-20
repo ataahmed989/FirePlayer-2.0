@@ -1162,6 +1162,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         )
         keepBudgetBytes = 0
         builtAt = SystemClock.elapsedRealtime()
+        // A new buffer holds nothing yet: what it gives back under a squeeze is counted from there (checkMemory).
+        heldAtCollect = 0L
         vsyncFix = vsync.also { it.start() }
         // Read from the display now, before the film's first frame reaches the decoder, and again whenever it changes.
         hdr10PlusGate = hdr10Plus.also { it.start() }
@@ -2628,15 +2630,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
      */
     private fun checkMemory() {
-        val p = player ?: return
+        if (player == null) return
         if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
             squeezeFilmBuffer()
             return
         }
-        // Squeezed and still coming down to its new size: what it lets go of meanwhile goes back to the TV now.
+        // Squeezed and coming down to its new size: what it has let go of meanwhile goes back to the TV, a good
+        // piece at a time (see FilmMemory.givenBack).
         val built = builtPlayer ?: return
-        if (FilmMemory.comingDown(memoryPressure.step, built.filmBytes(), built.fillBytes(), p.isPlaying)) FilmRoom.made(this, forFilm = false)
+        val held = built.filmBytes()
+        if (FilmMemory.givenBack(memoryPressure.step, held, heldAtCollect)) {
+            heldAtCollect = held
+            FilmRoom.made(this, forFilm = false)
+        } else if (held > heldAtCollect) {
+            // Loading again: counted from the most it holds.
+            heldAtCollect = held
+        }
     }
+
+    /** What the film's buffer held when its memory was last collected for a squeeze, or when it was squeezed (bytes). */
+    private var heldAtCollect = 0L
 
     /** Gives the film's buffer the size [memoryPressure] calls for now. */
     private fun squeezeFilmBuffer() {
@@ -2650,10 +2663,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
             // OS asks them to trim, and a film opened from Glass Home or another app has no page behind it at all.
             app.fireplayer.ui.ImageLoader.trim()
-            // What the smaller buffer no longer keeps for reuse is only dropped, as those pictures are: collected
-            // now, so the TV gets it at once rather than whenever Android next collects (the buffer loads nothing
-            // new until it's down to its new size).
-            FilmRoom.made(this, forFilm = false)
+            // What the smaller buffer lets go of as it comes down is only dropped, as those pictures are: collected
+            // from the next memory check on, as it goes (checkMemory), counted from what it holds now.
+            heldAtCollect = built.filmBytes()
         }
     }
 

@@ -173,28 +173,29 @@ class BufferAndRateTest {
         assertEquals(FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib), FilmMemory.plan(RamTier.SMALL, stickHeap, 200 * mib, keepBytes = 0))
     }
 
-    // ---- A squeezed buffer coming down to its new size (FilmMemory.comingDown)
+    // ---- What a squeezed buffer has given back is collected a good piece at a time (FilmMemory.givenBack)
 
-    @Test fun aSqueezedBufferIsCollectedWhileItHoldsMoreThanItFillsTo() {
-        // Full at 128 MiB when memory ran low: it fills to 96 now, and holds more until the film has played 32 MiB on.
-        assertTrue(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
-        assertTrue(FilmMemory.comingDown(step = 2, heldBytes = 97 * mib, fillBytes = 64 * mib, playing = true))
-        // Down to its new size (it loads again, and Android collects by itself): no more.
-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 96 * mib, fillBytes = 96 * mib, playing = true))
-        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 40 * mib, fillBytes = 64 * mib, playing = true))
+    @Test fun aSqueezedBuffersMemoryIsCollectedEvery16MiBItComesDown() {
+        // Full at 128 MiB when memory ran low (it fills to 96 now): nothing yet, then at 112 and again at 96.
+        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 128 * mib, heldAtCollectBytes = 128 * mib))
+        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 120 * mib, heldAtCollectBytes = 128 * mib))
+        assertTrue(FilmMemory.givenBack(step = 1, heldBytes = 112 * mib, heldAtCollectBytes = 128 * mib))
+        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 100 * mib, heldAtCollectBytes = 112 * mib))
+        assertTrue(FilmMemory.givenBack(step = 1, heldBytes = 96 * mib, heldAtCollectBytes = 112 * mib))
+        // A fast film is well past a piece by the next check: one collection for all of it.
+        assertTrue(FilmMemory.givenBack(step = 2, heldBytes = 64 * mib, heldAtCollectBytes = 128 * mib))
     }
 
-    @Test fun aPausedOrWaitingFilmLetsGoOfNothingToCollect() {
-        // Paused with a full buffer while memory is low: it stays as it is, and nothing is collected every 10 s for it.
-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = false))
-        assertFalse(FilmMemory.comingDown(step = 2, heldBytes = 128 * mib, fillBytes = 64 * mib, playing = false))
+    @Test fun aBufferHoldingAsMuchOrMoreHasGivenNothingBack() {
+        // Paused, waiting, or down to its size and loading again: it holds what it held, or more.
+        assertFalse(FilmMemory.givenBack(step = 1, heldBytes = 96 * mib, heldAtCollectBytes = 96 * mib))
+        assertFalse(FilmMemory.givenBack(step = 2, heldBytes = 70 * mib, heldAtCollectBytes = 64 * mib))
     }
 
     @Test fun aBufferThatIsNotSqueezedIsNeverCollectedForIt() {
-        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 128 * mib, playing = true))
-        // Held over its size for a moment without a squeeze (a size not known): not this rule's.
-        assertFalse(FilmMemory.comingDown(step = 0, heldBytes = 128 * mib, fillBytes = 96 * mib, playing = true))
-        assertFalse(FilmMemory.comingDown(step = 1, heldBytes = 128 * mib, fillBytes = 0L, playing = true))
+        // After a jump it holds far less for a moment: its memory is kept to load into again, not given back.
+        assertFalse(FilmMemory.givenBack(step = 0, heldBytes = 4 * mib, heldAtCollectBytes = 128 * mib))
+        assertFalse(FilmMemory.givenBack(step = 0, heldBytes = 128 * mib, heldAtCollectBytes = 128 * mib))
     }
 
     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
