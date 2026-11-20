@@ -383,6 +383,11 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         return moving
     }
 
+    /** The activity is pausing: whatever is moving is where it was heading, at once. */
+    fun finishMotion() {
+        if (ticking) settle()
+    }
+
     /** Everything where it was heading, at once (out of sight, or leaving the window): nothing moves unseen. */
     private fun settle() {
         if (ticking) {

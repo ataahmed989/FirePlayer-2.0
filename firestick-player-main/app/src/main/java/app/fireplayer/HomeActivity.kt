@@ -253,6 +253,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onPause() {
         super.onPause()
+        // The rail's motion ends where it was heading: nothing is left half-way or moving unseen.
+        if (::rail.isInitialized) rail.finishMotion()
         filmMode.onPause()
     }
 
