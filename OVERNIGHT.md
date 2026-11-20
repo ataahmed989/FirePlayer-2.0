@@ -48,6 +48,17 @@ and continue from the first unfinished step. Update the status lines here as ste
    HTTPS links handed over by the add-ons (it has no torrent client); add one FirePlayerDiag line per film start
    naming only the HOST the stream comes from and whether the source was a ready (cached) link, so it can be confirmed
    on the TV without showing a link. Status: not started.
+1d. **TorBox (the user, 03:00 their time): they switched from Real-Debrid to TorBox and asked: "check if streams
+   from each add on work how they are supposed using my torbox debrid ... once".** (i) In 1c's work, make the sources
+   code debrid-neutral where it assumes Real-Debrid: cached / instant markers in the add-ons' names (Torrentio's
+   "[RD+]" becomes "[TB+]" with TorBox, MediaFusion's and Torz's own marks), failure names, link-host checks, the
+   settings wording ("with your Real-Debrid account"), with tests. (ii) Then ONE check on the TV, only while it is
+   idle (never while `PlayerActivity` or a channel is in front: at 03:00 a film was playing and blind key presses
+   interrupted it for a few seconds and rewound it - ALWAYS read `dumpsys window | grep mCurrentFocus` and take a
+   screenshot before sending any key): for each add-on that has a link set, open a film not in Continue Watching,
+   see its sources listed under that add-on's name, play one for under 30 s (no resume point is left), read the log
+   (first frame, the host line from 1c, no error), Back. Never capture the Add-ons settings window. Report per add-on.
+   Status: not started.
 2. **Movies & TV Shows search:** the row holding the best match comes first (a show: TV Shows first; a film: Movies).
    Branch `feat/home-header` (with step 3). Status: MERGED (2850d18), tests pass; NOT yet tried on the TV (search a
    show, e.g. "breaking bad": TV Shows first; a film, e.g. "dune": Movies first).
