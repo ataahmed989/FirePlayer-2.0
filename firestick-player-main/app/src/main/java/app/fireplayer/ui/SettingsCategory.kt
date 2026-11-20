@@ -70,8 +70,8 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         /** The Settings tab's last row, after the categories: a tool rather than settings. */
         const val OPEN_A_LINK = "Open a link"
 
-        /** The window listing the categories (Menu, and App › App settings in the player windows). */
-        const val LIST_TITLE = "App settings"
+        /** The window listing the categories, with the Search bubble at its top (Menu, and App › Search and App Settings in the player windows). */
+        const val LIST_TITLE = "Search and App Settings"
 
         /**
          * How many columns the Settings tab needs for [rows] rows, each [rowDp] tall plus [gapDp] under it, below a

@@ -1,0 +1,173 @@
+package app.fireplayer.live
+
+import android.os.CancellationSignal
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/**
+ * Live TV search: every playlist's channels by name and the guide's programmes (on now or later) by title. Channels of
+ * hidden groups, blocked channels and channels of blocked groups are left out (as the guide leaves them out). Runs on
+ * [worker], never on the main thread; [find] stops early when [CancellationSignal] is cancelled (the words changed).
+ *
+ * Reads only, on the database's read connections (write-ahead log): the guide's own reads and the EPG import never wait
+ * for it. Programmes are looked up through the programme table's key, one EPG source at a time, now and later only,
+ * and each read stops at [READ_CAP] matches.
+ */
+class LiveSearch(private val db: LiveDb) {
+
+    class ChannelHit(
+        val key: ChannelKey,
+        val name: String,
+        val logo: String?,
+        val groupId: String?,
+        var favorite: Boolean,
+    )
+
+    class ProgrammeHit(val channel: ChannelHit, val title: String, val start: Long, val stop: Long)
+
+    class Result(val query: String, val channels: List<ChannelHit>, val programmes: List<ProgrammeHit>) {
+        val isEmpty: Boolean get() = channels.isEmpty() && programmes.isEmpty()
+    }
+
+    fun find(query: String, now: Long, cancel: CancellationSignal): Result {
+        val q = query.trim()
+        if (q.isEmpty()) return Result(query, emptyList(), emptyList())
+        val like = LiveSearchRules.likePattern(q)
+        val read = db.readableDatabase
+        val channels = read.rawQuery(
+            CHANNEL_SELECT + "WHERE c.name LIKE ? ESCAPE '\\' AND $VISIBLE ORDER BY p.position, c.position LIMIT $READ_CAP",
+            arrayOf(like), cancel,
+        ).use { c -> buildList { while (c.moveToNext()) add(channelAt(c)) } }
+
+        // Programmes: per source (the playlist whose EPG listed them), the matches still to come.
+        val sources = db.sourcesWithEpg()
+        val found = ArrayList<Triple<String, String, Programme>>()
+        for ((source, physical) in sources) {
+            cancel.throwIfCanceled()
+            read.rawQuery(
+                "SELECT epg_ref, start, stop, title FROM program WHERE source = ? AND stop > ? AND title LIKE ? ESCAPE '\\' LIMIT $READ_CAP",
+                arrayOf(physical, now.toString(), like), cancel,
+            ).use { c -> while (c.moveToNext()) found += Triple(source, c.getString(0), Programme(c.getLong(1), c.getLong(2), c.getString(3), null, null)) }
+        }
+        val programmes = ArrayList<ProgrammeHit>()
+        if (found.isNotEmpty()) {
+            val refs = found.mapTo(LinkedHashSet()) { it.second }.toList()
+            val byRef = HashMap<String, MutableList<Pair<ChannelHit, String>>>()
+            for (chunk in refs.chunked(IN_CHUNK)) {
+                cancel.throwIfCanceled()
+                val marks = chunk.joinToString(",") { "?" }
+                read.rawQuery(
+                    CHANNEL_SELECT + "WHERE c.epg_ref IN ($marks) AND $VISIBLE ORDER BY p.position, c.position",
+                    chunk.toTypedArray(), cancel,
+                ).use { c -> while (c.moveToNext()) byRef.getOrPut(c.getString(5)) { ArrayList() } += channelAt(c) to c.getString(0) }
+            }
+            for ((source, ref, p) in found) {
+                for ((ch, playlistId) in byRef[ref].orEmpty()) {
+                    // A channel's listings come from its own playlist's EPG, or any EPG when its playlist has none.
+                    if (LiveSearchRules.listsFor(playlistId, source, playlistId in sources)) {
+                        programmes += ProgrammeHit(ch, p.title, p.start, p.stop)
+                    }
+                }
+            }
+        }
+        return Result(
+            query,
+            LiveSearchRules.orderChannels(channels, q) { it.name }.take(MAX_CHANNELS),
+            LiveSearchRules.orderProgrammes(LiveSearchRules.distinct(programmes), q, now).take(MAX_PROGRAMMES),
+        )
+    }
+
+    private fun channelAt(c: android.database.Cursor) = ChannelHit(
+        key = ChannelKey(c.getString(0), c.getString(1)),
+        name = c.getString(2),
+        logo = if (c.isNull(3)) null else c.getString(3),
+        groupId = if (c.isNull(4)) null else c.getString(4),
+        favorite = c.getInt(6) != 0,
+    )
+
+    companion object {
+        /** Results kept: channels in the row, programmes in the list. */
+        const val MAX_CHANNELS = 30
+        const val MAX_PROGRAMMES = 30
+        /** Matches read from one query at most (before ranking). */
+        private const val READ_CAP = 400
+        private const val IN_CHUNK = 500
+
+        private const val CHANNEL_SELECT =
+            "SELECT c.playlist_id, c.id, c.name, c.logo, c.group_id, c.epg_ref, f.channel_id IS NOT NULL FROM channel c " +
+                "JOIN playlist p ON p.id = c.playlist_id " +
+                "LEFT JOIN favorite f ON f.playlist_id = c.playlist_id AND f.channel_id = c.id "
+
+        /** Not blocked, nor in a hidden or blocked group (parental rules; Manage groups). */
+        private const val VISIBLE =
+            "c.blocked = 0 AND (c.group_id IS NULL OR (" +
+                "NOT EXISTS (SELECT 1 FROM group_pref gp WHERE gp.playlist_id = c.playlist_id AND gp.group_id = c.group_id AND gp.hidden = 1) " +
+                "AND NOT EXISTS (SELECT 1 FROM channel_group g WHERE g.playlist_id = c.playlist_id AND g.id = c.group_id AND g.blocked = 1)))"
+
+        /** One thread for every Live TV search (a new one waits for the cancelled one to stop). Never shut down. */
+        val worker: ExecutorService by lazy { Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerLiveSearch") } }
+    }
+}
+
+/** Live TV search's matching and order, pure (unit-tested). */
+object LiveSearchRules {
+
+    /** How well [name] matches [query]: 0 the same, 1 starts with it, 2 a word starts with it, 3 holds it, -1 not. */
+    fun rank(name: String, query: String): Int {
+        val n = name.lowercase()
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return -1
+        return when {
+            n == q -> 0
+            n.startsWith(q) -> 1
+            wordStarts(n, q) -> 2
+            n.contains(q) -> 3
+            else -> -1
+        }
+    }
+
+    private fun wordStarts(n: String, q: String): Boolean {
+        var i = n.indexOf(q, 1)
+        while (i > 0) {
+            if (!n[i - 1].isLetterOrDigit()) return true
+            i = n.indexOf(q, i + 1)
+        }
+        return false
+    }
+
+    /** [query] for SQL's LIKE, anywhere in the text: its own % _ and \ taken as they are. */
+    fun likePattern(query: String): String {
+        val b = StringBuilder("%")
+        for (ch in query.trim()) {
+            if (ch == '%' || ch == '_' || ch == '\\') b.append('\\')
+            b.append(ch)
+        }
+        return b.append('%').toString()
+    }
+
+    /** Best match first; the same rank keeps the order given (playlist order, then the guide's). */
+    fun <T> orderChannels(list: List<T>, query: String, nameOf: (T) -> String): List<T> =
+        list.map { it to rank(nameOf(it), query) }.filter { it.second >= 0 }.sortedBy { it.second }.map { it.first }
+
+    fun onNow(start: Long, stop: Long, now: Long): Boolean = now in start until stop
+
+    /** On now first, then the best title match, then the soonest; the same keeps the order given. */
+    fun orderProgrammes(list: List<LiveSearch.ProgrammeHit>, query: String, now: Long): List<LiveSearch.ProgrammeHit> =
+        order(list, query, now, { it.title }, { it.start }, { it.stop })
+
+    fun <T> order(list: List<T>, query: String, now: Long, titleOf: (T) -> String, startOf: (T) -> Long, stopOf: (T) -> Long): List<T> =
+        list.map { Triple(it, rank(titleOf(it), query), onNow(startOf(it), stopOf(it), now)) }
+            .filter { it.second >= 0 }
+            .sortedWith(compareBy<Triple<T, Int, Boolean>>({ !it.third }, { it.second }, { startOf(it.first) }))
+            .map { it.first }
+
+    /** One programme per channel and start (two EPG sources may list the same one). */
+    fun distinct(list: List<LiveSearch.ProgrammeHit>): List<LiveSearch.ProgrammeHit> {
+        val seen = HashSet<String>()
+        return list.filter { seen.add("${it.channel.key}|${it.start}") }
+    }
+
+    /** Whether a channel of [playlistId] takes its listings from [source]: its own EPG, or any when it has none. */
+    fun listsFor(playlistId: String, source: String, playlistHasEpg: Boolean): Boolean =
+        playlistId == source || !playlistHasEpg
+}

@@ -176,13 +176,18 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
         trash.applyLook()
     }
 
+    /** The hint for [kind] ("Search films and shows", "Search channels and programmes"). */
+    fun setKind(kind: SearchKind) {
+        input.hint = kind.hint
+    }
+
     /** Whether [v] is the bar's or the trash button's focusable. */
     fun owns(v: View?): Boolean = v === input || v === trash.button
 
     private fun imm() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
 
     companion object {
-        const val HINT = "Search films and shows"
+        val HINT = SearchKind.VOD.hint
         /**
          * The Search tab's glass, the history pods' ([SearchHistoryList]): the cell glass, the material of the guide's
          * programme cells ([app.fireplayer.ui.GlassStyle.CELL]), with round ends. Focused, the app's white row; in the
@@ -191,5 +196,79 @@ class SearchBar(context: Context, private val t: Tokens) : LinearLayout(context)
         val GLASS = Glass.Kind.CELL
         /** The bar's: the same cell glass, with the programme cells' softer corners ([app.fireplayer.ui.GlassStyle.RADIUS_CELL]). */
         val BAR_GLASS = Glass.Kind.CELL_BAR
+    }
+}
+
+/**
+ * The Search page's kind switch, on a line above the bar: a pill for each [SearchKind] (the app's text pill,
+ * [Buttons.textPill]), the current one's words blue ([Buttons.toggleColors], as an on button's). Left and Right move
+ * between them (Left from the first: [onLeft], the rail), Down goes to the bar ([onDown]), OK chooses a kind ([onPick]).
+ */
+@SuppressLint("ViewConstructor")
+class SearchKindPills(context: Context, t: Tokens) : LinearLayout(context) {
+
+    var onPick: ((SearchKind) -> Unit)? = null
+    var onDown: (() -> Unit)? = null
+    var onLeft: (() -> Unit)? = null
+
+    private val pills = SearchKind.entries.map { kind ->
+        Buttons.textPill(context, t, kind.label, VodSizes.SEARCH_KIND, VodSizes.SEARCH_KIND_PAD_X, 0f).apply {
+            setTextColor(Buttons.toggleColors(context))
+            setOnKeyListener { _, keyCode, event -> onKey(kind, keyCode, event) }
+        }
+    }
+    private var okDown = false
+
+    init {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        pills.forEachIndexed { i, pill ->
+            addView(pill, LayoutParams(LayoutParams.WRAP_CONTENT, t.dp(VodSizes.SEARCH_KIND_H)).apply {
+                if (i > 0) leftMargin = t.dp(VodSizes.SEARCH_KIND_SPACE)
+            })
+            Tokens.focusEffect(pill, Tokens.GROW_PILL, null) { okDown = false }
+        }
+        show(SearchKind.VOD)
+    }
+
+    /** [kind]'s pill marked as the current one. */
+    fun show(kind: SearchKind) {
+        pills.forEachIndexed { i, pill -> pill.isSelected = i == kind.ordinal }
+    }
+
+    fun focus(kind: SearchKind): Boolean = pills[kind.ordinal].requestFocus()
+
+    fun owns(v: View?): Boolean = v != null && v in pills
+
+    fun applyLook() {
+        for (pill in pills) Glass.background(pill, Glass.Kind.PILL)
+    }
+
+    private fun onKey(kind: SearchKind, keyCode: Int, event: KeyEvent): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) okDown = true
+            if (event.action == KeyEvent.ACTION_UP && okDown && !event.isCanceled) {
+                okDown = false
+                onPick?.invoke(kind)
+            }
+            true
+        }
+        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+            okDown = false
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN -> onDown?.invoke()
+                    KeyEvent.KEYCODE_DPAD_UP -> Unit
+                    else -> {
+                        val to = SearchRules.pillMove(kind, keyCode)
+                        if (to != null) focus(to) else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) onLeft?.invoke()
+                    }
+                }
+            }
+            true
+        }
+        else -> false
     }
 }

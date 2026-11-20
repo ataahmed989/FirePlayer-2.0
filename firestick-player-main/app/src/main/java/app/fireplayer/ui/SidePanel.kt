@@ -436,6 +436,24 @@ class SidePanel(private val activity: Activity) {
     }
 
     /**
+     * The Search bubble at the top of "Search and App Settings" and of Live TV's settings window: the window's row with
+     * the search icon at its left and "Search" in its middle. Put first, it has focus when the window opens.
+     */
+    fun searchBubble(onClick: () -> Unit): View {
+        val row = rows.build("Search", null, null)
+        val iconDp = 16
+        row.addView(rows.icon(R.drawable.ic_search, iconDp).apply {
+            (layoutParams as LinearLayout.LayoutParams).apply { marginStart = 0; marginEnd = rows.dp(10) }
+        }, 0)
+        for (i in 0 until row.childCount) (row.getChildAt(i) as? TextView)?.gravity = Gravity.CENTER
+        // As wide as the icon and its gap, so the word sits in the row's middle.
+        row.addView(View(row.context), LinearLayout.LayoutParams(rows.dp(iconDp + 10), 1))
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /**
      * A row whose value is a small badge saying how the setting stands: "Active" in blue, "Inactive" in faded gray
      * ([Rows.badge]).
      */

@@ -68,7 +68,7 @@ class MyListSearchRulesTest {
     @Test
     fun theSearchBarAndHistoryFitBesideTheTrashButton() {
         assertEquals(VodSizes.tabHeaderW(), VodSizes.searchBarW() + VodSizes.SEARCH_TRASH_GAP + VodSizes.SEARCH_TRASH, 0.001f)
-        assertEquals(VodSizes.VIEWPORT_TOP + VodSizes.SEARCH_BAR_H + VodSizes.SEARCH_GAP, VodSizes.searchListTop(), 0.001f)
+        assertEquals(VodSizes.VIEWPORT_TOP + VodSizes.SEARCH_KIND_H + VodSizes.SEARCH_KIND_GAP + VodSizes.SEARCH_BAR_H + VodSizes.SEARCH_GAP, VodSizes.searchListTop(), 0.001f)
         // My List's rows area holds a whole poster row under the fixed header.
         assertTrue(VodSizes.SCREEN_H - VodSizes.fixedRowsTop() >= VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP))
     }

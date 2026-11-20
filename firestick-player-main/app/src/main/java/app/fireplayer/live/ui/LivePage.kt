@@ -897,6 +897,34 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
     }
 
+    /**
+     * From Live TV search (the tab shown just before, with [key] remembered through [openChannel]): [key] plays, then
+     * full screen once its picture comes ([full]: a channel, or a programme on now), else the guide shows it focused
+     * (a programme still to come). Waits for the picture at most 20 s; another channel, or leaving the tab, stops the wait.
+     */
+    fun openFromSearch(key: ChannelKey, full: Boolean) {
+        prefs.lastChannel = key
+        if (!started) return
+        bg {
+            val ch = db.channel(key) ?: return@bg
+            val pl = db.playlist(ch.playlistId) ?: return@bg
+            main.post {
+                if (!started || released) return@post
+                if (player.currentKey != key.toString() && !tune(ch, pl, pressedAt = openedAtForTune())) return@post
+                if (!full) { focusPlaying(); return@post }
+                val until = android.os.SystemClock.uptimeMillis() + 20_000L
+                val wait = object : Runnable {
+                    override fun run() {
+                        if (!started || released || fullScreen || player.currentKey != key.toString()) return
+                        if (player.playingKey == key.toString()) toFull()
+                        else if (android.os.SystemClock.uptimeMillis() < until) main.postDelayed(this, 150L)
+                    }
+                }
+                wait.run()
+            }
+        }
+    }
+
     private var startedAt = 0L
     private fun openedAtForTune(): Long = startedAt.takeIf { android.os.SystemClock.uptimeMillis() - it < 10_000 } ?: 0L
 

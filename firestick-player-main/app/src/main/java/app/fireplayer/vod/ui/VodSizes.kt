@@ -138,7 +138,39 @@ internal object VodSizes {
     /** The bar's hint words: the row's own text colour (light, or dark on the white focused row) at this alpha. */
     const val SEARCH_HINT_ALPHA = 0x8C
     fun searchBarW(): Float = tabHeaderW() - SEARCH_TRASH_GAP - SEARCH_TRASH
-    fun searchListTop(): Float = VIEWPORT_TOP + SEARCH_BAR_H + SEARCH_GAP
+    /** The kind switch above the bar: two pills ("Movies & TV Shows", "Live TV"), the gap between them and under them. */
+    const val SEARCH_KIND_H = 36f
+    const val SEARCH_KIND_PAD_X = 16f
+    const val SEARCH_KIND_SPACE = 10f
+    const val SEARCH_KIND_GAP = 12f
+    /** The bar and the pills above it: what the page's column holds where a header would be. */
+    fun searchTopH(): Float = SEARCH_KIND_H + SEARCH_KIND_GAP + SEARCH_BAR_H
+    fun searchListTop(): Float = VIEWPORT_TOP + searchTopH() + SEARCH_GAP
+
+    // Live TV search's results, under the bar: a row of channel tiles (the guide's logo plate, the name beneath), then
+    // a list of programme rows (logo, title, "channel · start-end", a LIVE mark while on now).
+    const val LIVE_HEAD_H = 26f
+    const val LIVE_TILE_W = 120f
+    const val LIVE_TILE_H = 66f
+    const val LIVE_TILE_GAP = 14f
+    const val LIVE_TILE_PAD = 10f
+    const val LIVE_TILE_RADIUS = 12f
+    const val LIVE_NAME_H = 22f
+    const val LIVE_NAME_TOP = 6f
+    const val LIVE_SECTION_GAP = 14f
+    const val LIVE_ROW_H = 52f
+    const val LIVE_ROW_GAP = 8f
+    const val LIVE_ROW_LOGO_W = 58f
+    const val LIVE_ROW_LOGO_H = 34f
+    const val LIVE_ROW_LOGO_GAP = 12f
+    const val LIVE_MARK_PAD_X = 8f
+    const val LIVE_MARK_H = 18f
+    const val LIVE_LOGO_PX = 120f
+    /** A channel name that doesn't fit its tile starts scrolling this long after focus comes to it. */
+    const val LIVE_MARQUEE_DELAY_MS = 300L
+    /** Its speed, dp a second, and the pause at its end before it starts over. */
+    const val LIVE_MARQUEE_DP_S = 40f
+    const val LIVE_MARQUEE_HOLD_MS = 1_200L
 
     /** The clock's fixed width beside the page's name, and the gap before it. */
     const val CLOCK_W = 300f
@@ -362,6 +394,10 @@ internal object VodSizes {
     /** A page's short line where its rows would be (My List with nothing in it, Search with no history yet). */
     val NOTE = TextStyle(15f, Weight.REGULAR, Ink.MUTED)
     val TRY_AGAIN = TextStyle(15f, Weight.SEMIBOLD)
+    val SEARCH_KIND = TextStyle(15f, Weight.SEMIBOLD)
+    val LIVE_HEAD = TextStyle(16f, Weight.BOLD)
+    val LIVE_NAME = TextStyle(13f, Weight.SEMIBOLD)
+    val LIVE_MARK = TextStyle(11f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
     val NOTICE = TextStyle(15f, Weight.REGULAR)
     /** A Continue Watching card's name and caption line. */
     val CARD_NAME = TextStyle(15.5f, Weight.BOLD, Ink.OWN, 0xFFFFFFFF.toInt())
