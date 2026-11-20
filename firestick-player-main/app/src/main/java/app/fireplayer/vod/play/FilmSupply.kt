@@ -18,8 +18,27 @@ enum class WhenBuffering(val label: String) {
     }
 }
 
-/** What the viewer answered when asked about a film that kept buffering, remembered for that film. */
-enum class StallChoice { LIGHTER, KEEP }
+/**
+ * What the viewer answered when asked about a film that kept buffering, remembered for that film: [LIGHTER] for the
+ * film whatever plays (a later source too heavy for the line is left without asking again), [KEEP] for the source it
+ * was said of only (another source of the same film is judged afresh).
+ */
+enum class StallChoice {
+    LIGHTER, KEEP;
+
+    companion object {
+        /** The answer as it's kept: "LIGHTER", or "KEEP|" and the key of the source kept. No links, no titles. */
+        fun encode(choice: StallChoice, sourceKey: String): String = if (choice == KEEP) "KEEP|$sourceKey" else LIGHTER.name
+
+        /** The answer kept as [text] that counts while [sourceKey] plays; null for none. */
+        fun decode(text: String?, sourceKey: String): StallChoice? = when {
+            text == null -> null
+            text == LIGHTER.name -> LIGHTER
+            text == "KEEP|$sourceKey" -> KEEP
+            else -> null
+        }
+    }
+}
 
 /**
  * Whether a film keeps stopping to load because the connection brings it no faster than it plays, and what to say

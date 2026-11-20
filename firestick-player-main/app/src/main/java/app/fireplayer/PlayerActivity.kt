@@ -5985,15 +5985,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return if (line == null && rate == null) null else app.fireplayer.vod.play.FilmSupply.Reading(line, rate)
         }
 
-        override fun stallChoice(): app.fireplayer.vod.play.StallChoice? {
+        override fun stallChoice(): String? {
             val key = source?.request?.target?.key ?: return null
-            val kept = sourcePrefs.getString(STALL_CHOICE + key, null) ?: return null
-            return runCatching { app.fireplayer.vod.play.StallChoice.valueOf(kept) }.getOrNull()
+            return sourcePrefs.getString(STALL_CHOICE + key, null)
         }
 
-        override fun rememberStallChoice(choice: app.fireplayer.vod.play.StallChoice) {
+        override fun rememberStallChoice(choice: String) {
             val key = source?.request?.target?.key ?: return
-            sourcePrefs.edit().putString(STALL_CHOICE + key, choice.name).apply()
+            sourcePrefs.edit().putString(STALL_CHOICE + key, choice).apply()
         }
 
         override fun lineShort(mbps: Double) {

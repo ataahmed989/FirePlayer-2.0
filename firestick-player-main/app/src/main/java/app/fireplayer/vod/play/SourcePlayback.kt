@@ -86,11 +86,11 @@ class SourcePlayback(
         /** What the player measured of the film's download ([FilmSupply.Reading]); null when it measured nothing. */
         fun supply(): FilmSupply.Reading? = null
 
-        /** What the viewer answered for this film when it kept buffering before; null when never asked. */
-        fun stallChoice(): StallChoice? = null
+        /** What the viewer answered for this film when it kept buffering before, as kept ([StallChoice.encode]); null when never asked. */
+        fun stallChoice(): String? = null
 
-        /** Remembers [choice] for this film. */
-        fun rememberStallChoice(choice: StallChoice) = Unit
+        /** Keeps [choice] for this film ([StallChoice.encode]'s text). */
+        fun rememberStallChoice(choice: String) = Unit
 
         /**
          * A film kept stalling while the download sustained [mbps], about what the film needs: kept, so "Best for this
@@ -370,7 +370,7 @@ class SourcePlayback(
         if (stallSwitching || asking || !session.stalls.shouldSwitch(now)) return
         val s = current ?: return
         val mode = host.whenBuffering()
-        val choice = host.stallChoice()
+        val choice = StallChoice.decode(host.stallChoice(), s.key)
         if (mode == WhenBuffering.KEEP || choice == StallChoice.KEEP) {
             if (!keepLogged) {
                 keepLogged = true
@@ -418,13 +418,13 @@ class SourcePlayback(
             listOf(
                 FilmSupply.SWITCH to {
                     asking = false
-                    host.rememberStallChoice(StallChoice.LIGHTER)
+                    host.rememberStallChoice(StallChoice.encode(StallChoice.LIGHTER, s.key))
                     host.log("asked: switching to the lighter source")
                     open(lighter, OpenWhy.USER)
                 },
                 FilmSupply.KEEP to {
                     asking = false
-                    host.rememberStallChoice(StallChoice.KEEP)
+                    host.rememberStallChoice(StallChoice.encode(StallChoice.KEEP, s.key))
                     host.log("asked: keeping this source")
                 },
             ),

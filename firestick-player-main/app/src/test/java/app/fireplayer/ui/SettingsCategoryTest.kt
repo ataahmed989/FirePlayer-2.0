@@ -65,6 +65,8 @@ class SettingsCategoryTest {
             "Match the focused Continue Watching title",
             // ...and how long every tab's banner shows each title while idle.
             "Time on each title",
+            // Playback: what a film from the add-ons does when it keeps stopping to load.
+            "When a film keeps buffering",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
@@ -76,6 +78,7 @@ class SettingsCategoryTest {
         fun where(setting: String) = SettingsCategory.entries.single { setting in it.settings }
         assertEquals(SettingsCategory.PLAYBACK, where("Resume where I left off"))
         assertEquals(SettingsCategory.PLAYBACK, where("Skip buttons"))
+        assertEquals(SettingsCategory.PLAYBACK, where(SettingsCategory.WHEN_BUFFERING))
         assertEquals(SettingsCategory.SUBTITLES_AUDIO, where("Auto sync subtitles"))
         assertEquals(SettingsCategory.SUBTITLES_AUDIO, where("Subtitle style"))
         assertEquals(SettingsCategory.REMOTE, where("Hold to speed up"))
