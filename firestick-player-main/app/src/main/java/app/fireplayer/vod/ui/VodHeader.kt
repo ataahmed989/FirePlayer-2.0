@@ -18,6 +18,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import app.fireplayer.R
+import app.fireplayer.data.Prefs
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.Glass
@@ -34,13 +35,13 @@ import app.fireplayer.vod.Title
  * genres, rating, length) and two lines of story; at the bottom left the Watch now and Details buttons ([actions]);
  * and, centred near the bottom, dots for the rotation. A fine outline is drawn over the picture ([Glass.edge]).
  *
- * While idle it goes through the page's feed (Top 10, or Popular's first 10) every few seconds ([HeaderRotation]; Settings › Home Header › Time on each title, 8 s by default), the
- * words and the logo fading out and in together and the picture crossfading; while focus is in the page's Continue row
- * it shows the chosen card's title instead (only there: [HeaderFollow]; the page decides): the words at once, the
+ * While idle it goes through the page's feed (Top 10, or Popular's first 10) every few seconds ([HeaderRotation];
+ * Settings › Home Header › Time on each title, 8 s by default), the words and the logo fading out and in together
+ * and the picture crossfading; while focus is in the page's Continue row it shows the chosen card's title instead (only there: [HeaderFollow]; the page decides): the words at once, the
  * picture half a second later (so a held D-pad decodes nothing). With focus on one of its buttons it goes on turning
  * once no key has been pressed for that long; the buttons act on the title whose words are showing ([shownCard],
- * [HeaderPress]); Up there moves on to the next title at once ([stepUp]). Its words have fixed boxes, so new ones only redraw them. The buttons' keys go to the page
- * ([Listener]).
+ * [HeaderPress]); Up there moves on to the next title at once ([stepUp]). Its words have fixed boxes, so new ones
+ * only redraw them. The buttons' keys go to the page ([Listener]).
  */
 @SuppressLint("ViewConstructor")
 class VodHeader(
@@ -67,7 +68,7 @@ class VodHeader(
     private val main = Handler(Looper.getMainLooper())
     private val prefs = Prefs(context)
     /** Its idle time read from Settings at the start of each wait: a change applies from the next one. */
-    private val rotation = HeaderRotation({ HeaderIdle.ms(prefs.headerIdleSec) })
+    private val rotation = HeaderRotation(everyMs = { HeaderIdle.ms(prefs.headerIdleSec) })
     private var feed: List<Title> = emptyList()
     /** The feed's logos have been asked for ahead ([fetchLogosAhead]). */
     private var logosAhead = false

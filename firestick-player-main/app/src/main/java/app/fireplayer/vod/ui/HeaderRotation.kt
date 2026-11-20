@@ -3,8 +3,8 @@ package app.fireplayer.vod.ui
 /**
  * When the page header moves on to its next title (pure, unit-tested; the clock is passed in). While idle it goes
  * through the page's feed (Top 10, or Popular's first 10) every [everyMs], round and round. [everyMs] is asked at the
- * start of each wait (Settings › Home Header › Time on each title, [HeaderIdle]): a new time applies from the next one. It holds still while
- * paused (the page hidden, the header scrolled away, a window open) and while it follows the chosen title of the
+ * start of each wait (Settings › Home Header › Time on each title, [HeaderIdle]): a new time applies from the next
+ * one. It holds still while paused (the page hidden, the header scrolled away, a window open) and while it follows the chosen title of the
  * page's Continue row; when either ends, the full wait starts again.
  *
  * With focus on one of the banner's buttons it doesn't stop (tuning round 1): once [everyMs] has passed with no key

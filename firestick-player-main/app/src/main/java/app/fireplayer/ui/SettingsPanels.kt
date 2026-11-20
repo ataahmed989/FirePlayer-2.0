@@ -264,7 +264,7 @@ class SettingsPanels(
             prefs.headerIdleSec = times[it]
         }
         message("Off: Home's banner keeps going through its titles while it shows, wherever focus is. " +
-            "Time on each title is for the banners on Home, Movies and TV Shows alike.")
+            "Time on each title: how long every banner, on Home, Movies and TV Shows alike, shows a title before the next.")
     }
 
     fun lookSection(panel: SidePanel): Unit = with(panel) {
