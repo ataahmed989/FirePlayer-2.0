@@ -56,8 +56,8 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
         private val message = t.label(context, LiveWidths.MV_MESSAGE_SP, t.semibold).apply {
             maxLines = 3
             gravity = Gravity.CENTER
-            setPadding(t.dp(16), 0, t.dp(16), 0)
-            setShadowLayer(t.dpf(4f), 0f, 0f, 0xCC000000.toInt())
+            setPadding(t.dp(LiveWidths.MV_MESSAGE_PAD_X), 0, t.dp(LiveWidths.MV_MESSAGE_PAD_X), 0)
+            setShadowLayer(t.dpf(LiveWidths.MV_MESSAGE_SHADOW), 0f, 0f, LiveWidths.MV_MESSAGE_SHADOW_COLOR)
             visibility = GONE
         }
         private val busy = BusyOverlay(context, t)
@@ -196,7 +196,7 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
             }
             addView(icon, LayoutParams(t.dp(LiveWidths.MV_ADD_ICON), t.dp(LiveWidths.MV_ADD_ICON)))
             addView(t.label(context, LiveWidths.MV_ADD_SP, t.semibold).apply { text = ADD_TEXT }, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = t.dp(10)
+                topMargin = t.dp(LiveWidths.MV_ADD_GAP)
             })
             applyLook()
         }

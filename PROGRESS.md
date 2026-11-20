@@ -253,7 +253,8 @@ user's FirePlayer. Provider size: 32,686 channels, 353 groups, ~279,000 programm
       first channel focused). Movies, TV Shows, My List, Settings and a film stop it; Live TV takes it back. The
       channel buttons (Channel buttons only) and the sleep timer work on it. Settings › Picture-in-picture: "Keep live
       TV playing on Home and Search" (On) and "Start with sound" (On). Leaving Live TV from full screen now returns
-      to its guide next time (it came back to an empty full screen).
+      to its guide next time (it came back to an empty full screen). A channel paused on Live TV doesn't follow (it
+      would sit still in the corner with nothing there to start it): it stops, remembered, as before (review, 2026-11-20).
 - [x] Glass Home integration (2026-11-19): FirePlayer 2.0 serves its Films & Shows Continue Watching to Glass Home and
       resumes straight from it (verified on the Max: cold start to first frame in ~5 s, resumed at the saved point,
       Back returns to Glass Home). Glass Home (branch `fp2/integration` in glass-home-firetv) uses FirePlayer 2.0 when

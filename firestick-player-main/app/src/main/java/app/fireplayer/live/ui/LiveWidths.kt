@@ -77,11 +77,15 @@ internal object LiveWidths {
     const val MV_NAME_PAD_Y = 4
     const val MV_NAME_INSET = 8
     const val MV_NAME_RADIUS = 7f
-    /** A picture that can't play: its plain message, in its middle. */
+    /** A picture that can't play: its plain message, in its middle, shadowed as the buffering symbol's words are. */
     const val MV_MESSAGE_SP = 14f
+    const val MV_MESSAGE_PAD_X = 16
+    const val MV_MESSAGE_SHADOW = 4f
+    const val MV_MESSAGE_SHADOW_COLOR = 0xCC000000.toInt()
     /** "Add a channel" in the grid's free cell, under its + (the guide's empty miniature panel). */
     const val MV_ADD_SP = 15f
     const val MV_ADD_ICON = 30
+    const val MV_ADD_GAP = 10
     /** The pictures moving to a new layout (translation and scale only), and the channel picker's dark backdrop. */
     const val MV_MOVE_MS = 260L
     const val MV_PICKER_SCRIM = 0xEB06080B.toInt()
