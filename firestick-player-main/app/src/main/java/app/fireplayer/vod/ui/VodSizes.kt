@@ -185,7 +185,8 @@ internal object VodSizes {
     // page's name: the pills, the bar and the history beside it, the bar and the history shortened to clear it
     // ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name), and the results (rows of posters, Live
     // TV's channels and programmes) under it, full width ([searchResultsTop]), where a first row of posters still
-    // shows whole, its chosen card grown. Larger, the results would start too low for that.
+    // shows whole, its chosen card grown. Larger, the bar would drop under 400 dp and that grown card would reach on
+    // into the edge a TV may cut off ([TV_SAFE]), which it only just touches now.
     const val SEARCH_PIP_W = 352f
     const val SEARCH_PIP_H = SEARCH_PIP_W * 9f / 16f
     const val SEARCH_PIP_TOP = NAME_TOP

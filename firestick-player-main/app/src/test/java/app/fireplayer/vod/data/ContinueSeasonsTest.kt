@@ -51,7 +51,10 @@ class ContinueSeasonsTest {
         assertTrue(library.inContinueWatching(show.id))
         // Watch now and Glass Home's row play the same episode, from its start.
         assertEquals(EpisodeRef(2, 1, "Episode 1"), library.upNext(show))
-        val row = LibraryContinue.row(library.continueEntries().single())!!
+        val entry = library.continueEntries().single()
+        assertEquals(entry, library.continueEntry(Kind.SERIES, show.id))
+        assertNull(library.continueEntry(Kind.MOVIE, show.id))
+        val row = LibraryContinue.row(entry)!!
         assertEquals(LibraryContinue.idOf(Kind.SERIES, show.id), row.id)
         assertEquals(WatchHistory.Kind.EPISODE, row.kind)
         assertEquals(listOf(2, 1, 0), listOf(row.season, row.episode, row.positionMs.toInt()))

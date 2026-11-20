@@ -226,14 +226,16 @@ class VodLibrary(
         return state { open.mapNotNull { entryOf(it, upOf(it, lists, now)) } }
     }
 
-    /** Whether [id] is in Continue Watching ([continueEntries]), either kind. */
-    fun inContinueWatching(id: String): Boolean {
+    /** [kind]/[id]'s entry in Continue Watching ([continueEntries]), reading only its own show's episodes; null: not in it. */
+    fun continueEntry(kind: Kind, id: String): Progress? {
         val now = clock()
-        val open = state { Kind.entries.mapNotNull { k -> progress[key(k, id)]?.takeIf { !it.hidden } } }
-        if (open.isEmpty()) return false
-        val lists = episodesFor(open)
-        return state { open.any { entryOf(it, upOf(it, lists, now)) != null } }
+        val p = state { progress[key(kind, id)]?.takeIf { !it.hidden } } ?: return null
+        val lists = episodesFor(listOf(p))
+        return state { entryOf(p, upOf(p, lists, now)) }
     }
+
+    /** Whether [id] is in Continue Watching ([continueEntries]), either kind. */
+    fun inContinueWatching(id: String): Boolean = Kind.entries.any { continueEntry(it, id) != null }
 
     /** Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). */
     fun removeFromContinueWatching(id: String) {
