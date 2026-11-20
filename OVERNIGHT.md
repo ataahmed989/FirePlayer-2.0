@@ -43,6 +43,15 @@ and continue from the first unfinished step. Update the status lines here as ste
    Status: MERGED (2850d18) and on the TV as fp-next-57. Seen on the TV: the wider, taller banner (x 70-630, 228
    tall, the Movies look), Recent channels narrower at the right, it idles with focus in the rail, the Home Header
    category and its switch. Not yet tried: the switch turned Off; Up from a Continue card to the buttons.
+3b. **Two additions from the user (01:50 their time), to build at the 07:00 reset with one Opus agent, branch
+   `feat/header-timer` from the head:** "Add an idle title timer (idk if that's worded right) to header settings.
+   And pressing d-pad up from header button focus/selected scrolls the header."
+   Read as: (i) a row in Settings > Home Header choosing how long the banner stays on each title while it idles
+   (for example 5 s, 8 s as today, 12 s, 20 s), applied at once, to every tab's banner (one rhythm across Home,
+   Movies and TV Shows; say so in the row's note); (ii) with focus on Watch now or Details, D-pad Up moves the banner
+   on to its next title at once (the usual fade), and the idle wait starts again; Left / Right / Down as today.
+   If (ii) was instead a report that Up wrongly moves the banner today, the user will say: the reading was told to
+   them. Status: not started.
 4. **Multiview and the live picture (PiP), without glitches**, plus a settings category to turn automatic PiP on or
    off and whatever else deserves a preference. Designs: `player-fixes-wip/MULTIVIEW-NOTES.md` (2-4 side by side; OK
    on one makes it larger with the others underneath; holding a picture: remove, add (search), change (search), full
