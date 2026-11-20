@@ -20,6 +20,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -277,15 +278,35 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             }
         }
         val logo = LogoView(context).apply { pad(VodSizes.LIVE_TILE_PAD, VodSizes.LIVE_TILE_PAD) }
-        private val nameBox = FrameLayout(context)
+        /** The name's window: a name wider than the tile (while it scrolls) is cut at the tile's edges. */
+        private val nameBox = FrameLayout(context).apply {
+            outlineProvider = ViewOutlineProvider.BOUNDS
+            clipToOutline = true
+        }
         val name: TextView = t.label(context, VodSizes.LIVE_NAME).apply {
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
         }
+        /** In the tile, in place of a logo that isn't there (none listed, or none arrived): the channel's name. */
+        private val standIn: TextView = t.label(context, VodSizes.LIVE_NAME).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            alpha = VodSizes.LIVE_STAND_IN_ALPHA
+            visibility = View.INVISIBLE
+            val pad = t.dp(VodSizes.LIVE_TILE_PAD)
+            setPadding(pad, 0, pad, 0)
+        }
         var hit: LiveSearch.ChannelHit? = null
         private val boxW = t.dp(VodSizes.LIVE_TILE_W)
         private val marquee = Runnable { startMarquee() }
+        private val showStandIn = Runnable {
+            val h = hit ?: return@Runnable
+            if (h.logo?.let { logos.get(it) } != null) return@Runnable
+            standIn.text = h.name
+            standIn.visibility = View.VISIBLE
+        }
 
         init {
             orientation = VERTICAL
@@ -293,6 +314,7 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             plate.isFocusable = true
             plate.setWillNotDraw(false)
             plate.addView(logo, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            plate.addView(standIn, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(plate, LayoutParams(boxW, t.dp(VodSizes.LIVE_TILE_H)))
             nameBox.addView(name, FrameLayout.LayoutParams(boxW, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(nameBox, LayoutParams(boxW, t.dp(VodSizes.LIVE_NAME_H)).apply { topMargin = t.dp(VodSizes.LIVE_NAME_TOP) })
@@ -310,6 +332,8 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
 
         fun bind(h: LiveSearch.ChannelHit?) {
             stopMarquee()
+            main.removeCallbacks(showStandIn)
+            standIn.visibility = View.INVISIBLE
             hit = h
             visibility = if (h == null) View.GONE else View.VISIBLE
             val lp = layoutParams as? LinearLayout.LayoutParams
@@ -320,11 +344,17 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             if (h == null) return
             name.text = h.name
             refreshLogo()
+            main.postDelayed(showStandIn, VodSizes.LIVE_STAND_IN_AFTER_MS)
         }
 
         fun refreshLogo() {
             val url = hit?.logo
-            logo.set(url?.let { logos.get(it) }, plate = true)
+            val l = url?.let { logos.get(it) }
+            logo.set(l, plate = true)
+            if (l != null) {
+                main.removeCallbacks(showStandIn)
+                standIn.visibility = View.INVISIBLE
+            }
         }
 
         private fun key(keyCode: Int, event: KeyEvent): Boolean {

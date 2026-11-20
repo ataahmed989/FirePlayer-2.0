@@ -168,6 +168,9 @@ internal object VodSizes {
     const val LIVE_LOGO_PX = 120f
     /** A channel name that doesn't fit its tile starts scrolling this long after focus comes to it. */
     const val LIVE_MARQUEE_DELAY_MS = 300L
+    /** A channel tile whose logo hasn't come after this long (or has none) shows the channel's name inside, quietly. */
+    const val LIVE_STAND_IN_AFTER_MS = 700L
+    const val LIVE_STAND_IN_ALPHA = 0.7f
     /** Its speed, dp a second, and the pause at its end before it starts over. */
     const val LIVE_MARQUEE_DP_S = 40f
     const val LIVE_MARQUEE_HOLD_MS = 1_200L
