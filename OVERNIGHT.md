@@ -147,3 +147,8 @@ and continue from the first unfinished step. Update the status lines here as ste
   windows; then a review of the overlays) and wf_287d266c-59b (feat/pip-16x9: Home's live picture 16:9, the banner
   narrows, both animate back). Design: Design-References/tivimate-2026-11-20/REQUEST.md. THEN: merge, install, one
   check pass on the TV, the user looks, then step 5 (release + data reset) on their go-ahead.
+- 19:15 UTC: everything requested is merged, pushed and INSTALLED (fp-next-66, dd3eecf): Live TV overlays
+  (full-screen Left / Left again), Multiview start and adding by list or see-through search, rounded pictures,
+  narrow hold windows (icons for Add / Remove from list), Home's 16:9 live picture with the narrowing banner,
+  Continue Watching across seasons, the larger Search live picture. Seen on the TV: hold window, overlay Left and
+  Left again, Home's 16:9 picture. Waiting on the user's look and go-ahead for step 5 (release + data reset).
