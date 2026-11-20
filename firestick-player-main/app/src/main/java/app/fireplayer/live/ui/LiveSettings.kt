@@ -892,6 +892,11 @@ class LiveSettings(private val activity: Activity, private val panel: SidePanel)
                 prefs.fullScreenAfterSec = secs[i]
             }
             header("Playback")
+            // Off: Live TV opens on the guide alone until a channel is picked (LivePrefs.playLastOnOpening).
+            row(LivePrefs.PLAY_LAST_ON_OPENING, SettingsPanels.onOff(prefs.playLastOnOpening)) {
+                prefs.playLastOnOpening = !prefs.playLastOnOpening
+                refresh()
+            }
             liveBufferRow(this, activity)
         }
     }

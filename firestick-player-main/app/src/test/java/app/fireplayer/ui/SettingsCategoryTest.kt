@@ -51,6 +51,8 @@ class SettingsCategoryTest {
         )
         val added = listOf(
             "Manage playlists", "Manage EPG sources", "Live TV buffer",
+            // Live TV: whether opening it starts the channel watched last (on, as it always did).
+            "Play the last channel on opening",
             // Manage playlists and Update playlists sit under it, as Manage EPG sources does under EPG sources.
             "Playlists",
             // Films & Shows step 3: the add-ons and This TV.

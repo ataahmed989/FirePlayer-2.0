@@ -267,10 +267,22 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         return true
     }
 
+    /** What [setStatus] last showed: the status, the pods turned off and the playlist's name. */
+    private var shownStatus: PlayerHost.Status? = null
+    private var shownHidden: Set<String>? = null
+    private var shownSource: String? = null
+
     /** Pods as the VOD player writes them, each hidden when turned off in Settings › Look › Info pods. */
     @OptIn(UnstableApi::class)
     fun setStatus(s: PlayerHost.Status) {
         val hidden = prefs.hiddenChips
+        // The player says its status with every bit of its own news (a live window read again every few seconds, a
+        // caption line): the same status, pods and playlist as last time have nothing to set again (each pod's text
+        // set again asked for the whole screen to be laid out again).
+        if (s == shownStatus && hidden == shownHidden && playlistName == shownSource) return
+        shownStatus = s
+        shownHidden = HashSet(hidden)
+        shownSource = playlistName
         fun pod(chip: TextView, key: String, text: String?) {
             val shown = text?.takeIf { key !in hidden }
             chip.text = shown

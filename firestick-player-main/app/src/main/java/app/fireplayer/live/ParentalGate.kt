@@ -98,11 +98,14 @@ class ParentalGate(context: Context) {
     private fun setChannelBlocked(playlistId: String, channelId: String, blocked: Boolean) {
         val db = live.writableDatabase
         db.update("channel", ContentValues().apply { put("blocked", if (blocked) 1 else 0) }, "playlist_id = ? AND id = ?", arrayOf(playlistId, channelId))
+        // Every channel list leaves blocked channels out: the lists Live TV keeps are read again (LiveDb.listChanges).
+        live.listChanges.incrementAndGet()
     }
 
     private fun setGroupBlocked(playlistId: String, groupId: String, blocked: Boolean) {
         val db = live.writableDatabase
         db.update("channel_group", ContentValues().apply { put("blocked", if (blocked) 1 else 0) }, "playlist_id = ? AND id = ?", arrayOf(playlistId, groupId))
+        live.listChanges.incrementAndGet()
     }
 
     private fun isGroupBlocked(db: SQLiteDatabase, playlistId: String, groupId: String): Boolean =

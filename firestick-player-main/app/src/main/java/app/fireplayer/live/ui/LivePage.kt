@@ -22,6 +22,7 @@ import app.fireplayer.live.LiveDb
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.Playlist
 import app.fireplayer.live.Programme
+import app.fireplayer.live.ScopeLists
 import app.fireplayer.playback.LiveSession
 import app.fireplayer.playback.PlayerHost
 import app.fireplayer.shell.Tokens
@@ -156,11 +157,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val logos = LogoCache(t.dp(76)) { url, loaded ->
         if (loaded) {
             guide.invalidate()
-            refreshControls()
+            // The controls show one logo, the playing channel's: only that one landing concerns them (each of the
+            // guide's rows' logos used to work the controls' channel and programme out again).
+            if (url == controlsLogo) refreshControls()
         }
         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
         detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
-    }
+        logLogos()
+    }.also { LogoCache.useDisk(ctx) }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerGuide").apply { priority = Thread.NORM_PRIORITY - 1 } }
     /**
      * The viewer's own changes (favorites, groups) are stored here, not queued behind the guide's reads: the queue the
@@ -448,7 +452,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             override fun onPick(channel: Channel, cell: Cell?) = pick(channel)
             override fun onHold(channel: Channel) = openChannelPopup(channel)
             override fun onLeaveLeft() = openSidebar(focus = true)
-            override fun needProgrammes(channels: List<Channel>, from: Long, to: Long) = loadProgrammes(channels, from, to)
+            override fun needProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) = loadProgrammes(channels, onScreen, from, to)
             override fun logo(url: String): Logo? = logos.get(url)
         }
         guide.setOnFocusChangeListener { _, has -> if (has) closeSidebar() }
@@ -537,6 +541,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
     /** When the tab last started showing (uptime ms), until its guide is listed: for the log of how long that took. */
     private var openedAt = 0L
+    /**
+     * The same for its stages, each logged once per opening: the playlists and groups, the first listings and the
+     * first logos. A stage that comes long after ([OPENING_MS]: nothing was read at the opening, and this is a later
+     * scroll's) says nothing.
+     */
+    private var openGroupsAt = 0L
+    private var openProgrammesAt = 0L
+    private var openLogosAt = 0L
+    /** The logo cache's counts (kept on disk, fetched, without one) as they stood when the tab opened. */
+    private val logosAtOpen = IntArray(3)
+    /** The listings last asked for when the tab opened: still the last when its list shows, none were needed. */
+    private var askAtOpening: Any? = null
+
+    /** How long after the tab opened at [at] it is now, for a stage's line; null when that's no longer an opening's. */
+    private fun sinceOpening(at: Long): Long? =
+        if (at == 0L) null else (android.os.SystemClock.uptimeMillis() - at).takeIf { it <= OPENING_MS }
+
+    /** Once per opening, when the first logos asked for have all landed: how long they took and where they came from. */
+    private fun logLogos() {
+        if (openLogosAt == 0L || logos.pendingCount > 0) return
+        sinceOpening(openLogosAt)?.let { ms ->
+            Log.i(TAG, "Live TV: logos shown (${logos.fromDisk - logosAtOpen[0]} kept on disk, ${logos.fromNetwork - logosAtOpen[1]} fetched, " +
+                "${logos.failedCount - logosAtOpen[2]} without one) $ms ms after opening")
+        }
+        openLogosAt = 0L
+    }
+
     /** When a key last went down here (KeyEvent.eventTime), for the log of how long a channel took to show. */
     private var keyAt = 0L
 
@@ -551,16 +582,24 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // A channel that was playing comes back in the miniature (not full screen).
         openedAt = android.os.SystemClock.uptimeMillis()
         startedAt = openedAt
-        if (!player.onScreenStarted() && player.currentKey == null) {
-            prefs.lastChannel?.let { key ->
-                // Built now, while the channel is read, rather than when it arrives.
-                player.warm()
-                resumeLast(key)
-            }
-        }
+        openGroupsAt = openedAt
+        openProgrammesAt = openedAt
+        openLogosAt = openedAt
+        askAtOpening = programmeAsk
+        logosAtOpen[0] = logos.fromDisk
+        logosAtOpen[1] = logos.fromNetwork
+        logosAtOpen[2] = logos.failedCount
+        // (A channel that was playing when the tab was left comes back whatever the setting says: that's carrying on.)
+        val resume = if (!player.onScreenStarted() && player.currentKey == null && prefs.playLastOnOpening) prefs.lastChannel else null
+        // Built now, while the channel is read, rather than when it arrives.
+        if (resume != null) player.warm()
         // The rail and column as they were (the rail shows with the column, or while there's nothing else).
         layoutFor(columnOpen = sidebarOpen || playlists.isEmpty(), animate = false)
+        // The playlists and groups are asked for first and the last channel right behind them (two reads by key), so
+        // the guide's own list is read before the playing channel's group is (what Channel ▲ / ▼ move through): what
+        // is on screen first. Asked for the other way round, a long group list held up the guide's.
         reload(keepFocus = true)
+        resume?.let { resumeLast(it) }
         scheduleIdle()
         main.post(clockTick)
         // A sleep timer that waited while the page was away carries on.
@@ -600,6 +639,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (started) return
         guide.forgetProgrammes()
         logos.clear()
+        // The lists kept beside the one the guide shows (they are read again when asked for).
+        lists.clear()
     }
 
     fun release() {
@@ -608,6 +649,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         released = true
         ++reloadSerial
         ++loadSerial
+        listCancel?.cancel()
+        listCancel = null
         io.shutdown()
         // Queued favorites are still stored (the queue is the app's, not this page's).
     }
@@ -641,15 +684,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private fun reload(keepFocus: Boolean) {
         val serial = ++reloadSerial
         bg {
+            val t0 = android.os.SystemClock.uptimeMillis()
             val pls = db.playlists()
             val groups = pls.associate { it.id to db.groups(it.id) }
             // A guide counts as loading until its first import was attempted (worked or not).
             val withGuide = db.epgStatuses().map { it.source }.toSet()
+            val readMs = android.os.SystemClock.uptimeMillis() - t0
             main.post {
                 if (serial != reloadSerial || released) return@post
                 playlists = pls
-                // The playlists changed (or the tab came back): the playing group's order is read again.
-                invalidateZap()
                 // A first guide import can take minutes on a big provider: until it lands, empty rows say so.
                 guide.loadingPlaylists = if (sync.busy) pls.map { it.id }.filter { it !in withGuide }.toSet() else emptySet()
                 val first = !loaded
@@ -659,8 +702,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     if (!scopeValid(scope, pls, groups)) scope = GuideScope.AllPlaylists
                     sidebar.setData(pls, groups, scope)
                     groupNames = groups.values.flatten().associate { (it.playlistId to it.id) to it.name }
+                    sinceOpening(openGroupsAt)?.let { ms ->
+                        Log.i(TAG, "Live TV: groups listed (${pls.size} playlists, ${groupNames.size} groups) $ms ms after opening (read $readMs ms)")
+                    }
+                    openGroupsAt = 0L
                     loadChannels(focus = if (keepFocus) guide.focusedChannel()?.key ?: prefs.focus else null, enterGrid = false)
                 }
+                // The playlists changed (or the tab came back): the playing group's order is read again, behind the
+                // guide's own list (what's on screen comes first), and only when something was written since.
+                invalidateZap()
                 // The first load: focus wasn't placed yet (the page had nothing to focus).
                 if (focusPending || (first && !fullScreen && root.isShown && activity.currentFocus.let { it == null || !isInPage(it) && !host.railHasFocus() })) takeFocus()
             }
@@ -674,39 +724,148 @@ class LivePage(private val activity: Activity, private val host: Host) {
         is GuideScope.Group -> groups[s.playlistId].orEmpty().any { it.id == s.groupId }
     }
 
-    /** The scope whose channels the guide shows, and the one being loaded (null when none is on its way). */
+    /**
+     * The scope whose channels the guide shows (null while it shows none whole: nothing yet, or only a long list's
+     * first screenful, [firstScreenOf]), and the one being loaded (null when none is on its way).
+     */
     private var shownScope: GuideScope? = null
     private var loadingScope: GuideScope? = null
     /** OK/Right came while [loadingScope]'s list was loading: the grid is entered when it arrives. */
     private var pendingEnter = false
+    /** [LiveDb.listChanges] as it stood when the list the guide shows was read: unchanged, that list still holds. */
+    private var shownLists = -1
+    /** The long list whose first screenful the guide shows while the whole of it is read (else null). */
+    private var firstScreenOf: GuideScope? = null
+    /** The lists read lately, kept while nothing is written ([ScopeLists]). */
+    private val lists = ScopeLists<GuideScope, Channel>()
+    /** Stops the guide's list being read now, when another is asked for (null: none is). Main thread. */
+    private var listCancel: android.os.CancellationSignal? = null
+    /** The counts of list and guide writes the guide's loaded listings go with: either moves, they're forgotten. */
+    private var rowsLists = -1
+    private var rowsEpg = -1
 
+    /**
+     * [s]'s channels, on the background thread: as kept from an earlier read when nothing was written since, else
+     * read now (and kept), with the count of list writes they go with. Every playlist's are its playlists' lists one
+     * after another, so those are shared with each playlist's own All channels.
+     */
+    private fun listFor(s: GuideScope, cancel: android.os.CancellationSignal? = null): Pair<List<Channel>, Int> {
+        val version = db.listChanges.get()
+        lists.get(s, version)?.let { return it to version }
+        val list = if (s == GuideScope.AllPlaylists) db.playlists().flatMap { listFor(GuideScope.AllChannels(it.id), cancel).first }
+            else db.channels(s, cancel)
+        lists.put(s, version, list)
+        return list to version
+    }
+
+    /**
+     * Shows [scope]'s channels. Nothing written since they were last read: the list shown, or one kept from a moment
+     * ago, is shown as it is (no read). Otherwise it's read behind the screen; a list still being read for an earlier
+     * ask is given up first, and of a long list new to the guide the first screenful shows while the rest is read.
+     */
     private fun loadChannels(focus: ChannelKey?, enterGrid: Boolean) {
         val s = scope
         val serial = ++loadSerial
         if (loadingScope != s) pendingEnter = false
+        listCancel?.cancel()
+        listCancel = null
+        val version = db.listChanges.get()
+        val kept = if (shownScope == s && shownLists == version) guide.channelList() else lists.get(s, version)
+        if (kept != null) {
+            showChannels(s, kept, version, focus, enterGrid)
+            logListed(kept.size, "kept in memory", kept = true)
+            return
+        }
         loadingScope = s
+        val cancel = android.os.CancellationSignal()
+        listCancel = cancel
+        // The channel the list will open on, as showChannels picks it.
+        val wanted = focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus
+        // A long list the guide doesn't show yet, with the viewer still in the column (or on the rail).
+        val firstScreen = (s == GuideScope.AllPlaylists || s is GuideScope.AllChannels) && shownScope != s && firstScreenOf != s && !guide.isFocused
         bg {
-            val list = db.channels(s)
-            main.post {
-                if (serial != loadSerial || released) return@post
-                showChannels(s, list, focus, enterGrid)
-                if (openedAt != 0L) {
-                    Log.i(TAG, "Live TV: guide listed (${list.size} channels) ${android.os.SystemClock.uptimeMillis() - openedAt} ms after opening")
-                    openedAt = 0L
+            try {
+                val t0 = android.os.SystemClock.uptimeMillis()
+                if (firstScreen) {
+                    val part = db.channelsNear(s, wanted, FIRST_BEFORE, FIRST_AFTER)
+                    val partMs = android.os.SystemClock.uptimeMillis() - t0
+                    main.post { if (serial == loadSerial && !released && part.isNotEmpty()) showFirstScreen(s, part, wanted, partMs) }
                 }
+                val t1 = android.os.SystemClock.uptimeMillis()
+                val (list, read) = listFor(s, cancel)
+                val readMs = android.os.SystemClock.uptimeMillis() - t1
+                main.post {
+                    if (serial != loadSerial || released) return@post
+                    listCancel = null
+                    showChannels(s, list, read, focus, enterGrid)
+                    logListed(list.size, "read $readMs ms")
+                }
+            } catch (e: android.os.OperationCanceledException) {
+                // Another list was asked for meanwhile: that one is on its way.
             }
         }
     }
 
-    /** [s]'s [list] arrived: the guide shows it, focus on [focus] (else the channel playing, else the last focused). */
-    private fun showChannels(s: GuideScope, list: List<Channel>, focus: ChannelKey?, enterGrid: Boolean) {
+    /** The line for opening the guide, once per opening: how long until its list showed, and how it came. */
+    private fun logListed(channels: Int, how: String, kept: Boolean = false) {
+        if (openedAt == 0L) return
+        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: guide listed ($channels channels) $ms ms after opening ($how)") }
+        openedAt = 0L
+        // The list was the one already showing and it asked for no listings: its rows still had them.
+        if (kept && openProgrammesAt != 0L && programmeAsk === askAtOpening) {
+            sinceOpening(openProgrammesAt)?.let { ms -> Log.i(TAG, "Live TV: programmes shown (kept in memory) $ms ms after opening") }
+            openProgrammesAt = 0L
+        }
+    }
+
+    /** Listings loaded before the lists or the guide were last written are forgotten; otherwise they stay as loaded. */
+    private fun forgetStaleRows() {
+        val nowLists = db.listChanges.get()
+        val nowEpg = db.epgChanges.get()
+        if (rowsLists == nowLists && rowsEpg == nowEpg) return
+        rowsLists = nowLists
+        rowsEpg = nowEpg
+        guide.forgetProgrammes()
+    }
+
+    /**
+     * The first screenful of [s] (a long list still being read): [part], around [focus]. The guide shows it at once;
+     * until the whole list arrives ([showChannels]) it counts as no scope's list: the grid isn't entered, and nothing
+     * takes these few rows for the list (Channel ▲ / ▼, the playing channel's group).
+     */
+    private fun showFirstScreen(s: GuideScope, part: List<Channel>, focus: ChannelKey?, readMs: Long) {
+        shownScope = null
+        firstScreenOf = s
+        forgetStaleRows()
+        guide.showFirstScreen(part, focus)
+        sinceOpening(openedAt)?.let { ms -> Log.i(TAG, "Live TV: first channels shown (${part.size}) $ms ms after opening (read $readMs ms)") }
+    }
+
+    /**
+     * [s]'s [list] arrived (read at [version] list writes): the guide shows it, focus on [focus] (else the channel
+     * playing, else the last focused). Over its own first screenful, the rows on screen stay where they are.
+     */
+    private fun showChannels(s: GuideScope, list: List<Channel>, version: Int, focus: ChannelKey?, enterGrid: Boolean) {
         val reload = shownScope == s
+        val extend = firstScreenOf == s
         shownScope = s
+        shownLists = version
         loadingScope = null
+        firstScreenOf = null
         // The playing group's own list, just read: kept for Channel ▲ / ▼ (no read of its own).
-        if (s == zapScope && list.any { it.key.toString() == player.currentKey }) { zapList = list; zapReading = null }
-        guide.clearProgrammes()
-        guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus, reload)
+        if (s == zapScope && ChannelKey.parse(player.currentKey)?.let { list.holds(it) } == true) {
+            zapList = list
+            zapLists = version
+            zapReading = null
+        }
+        // Listings read before an update are read again; the others stay (a channel in two lists keeps its row), and
+        // the list itself asks for what it's missing.
+        forgetStaleRows()
+        val target = focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus
+        // Over its own first screenful, opened on the same channel: the whole list comes in under the rows showing.
+        // (Another channel is wanted by now, say one that started playing meanwhile: the list opens on that one.)
+        if (extend && (target == null || target == guide.focusedChannel()?.key)) guide.extendChannels(list)
+        else guide.setChannels(list, target, reload)
         if (list.isEmpty()) {
             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
                 if (sync.busy) "Updating the playlist…" else "No channels here.")
@@ -715,12 +874,42 @@ class LivePage(private val activity: Activity, private val host: Host) {
         pendingEnter = false
     }
 
-    private fun loadProgrammes(channels: List<Channel>, from: Long, to: Long) {
+    /** The listings asked for last, until they're read: an older ask still waiting then has nothing left to do. */
+    private class ProgrammeAsk(val channels: List<Channel>, val onScreen: Int)
+    @Volatile private var programmeAsk: ProgrammeAsk? = null
+
+    /**
+     * The guide wants listings for [channels] ([GuideView.Callbacks.needProgrammes]): the rows on screen are read and
+     * shown first, the rows around them after. A held Up or Down asks again at every row; only the newest ask is
+     * read (it covers what shows now), and one overtaken half-way stops after the rows on screen.
+     */
+    private fun loadProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long) {
+        val ask = ProgrammeAsk(channels, onScreen.coerceIn(0, channels.size))
+        programmeAsk = ask
         bg {
-            val map = db.programmes(channels, from, to)
-            main.post { if (!released) guide.putProgrammes(channels, map, from, to) }
+            if (programmeAsk !== ask) return@bg
+            val t0 = android.os.SystemClock.uptimeMillis()
+            // With none on screen (those are loaded), the rows around are the whole of it.
+            val first = if (ask.onScreen > 0) ask.channels.subList(0, ask.onScreen) else ask.channels
+            val map = db.programmes(first, from, to)
+            val readMs = android.os.SystemClock.uptimeMillis() - t0
+            main.post {
+                if (released) return@post
+                guide.putProgrammes(first, map, from, to)
+                sinceOpening(openProgrammesAt)?.let { ms ->
+                    Log.i(TAG, "Live TV: programmes shown (${first.size} rows, ${map.size} with listings) $ms ms after opening (read $readMs ms)")
+                }
+                openProgrammesAt = 0L
+            }
+            if (first.size == ask.channels.size || programmeAsk !== ask) return@bg
+            val rest = ask.channels.subList(ask.onScreen, ask.channels.size)
+            val more = db.programmes(rest, from, to)
+            main.post { if (!released) guide.putProgrammes(rest, more, from, to) }
         }
     }
+
+    /** Whether this list holds [key]'s channel (nothing is made to look). */
+    private fun List<Channel>.holds(key: ChannelKey): Boolean = any { it.id == key.channelId && it.playlistId == key.playlistId }
 
     private fun isInPage(v: View): Boolean {
         var p: View? = v
@@ -740,6 +929,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             guideLayer.animate().cancel()
             guideLayer.alpha = 1f
             guide.setChannels(emptyList(), null)
+            shownScope = null
+            firstScreenOf = null
         }
         // The tab rail stays reachable while there's nothing else to go to.
         if (noPlaylists) { sidebarOpen = true; layoutFor(columnOpen = true, animate = false) }
@@ -1069,7 +1260,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     private fun focusPlaying(): Boolean {
         val key = ChannelKey.parse(player.currentKey) ?: return false
-        if (guide.channelList().any { it.key == key }) { guide.focusChannel(key); return true }
+        if (guide.channelOf(key) != null) { guide.focusChannel(key); return true }
         val known = playingChannel?.takeIf { it.key == key }
         // The groups the column lists (a hidden group isn't one to show).
         val shown = groupNames.keys
@@ -1081,16 +1272,18 @@ class LivePage(private val activity: Activity, private val host: Host) {
             val ch = known ?: db.channel(key) ?: return@bg
             val group = ch.groupId?.takeIf { (ch.playlistId to it) in shown }?.let { GuideScope.Group(ch.playlistId, it) }
             for (s in listOfNotNull(zapIn, group, GuideScope.AllChannels(ch.playlistId)).distinct()) {
-                val list = db.channels(s)
-                if (list.none { it.key == key }) continue
+                val (list, read) = listFor(s)
+                if (!list.holds(key)) continue
                 main.post {
                     if (serial != loadSerial || released || fullScreen || player.currentKey != key.toString()) return@post
-                    // Any list still on its way is older than this: it's dropped.
+                    // Any list still on its way is older than this: it's dropped (and no longer read).
                     ++loadSerial
+                    listCancel?.cancel()
+                    listCancel = null
                     scope = s
                     prefs.scope = s
                     sidebar.select(s)
-                    showChannels(s, list, key, enterGrid = false)
+                    showChannels(s, list, read, key, enterGrid = false)
                     guide.focusChannel(key)
                 }
                 return@bg
@@ -1104,7 +1297,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val pending = zapPending
         val key = pending?.key ?: ChannelKey.parse(player.currentKey) ?: return
         // The guide's copy first (fresh favorite state), else the channel as tuned: it may be outside this scope.
-        val ch = pending ?: guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key }
+        val ch = pending ?: guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key }
         if (ch == null) {
             bg {
                 val found = db.channel(key) ?: return@bg
@@ -1125,9 +1318,12 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val cur = progs.firstOrNull { it.isOn(now) }
         val nxt = progs.firstOrNull { it.start >= (cur?.stop ?: now) }
         val plName = playlists.firstOrNull { it.id == ch.playlistId }?.name ?: ""
+        controlsLogo = ch.logo
         controls.setChannel(ch, cur, nxt, plName, ch.logo?.let { logos.get(it) }, now)
     }
 
+    /** The logo the controls were last given (or are waiting for). */
+    private var controlsLogo: String? = null
     private var controlsProgrammesFor: ChannelKey? = null
     private var controlsProgrammes: List<Programme> = emptyList()
 
@@ -1149,6 +1345,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private var zapScope: GuideScope? = null
     /** [zapScope]'s channels, read once and kept until the group or a playlist changes; null until read. */
     private var zapList: List<Channel>? = null
+    /** [LiveDb.listChanges] as it stood when [zapList] was read. */
+    private var zapLists = -1
     /** The channel whose group is being read now (else null), and how far presses meanwhile asked to go. */
     private var zapReading: ChannelKey? = null
     private var zapQueued = 0
@@ -1162,11 +1360,11 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val list = zapList
         when {
             // Picked in the guide's list: that list is the group, already read.
-            from != null && from == shownScope && guide.channelList().any { it.key == channel.key } -> {
-                zapScope = from; zapList = guide.channelList(); zapReading = null; zapQueued = 0; ++zapSerial
+            from != null && from == shownScope && guide.channelOf(channel.key) != null -> {
+                zapScope = from; zapList = guide.channelList(); zapLists = shownLists; zapReading = null; zapQueued = 0; ++zapSerial
             }
             // Moving within the group already read.
-            from != null && from == zapScope && list != null && list.any { it.key == channel.key } -> Unit
+            from != null && from == zapScope && list != null && list.holds(channel.key) -> Unit
             else -> { zapScope = null; zapList = null; resolveZap(channel, from) }
         }
         zapScope?.let { prefs.setZapGroupOf(channel.key, it) }
@@ -1175,6 +1373,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The group's list may have changed (a playlist read again, a favorite, a group hidden): it is read again. */
     private fun invalidateZap() {
         val ch = playingChannel?.takeIf { it.key.toString() == player.currentKey } ?: return
+        // Nothing was written since it was read: it stands.
+        if (zapList != null && zapLists == db.listChanges.get()) return
         zapList = null
         resolveZap(ch, zapScope)
     }
@@ -1187,13 +1387,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val key = channel.key
         bg {
             for (s in ZapOrder.candidates(from, last, key.playlistId, channel.groupId)) {
-                val list = runCatching { db.channels(s) }.getOrNull() ?: continue
-                if (list.none { it.key == key }) continue
+                // The guide's own copy when it has just read the same list.
+                val (list, read) = runCatching { listFor(s) }.getOrNull() ?: continue
+                if (!list.holds(key)) continue
                 main.post {
                     if (serial != zapSerial || released) return@post
                     zapReading = null
                     zapScope = s
                     zapList = list
+                    zapLists = read
                     prefs.setZapGroupOf(key, s)
                     // Presses that came while it was read now act, from the channel playing.
                     val q = zapQueued
@@ -1214,7 +1416,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     private fun zap(delta: Int, held: Boolean = false) {
         val playing = player.currentKey != null
-        val list = if (playing) zapList else guide.channelList()
+        // Nothing playing: the guide's list, once it's whole (a long list's first screenful isn't the list).
+        val list = if (playing) zapList else guide.channelList().takeIf { firstScreenOf == null }
         if (list == null) {
             // The group is still being read (just after a channel or playlist change): the press waits for it.
             if (zapReading != null) zapQueued += delta
@@ -1391,7 +1594,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     private fun toggleFavorite(target: Channel? = null, notice: Boolean = true): Boolean? {
         val key = target?.key ?: ChannelKey.parse(player.currentKey) ?: return null
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: target ?: return null
+        val ch = guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key } ?: target ?: return null
         val fav = !ch.favorite
         // Shown at once (the star fills, the guide row and the details follow); stored behind it. The database can be
         // busy for a while with a guide update, which must not hold up the button. Only that row changes in the guide.
@@ -1417,7 +1620,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     loadChannels(focus = keep, enterGrid = false)
                 } else {
                     // Already shown; applied again in case a list arrived in between.
-                    guide.channelList().firstOrNull { it.key == key }?.let { guide.updateChannel(it.copy(favorite = fav)) }
+                    guide.channelOf(key)?.let { guide.updateChannel(it.copy(favorite = fav)) }
                     playingChannel = playingChannel?.let { if (it.key == key) it.copy(favorite = fav) else it }
                     refreshControls()
                 }
@@ -1573,7 +1776,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The programme on the playing channel now, from the guide (as the controls show it), or null. */
     private fun programmeNow(): Programme? {
         val key = ChannelKey.parse(player.currentKey) ?: return null
-        val ch = guide.channelList().firstOrNull { it.key == key } ?: playingChannel?.takeIf { it.key == key } ?: return null
+        val ch = guide.channelOf(key) ?: playingChannel?.takeIf { it.key == key } ?: return null
         val now = System.currentTimeMillis()
         val progs = guide.programmesOf(ch).ifEmpty { controlsProgrammes.takeIf { controlsProgrammesFor == ch.key }.orEmpty() }
         return progs.firstOrNull { it.isOn(now) }
@@ -1800,6 +2003,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         private const val ZAP_SETTLE_MS = 250L
         /** Channel History: the last ten channels watched before the one playing (design-layout.md). */
         private const val HISTORY_SIZE = 10
+        /**
+         * A long list's first screenful: this many channels before the one it opens on and this many from it on, as
+         * many rows as the guide asks listings for around its eight (two screens above, three below).
+         */
+        private const val FIRST_BEFORE = 16
+        private const val FIRST_AFTER = 24
+        /** A stage of opening the tab is logged as such only this soon after it. */
+        private const val OPENING_MS = 30_000L
         /** Column and rail sliding in and out. */
         private const val SLIDE_MS = 220L
         /** The miniature growing to full screen, and shrinking back. */
@@ -1840,6 +2051,11 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
 /** The Live TV tab's own remembered state and its provisional settings (separate file: nothing existing changes). */
 class LivePrefs(context: Context) {
     private val sp = context.getSharedPreferences("fireplayer_live", Context.MODE_PRIVATE)
+
+    companion object {
+        /** [playLastOnOpening]'s row in Settings › Live TV, as its category lists it. */
+        const val PLAY_LAST_ON_OPENING = "Play the last channel on opening"
+    }
 
     var scope: GuideScope?
         get() = GuideScope.decode(sp.getString("scope", null))
@@ -1883,6 +2099,15 @@ class LivePrefs(context: Context) {
     var epgUpdateHours: Int
         get() = sp.getInt("epg_update_h", 24)
         set(v) = sp.edit().putInt("epg_update_h", v).apply()
+
+    /**
+     * Play the last channel on opening (Settings › Live TV): opening Live TV with nothing playing starts the channel
+     * watched last in the small picture. On by default, as it always did; off, it opens on the guide alone (no
+     * stream, no sound, the provider's connection left free) until a channel is picked.
+     */
+    var playLastOnOpening: Boolean
+        get() = sp.getBoolean("play_last_on_opening", true)
+        set(v) = sp.edit().putBoolean("play_last_on_opening", v).apply()
 
     /** Live TV buffer: how much of a channel is loaded ahead. Default Medium, the buffer live TV always had. */
     var liveBuffer: app.fireplayer.player.LiveBuffer

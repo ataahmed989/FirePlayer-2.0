@@ -57,7 +57,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         /** Center held on [channel]: its small window (Favorite, Assign favorites). The release after it does nothing. */
         fun onHold(channel: Channel)
         fun onLeaveLeft()
-        fun needProgrammes(channels: List<Channel>, from: Long, to: Long)
+        /**
+         * Listings are wanted for [channels] over [from, to). The first [onScreen] of them are rows showing now, to be
+         * read (and handed to [putProgrammes]) first; the rest are the rows around them.
+         */
+        fun needProgrammes(channels: List<Channel>, onScreen: Int, from: Long, to: Long)
         /** [url]'s logo with its plate, if it has loaded (never waits for it). */
         fun logo(url: String): Logo?
     }
@@ -71,7 +75,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     /** The channel playing (in the miniature or full screen): its name and the ▶ after it are blue. */
     var playingKey: ChannelKey? = null
-        set(v) { field = v; invalidate() }
+        // Set with every word from the player (its buffer filling, a caption line): drawn again only when it changes.
+        set(v) { if (field != v) { field = v; invalidate() } }
 
     /** Playlists whose guide is still being loaded for the first time: their empty rows say so. */
     var loadingPlaylists: Set<String> = emptySet()
@@ -245,15 +250,66 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     fun setChannels(list: List<Channel>, focus: ChannelKey?, reload: Boolean = false) {
         stopMotion()
         val keep = focus ?: channels.getOrNull(focusRow)?.key
-        channels = list
-        indexChannels()
-        focusRow = GuideFocus.rowAfter(list.indexOfFirst { it.key == keep }, focusRow, list.size, reload)
+        firstScreen = false
+        // The very list already shown (nothing was written since it was read) keeps its rows' text as made.
+        if (list !== channels) {
+            channels = list
+            indexChannels()
+        }
+        focusRow = GuideFocus.rowAfter(rowOf(keep), focusRow, list.size, reload)
         // The time window catches up with now (it may have been opened a while ago), unless the viewer had moved
         // ahead into later programmes.
         val now = clock()
         if (cursor < now) cursor = now
         if (windowStart < GuideCells.slotStart(now)) windowStart = GuideCells.slotStart(now)
         jumpScroll(targetScroll(focusRow) * rowH)
+        requested = null
+        ensureLoaded()
+        notifyFocus()
+        invalidate()
+    }
+
+    /** [key]'s row (-1: not listed), found in the rows' keys as indexed: nothing is made to look. */
+    private fun rowOf(key: ChannelKey?): Int = if (key == null) -1 else keys.indexOf(key)
+
+    /**
+     * Only a long list's first screenful is showing (the rows around its focus, while the whole list is read): set by
+     * [showFirstScreen], over with [extendChannels] or any other list. Its ends aren't the list's ends, so nothing
+     * goes round them.
+     */
+    private var firstScreen = false
+
+    /**
+     * The first screenful of a long list still being read: [part], the rows around [focus] (or the list's first).
+     * They show at once, with their listings; [extendChannels] puts the whole list under them when it arrives.
+     */
+    fun showFirstScreen(part: List<Channel>, focus: ChannelKey?) {
+        setChannels(part, focus)
+        firstScreen = true
+    }
+
+    /**
+     * The whole [list] has arrived where its first screenful was showing ([showFirstScreen]): the rows on screen stay
+     * exactly where they are (the focused channel on the same row of the screen), their listings as loaded.
+     */
+    fun extendChannels(list: List<Channel>) {
+        stopMotion()
+        val key = channels.getOrNull(focusRow)?.key
+        val oldTop = (scrollTarget / rowH).roundToInt()
+        val oldFocus = focusRow
+        firstScreen = false
+        channels = list
+        indexChannels()
+        val i = rowOf(key)
+        if (i >= 0) {
+            focusRow = i
+            jumpScroll(GuideCells.topKeeping(oldTop, oldFocus, i, visibleRows(), list.size) * rowH)
+        } else {
+            // Its channel went meanwhile (a playlist update): the list's start, as for any new list.
+            focusRow = 0
+            jumpScroll(0f)
+            jumpScroll(targetScroll(focusRow) * rowH)
+        }
         requested = null
         ensureLoaded()
         notifyFocus()
@@ -292,6 +348,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     fun focusedCell(): Cell? = focusedChannel()?.let { cellsOf(it) }?.let { cells -> cells.getOrNull(GuideCells.at(cells, cursor)) }
 
     fun channelList(): List<Channel> = channels
+
+    /** [key]'s channel as the list shown holds it (null: not in it). */
+    fun channelOf(key: ChannelKey): Channel? = channels.getOrNull(rowOf(key))
 
     /** The loaded programmes of [ch], in order (empty when not loaded or none listed). */
     fun programmesOf(ch: Channel): List<Programme> = rows[ch.key]?.cells?.mapNotNull { it.programme }.orEmpty()
@@ -365,7 +424,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     /** Moves focus to [key] (after a channel change in full screen, the guide shows where you are). */
     fun focusChannel(key: ChannelKey) {
-        val i = channels.indexOfFirst { it.key == key }
+        val i = rowOf(key)
         if (i < 0) return
         val now = clock()
         cursor = now
@@ -389,8 +448,10 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             // Down from the last channel goes round to the first, Up from the first to the last; held, they stop at
             // the end (holding Down doesn't go round and round).
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                val to = ListMath.step(focusRow, channels.size, keyCode == KeyEvent.KEYCODE_DPAD_DOWN, event.repeatCount > 0) { true }
-                if (to >= 0) moveTo(to, d)
+                val down = keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                val to = ListMath.step(focusRow, channels.size, down, event.repeatCount > 0) { true }
+                // A first screenful's ends aren't the list's: focus waits there for the whole list, it doesn't go round.
+                if (to >= 0 && !(firstScreen && GuideCells.wentRound(focusRow, to, down))) moveTo(to, d)
             }
             KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_CHANNEL_UP -> moveTo((focusRow - visibleRows()).coerceAtLeast(0), d)
             KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> moveTo((focusRow + visibleRows()).coerceAtMost(channels.size - 1), d)
@@ -590,14 +651,23 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val base = minOf(windowStart, GuideCells.slotStart(clock()))
         val tFrom = base - GuideCells.SLOT_MS * 2
         val tTo = maxOf(windowStart + windowMs() + 4 * 60 * 60_000L, until)
-        val missing = channels.subList(from, to).filter { c ->
-            rows[c.key].let { it == null || it.from > base || it.to < windowStart + windowMs() || (force && it.to < tTo) }
+        val windowEnd = windowStart + windowMs()
+        // The rows showing (one more while they scroll) are asked for first, the rows around them after.
+        val shownTo = (top + visible + 1).coerceAtMost(to)
+        val shown = ArrayList<Channel>()
+        val around = ArrayList<Channel>()
+        var first: ChannelKey? = null
+        for (i in from until to) {
+            val row = rows[keys[i]]
+            if (row != null && row.from <= base && row.to >= windowEnd && !(force && row.to < tTo)) continue
+            if (first == null) first = keys[i]
+            (if (i in top until shownTo) shown else around) += channels[i]
         }
-        if (missing.isEmpty()) return
-        val key = "${missing.first().key}|${missing.size}|$tFrom"
+        if (first == null) return
+        val key = "$first|${shown.size + around.size}|$tFrom"
         if (key == requested) return
         requested = key
-        callbacks?.needProgrammes(missing, tFrom, tTo)
+        callbacks?.needProgrammes(shown + around, shown.size, tFrom, tTo)
     }
 
     /** After the width stops changing: listings for the wider window, if any are missing (usually none). */

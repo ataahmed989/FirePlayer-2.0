@@ -558,6 +558,7 @@ class PlayerHost private constructor(context: Context) {
 
         override fun onTracksChanged(tracks: Tracks) {
             val p = player ?: return
+            if (!tracks.isEmpty) timing.tracks(SystemClock.uptimeMillis())
             // Reopened by Live TV buffer: the captions picked before, rather than the first of their kind.
             if (!pickAgain(p, tracks)) keepCaptions(p, tracks)
         }
@@ -568,7 +569,11 @@ class PlayerHost private constructor(context: Context) {
             // Another app took the sound for good (its film or music started): the channel paused itself, and shows as
             // paused, as if the viewer had paused it. (A moment's loss, Alexa answering, doesn't come here: the player
             // waits and carries on by itself; see onPlaybackSuppressionReasonChanged.)
-            if (reason != Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) return
+            // The same when the sound's way out goes (the TV or sound bar switched off or over, headphones
+            // disconnected): the player pauses itself then too (setHandleAudioBecomingNoisy). That pause showed
+            // nowhere: a still picture that said it was playing, and a first Play/Pause press that did nothing.
+            if (!LivePause.byItself(reason)) return
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) Log.i(TAG, "Live: paused itself, the sound's output went away")
             paused = !playWhenReady
             if (paused) behind = true
             publish()
@@ -654,6 +659,11 @@ class PlayerHost private constructor(context: Context) {
     private val bandwidth = object : AnalyticsListener {
         override fun onBandwidthEstimate(eventTime: AnalyticsListener.EventTime, totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
             this@PlayerHost.bitrateEstimate = bitrateEstimate
+        }
+
+        /** How long the picture's decoder took to start, for the channel's timing line (once a channel, never per frame). */
+        override fun onVideoDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+            timing.decoder(initializationDurationMs)
         }
     }
 

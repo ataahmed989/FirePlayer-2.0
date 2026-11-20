@@ -37,6 +37,50 @@ class LiveTimingTest {
         assertNull(t.firstFrame(400))
     }
 
+    @Test fun whereTheTimeWentWhenItIsKnown() {
+        val t = LiveTiming()
+        t.opened(now = 1_012, pressed = 1_000, kind = "TS", reusedPlayer = true)
+        t.tracks(1_400)
+        t.decoder(85)
+        t.ready(1_600)
+        assertEquals(
+            "Channel shown in 850 ms (key to open 12 ms, ready at 600 ms; TS; player reused; tracks at 400 ms; video decoder 85 ms)",
+            t.firstFrame(1_850),
+        )
+    }
+
+    @Test fun onlyTheFirstTracksAndDecoderOfAStreamCount() {
+        val t = LiveTiming()
+        t.opened(now = 100, pressed = 100, kind = "HLS", reusedPlayer = true)
+        t.tracks(300)
+        // The tracks change again as captions are picked, and a second decoder starts on a change of quality.
+        t.tracks(900)
+        t.decoder(60)
+        t.decoder(200)
+        assertEquals(
+            "Channel shown in 1000 ms (key to open 0 ms, ready at 1000 ms; HLS; player reused; tracks at 200 ms; video decoder 60 ms)",
+            t.firstFrame(1_100),
+        )
+    }
+
+    @Test fun whatWasNotedForOneStreamIsNotSaidOfTheNext() {
+        val t = LiveTiming()
+        t.opened(100, 100, "TS", true)
+        t.tracks(200)
+        t.decoder(70)
+        t.firstFrame(500)
+        // Noted with no stream being timed (the first frame is out): not kept for the next one.
+        t.tracks(600)
+        t.decoder(90)
+        t.opened(1_000, 1_000, "TS", true)
+        assertEquals("Channel shown in 400 ms (key to open 0 ms, ready at 400 ms; TS; player reused)", t.firstFrame(1_400))
+        // A sound-only channel has no picture decoder; one that reports nonsense isn't believed.
+        t.opened(2_000, 2_000, "TS", true)
+        t.decoder(-1)
+        t.tracks(2_250)
+        assertEquals("Channel shown in 500 ms (key to open 0 ms, ready at 500 ms; TS; player reused; tracks at 250 ms)", t.firstFrame(2_500))
+    }
+
     @Test fun theKindOfStreamNeverTheAddress() {
         assertEquals("HLS", LiveTiming.kindOf("index.M3U8"))
         assertEquals("DASH", LiveTiming.kindOf("manifest.mpd"))
