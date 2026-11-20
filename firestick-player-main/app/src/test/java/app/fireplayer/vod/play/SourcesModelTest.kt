@@ -85,7 +85,7 @@ class SourcesModelTest {
         assertTrue(text.contains("Torrentio says: Release.5.2160p.WEB-DL"))
         assertTrue(text.contains("MediaFusion says: Release 5"))
         assertTrue(text.contains("Offered by: Both add-ons"))
-        assertTrue(text.contains("Probably on Real-Debrid"))
+        assertTrue(text.contains("Probably on your debrid service"))
         assertFalse(text.contains("invalid"))
         assertTrue(SourcesModel.asksFirst(notReady))
         assertFalse(SourcesModel.asksFirst(both))

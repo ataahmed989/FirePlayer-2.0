@@ -93,7 +93,7 @@ class PlayRulesTest {
         assertTrue(PlayRules.sourceLine(done.copy(lastUsed = last))!!.let { it.startsWith("Last used · ") && it.endsWith("from Both add-ons") })
         assertEquals("No sources found", PlayRules.sourceLine(Fixtures.list(target, emptyList())))
         val notReady = Fixtures.source(3, readiness = Readiness.NOT_READY, group = SourceGroup.NOT_ON_RD)
-        assertEquals("None ready on Real-Debrid · 1 to fetch in Sources", PlayRules.sourceLine(Fixtures.list(target, listOf(notReady))))
+        assertEquals("None ready on your debrid service · 1 to fetch in Sources", PlayRules.sourceLine(Fixtures.list(target, listOf(notReady))))
         val noAddons = Fixtures.list(target, emptyList(), states = Addon.entries.associateWith { AddonState.NotSet })
         assertEquals(PlayRules.NO_ADDONS_LINE, PlayRules.sourceLine(noAddons))
         // Nobody answered yet: the line stays empty.

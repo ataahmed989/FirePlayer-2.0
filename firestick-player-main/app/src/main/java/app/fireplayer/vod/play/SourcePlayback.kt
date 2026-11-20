@@ -211,9 +211,9 @@ class SourcePlayback(
 
     private fun askFetch(s: PlaybackSource) {
         host.ask(
-            "None of the ready sources played. Ask Real-Debrid to fetch ${PlayRules.badges(s).ifEmpty { "this source" }}? It can take a while and uses a download slot.",
+            "None of the ready sources played. Ask your debrid service to fetch ${PlayRules.badges(s).ifEmpty { "this source" }}? It can take a while and uses a download slot.",
             listOf(
-                "Ask Real-Debrid to fetch it" to {
+                "Ask your debrid service to fetch it" to {
                     opening?.cancel()
                     opening = session.fetch(s) { onOpened(it, OpenWhy.USER) }
                 },

@@ -117,7 +117,7 @@ object PlayRules {
         if (pick == null) {
             return if (list.sources.isEmpty()) {
                 if (list.complete) "No sources found" else null
-            } else "None ready on Real-Debrid · ${list.sources.size} to fetch in Sources"
+            } else "None ready on your debrid service · ${list.sources.size} to fetch in Sources"
         }
         val lead = when {
             list.lastUsed != null -> "Last used"
@@ -170,7 +170,11 @@ object PlayRules {
     }
 
     /** "Torrentio", "MediaFusion", or "Both add-ons". */
-    fun addonsOf(s: PlaybackSource): String = if (s.bothAddons) "Both add-ons" else s.addons.firstOrNull()?.label.orEmpty()
+    fun addonsOf(s: PlaybackSource): String = when {
+        s.addons.size == 2 -> "Both add-ons"
+        s.addons.size > 2 -> "All ${s.addons.size} add-ons"
+        else -> s.addons.firstOrNull()?.label.orEmpty()
+    }
 
     /** Where a source's facts came from: "from Torrentio" until FirePlayer measured it ("✓ played Nov 12"). */
     fun factsFrom(s: PlaybackSource, day: (Long) -> String): String {

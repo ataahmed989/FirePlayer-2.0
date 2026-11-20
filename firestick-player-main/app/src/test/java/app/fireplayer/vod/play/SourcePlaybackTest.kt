@@ -256,7 +256,7 @@ class SourcePlaybackTest {
         s.answer(Opened.AskFetch(nr))
         val q = questions.single()
         assertTrue(q.first.startsWith("None of the ready sources played"))
-        q.second.first { it.first == "Ask Real-Debrid to fetch it" }.second()
+        q.second.first { it.first == "Ask your debrid service to fetch it" }.second()
         assertEquals(listOf(nr), s.fetched)
         // "Not now" stops with a pointer to Sources.
         s.answer(Opened.AskFetch(nr))

@@ -39,9 +39,9 @@ object SourcesModel {
     const val BEST_HEADING = "Best for this TV"
 
     /** The readiness note under the totals. */
-    const val READY_NOTE = "Probably on Real-Debrid unless marked (the add-ons' guess; ✓ played = FirePlayer has played it)"
+    const val READY_NOTE = "Probably on your debrid service unless marked (the add-ons' guess; ✓ played = FirePlayer has played it)"
 
-    const val NOT_ON_RD_NOTE = "Real-Debrid has to download these first: they can't play straight away and use a download slot."
+    const val NOT_ON_RD_NOTE = "Your debrid service has to download these first: they can't play straight away and use a download slot."
 
     /**
      * The panel's entries for [list] (null: nothing asked yet). [opened] are groups the viewer opened (a closed group's
@@ -71,7 +71,7 @@ object SourcesModel {
         val both = list.sources.count { it.bothAddons }
         val totals = buildString {
             append("${list.sources.size} source${if (list.sources.size == 1) "" else "s"}")
-            if (both > 0) append(" · $both offered by both")
+            if (both > 0) append(" · $both offered by more than one add-on")
         }
         out += Item("note:totals", Kind.NOTE, totals)
         out += Item("note:ready", Kind.NOTE, READY_NOTE)
@@ -136,9 +136,9 @@ object SourcesModel {
         f.group?.let { out += "Release group" to it }
         if (f.languages.isNotEmpty()) out += "Languages" to f.languages.joinToString(", ") { it.uppercase() }
         f.seeders?.let { out += "Seeders" to "$it" }
-        out += "Real-Debrid" to when (s.readiness) {
-            Readiness.PROBABLY_READY -> "Probably on Real-Debrid (the add-on's guess)"
-            Readiness.NOT_READY -> "Not on Real-Debrid yet: it has to download it first"
+        out += "Debrid" to when (s.readiness) {
+            Readiness.PROBABLY_READY -> "Probably on your debrid service (the add-on's guess)"
+            Readiness.NOT_READY -> "Not on your debrid service yet: it has to download it first"
             Readiness.UNKNOWN -> "Not said"
         }
         out += "Offered by" to PlayRules.addonsOf(s) + if (s.copies > 1) " · ×${s.copies} copies" else ""

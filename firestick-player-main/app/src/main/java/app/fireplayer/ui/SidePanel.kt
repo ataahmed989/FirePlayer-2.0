@@ -1089,6 +1089,7 @@ class SidePanel(private val activity: Activity) {
             "Add-ons" to R.drawable.ic_server,
             "Torrentio" to R.drawable.ic_server,
             "MediaFusion" to R.drawable.ic_server,
+            "StremThru Torz" to R.drawable.ic_server,
             "This TV" to R.drawable.ic_display,
             "Best for this TV" to R.drawable.ic_head_star,
             "Sound formats" to R.drawable.ic_audio,
