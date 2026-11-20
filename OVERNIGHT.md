@@ -128,3 +128,8 @@ and continue from the first unfinished step. Update the status lines here as ste
   line; 1,196 tests) and INSTALLED on the TV as fp-next-60 while it was asleep (not woken). The TorBox check on The
   Odyssey waits until the TV is on and idle (it plays sound: do not wake the TV to do it). Step 4 running (workflow
   run wf_e0829f9c-b3b: Multiview -> PiP -> review; branches feat/multiview, feat/pip, feat/mvpip-review).
+- 15:12 UTC: 1d TorBox check DONE on the TV (fp-next-60), The Odyssey: Torrentio 10 sources, MediaFusion 10;
+  Torrentio source played ("Source: Torrentio · cached · streams from torbox.app (TorBox)", first frame 3.3 s);
+  MediaFusion best (4K DV REMUX) played ("... MediaFusion · cached · streams from torbox.app (TorBox)", first frame
+  3.3 s). StremThru Torz not checked (no link entered yet). Seen in the log: one EPG source fails to parse
+  ("EPG for kytv.xyz failed: XmlPullParserException") - tell the user.
