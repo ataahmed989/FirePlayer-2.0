@@ -59,7 +59,8 @@ enum class RamTier(
 /**
  * What the film's buffer gets on this TV (see [FilmMemory.plan]): [budgetBytes] in all, [backBufferMs] of it behind
  * where the film plays, held to [backCapBytes] (0: no limit). [byFreeMemory]: the budget is below the tier's because
- * little memory was free when the film started.
+ * little memory was free when the film started; [tierBytes] is what it would be with enough free (the most it can be
+ * raised to once room has been made, [FilmMemory.afterRoom]).
  */
 data class FilmBufferPlan(
     val tier: RamTier,
@@ -67,6 +68,7 @@ data class FilmBufferPlan(
     val backBufferMs: Int,
     val backCapBytes: Long = 0L,
     val byFreeMemory: Boolean = false,
+    val tierBytes: Int = budgetBytes,
 )
 
 /**
@@ -119,7 +121,27 @@ object FilmMemory {
             // What's kept behind is held to the smaller of the two tiers' sizes, as its length is.
             backCapBytes = listOf(tier.backCapMiB, fits.backCapMiB).filter { it > 0 }.minOrNull()?.let { it.toLong() shl 20 } ?: 0L,
             byFreeMemory = budget < byTier,
+            tierBytes = byTier.toInt(),
         )
+    }
+
+    /**
+     * The film's budget once room has been made for it: [budgetBytes] is what it got when its player was built, held
+     * under [tierBytes] by the memory free at that moment. That moment comes before the room is made: the player is
+     * built as soon as the link is checked (about half a second after OK), while the page it was started from lets go
+     * of its pictures and caches only once the player's screen covers it, and the film or episode before (Next
+     * episode, a rebuilt player) has only just let go of its own buffer, which Android hasn't taken back yet. So the
+     * free memory is read again when that memory is back ([FilmRoom]): [freeBytes] free now, plus [heldBytes] the
+     * film's buffer already holds itself, by the same rule as at the start ([plan]: all but [RESERVE_BYTES]).
+     *
+     * Only ever more, and never past [tierBytes]: a reading that comes out lower (the decoder has taken its frames
+     * meanwhile) changes nothing, and memory running short later is [MemoryPressure]'s to answer. Gives back the
+     * budget from now on ([budgetBytes] when nothing changes, or [freeBytes] isn't known).
+     */
+    fun afterRoom(budgetBytes: Int, tierBytes: Int, freeBytes: Long, heldBytes: Long): Int {
+        if (freeBytes <= 0L || budgetBytes >= tierBytes) return budgetBytes
+        val spare = freeBytes + heldBytes.coerceAtLeast(0L) - RESERVE_BYTES
+        return minOf(tierBytes.toLong(), spare).toInt().coerceAtLeast(budgetBytes)
     }
 
     /**

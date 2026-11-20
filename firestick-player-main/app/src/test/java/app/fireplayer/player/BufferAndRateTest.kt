@@ -49,6 +49,63 @@ class BufferAndRateTest {
         assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.plan(RamTier.TINY, 32 * mib, freeBytes = 50 * mib).budgetBytes)
     }
 
+    // ---- The buffer once room has been made for it (FilmMemory.afterRoom)
+
+    private val tier128 = (128 * mib).toInt()
+
+    @Test fun aPlanSaysWhatItsTierWouldGiveWithRoom() {
+        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib).tierBytes)
+        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 600 * mib).tierBytes)
+        assertEquals(tier128, FilmMemory.plan(RamTier.SMALL, stickHeap).tierBytes)
+        // The heap limit holds the tier's own size down too: that is as far as room can raise it.
+        assertEquals((60 * mib).toInt(), FilmMemory.plan(RamTier.LARGE, 100 * mib, freeBytes = 50 * mib).tierBytes)
+    }
+
+    @Test fun aBufferHeldDownAtTheStartGetsItsTiersSizeOnceThePageLetGo() {
+        // Built with 340 MiB free (80 MiB); the page then lets go of 90 MiB while the film has loaded 10 MiB.
+        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)
+        val after = FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, freeBytes = 420 * mib, heldBytes = 10 * mib)
+        assertEquals(tier128, after)
+    }
+
+    @Test fun theNextEpisodeIsNotHeldDownByTheLastOnesBuffer() {
+        // Built while the last episode's 128 MiB weren't collected yet: 200 MiB free, the floor.
+        val started = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 200 * mib)
+        assertEquals(FilmMemory.FREE_FLOOR_BYTES, started.budgetBytes)
+        // Collected: 328 MiB free, of which the new buffer may take all but the reserve; more when more is free.
+        assertEquals((68 * mib).toInt(), FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 328 * mib, 0L))
+        assertEquals(tier128, FilmMemory.afterRoom(started.budgetBytes, started.tierBytes, 400 * mib, 0L))
+    }
+
+    @Test fun whatTheBufferHoldsItselfCountsAsFreeForIt() {
+        // 300 MiB free with 60 MiB of the film loaded is as 360 MiB free with none: 100 MiB.
+        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom((80 * mib).toInt(), tier128, 300 * mib, 60 * mib))
+        assertEquals((100 * mib).toInt(), FilmMemory.afterRoom((80 * mib).toInt(), tier128, 360 * mib, 0L))
+    }
+
+    @Test fun roomNeverLowersABufferNorTakesItPastItsTier() {
+        val held = (80 * mib).toInt()
+        // The decoder took its frames meanwhile: less is free than at the start. Nothing changes.
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 150 * mib, heldBytes = 20 * mib))
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 1 * mib, heldBytes = 0L))
+        // Not known: nothing changes.
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = 0L, heldBytes = 50 * mib))
+        assertEquals(held, FilmMemory.afterRoom(held, tier128, freeBytes = -1L, heldBytes = 0L))
+        // Plenty free: the tier's size, no more.
+        assertEquals(tier128, FilmMemory.afterRoom(held, tier128, freeBytes = 4096 * mib, heldBytes = 0L))
+        // Already at its tier's size: left alone.
+        assertEquals(tier128, FilmMemory.afterRoom(tier128, tier128, freeBytes = 4096 * mib, heldBytes = 0L))
+        assertEquals(tier128, FilmMemory.afterRoom(tier128, tier128, freeBytes = 100 * mib, heldBytes = 0L))
+    }
+
+    @Test fun aRaisedBufferIsSqueezedFromItsNewSize() {
+        // Memory short as the room is made: three quarters of the new budget, as of any budget.
+        val raised = FilmMemory.afterRoom((64 * mib).toInt(), tier128, 420 * mib, 0L)
+        assertEquals(tier128, raised)
+        assertEquals((96 * mib).toInt(), FilmMemory.capFor(raised, 1))
+        assertEquals((64 * mib).toInt(), FilmMemory.capFor(raised, 2))
+    }
+
     // ---- What's kept behind, held to a size (BackBuffer.keepUs)
 
     private val sixSeconds = 6_000_000L

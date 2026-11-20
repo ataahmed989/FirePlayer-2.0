@@ -86,6 +86,7 @@ import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
 import app.fireplayer.player.FilmMemory
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MemoryPressure
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
@@ -1170,6 +1171,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         builtPlayer = built
         // A new player while the TV is still short of memory starts squeezed.
         if (memoryPressure.step > 0) built.squeeze(memoryPressure.step)
+        // Its buffer was sized by the memory free just now; told when room made for it is back with the TV (FilmRoom).
+        FilmRoom.onMade = roomListener
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
@@ -1287,7 +1290,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (diagMade.isInitialized()) diag.playerGone()
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
+        // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
+        if (FilmRoom.onMade === roomListener) FilmRoom.onMade = null
         p.release()
+        // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
+        // built meanwhile (the next episode's, a rebuilt one) hears when it's there.
+        FilmRoom.made()
         assHandler?.release()
         assHandler = null
         builtPlayer = null
@@ -1311,6 +1319,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun rebuildPlayer() {
         releasePlayer()
         initPlayer()
+    }
+
+    private val roomListener: () -> Unit = { filmRoomMade() }
+
+    /**
+     * Memory let go of for this film is back with the TV ([FilmRoom]: the pages' pictures and caches, the buffer of the
+     * film or episode before): a buffer held down by the memory free as the player was built is sized by what's free
+     * now, up to this TV's own size for it. Logged when it changes, to be read on the TV.
+     */
+    private fun filmRoomMade() {
+        val built = builtPlayer ?: return
+        val free = FilmMemory.freeNow(this)
+        val bytes = built.roomMade(free)
+        if (bytes > 0) {
+            val step = memoryPressure.step
+            android.util.Log.i(TAG, "Room made, ${free shr 20} MiB free: the film's buffer is now ${bytes shr 20} MiB" +
+                if (step > 0) " (filling to ${built.fillBytes() shr 20} MiB while memory is short)" else "")
+        }
     }
 
     /** The decoder service hasn't answered: say so once, instead of a spinner that never ends. */

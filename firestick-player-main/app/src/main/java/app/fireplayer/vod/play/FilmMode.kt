@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.GraphicsTrim
 
 /**
@@ -94,6 +95,9 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
         released = true
         hooks.release()
         trimGraphics()
+        // The pictures let go of are only free once Android collects them: now, so the film starting has the memory
+        // (its buffer is sized by what's free), and a background release really gives it back to the TV.
+        FilmRoom.made()
     }
 
     /**
