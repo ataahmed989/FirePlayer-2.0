@@ -140,3 +140,10 @@ and continue from the first unfinished step. Update the status lines here as ste
   whether the app limits the download). Voice search: a Fire OS bug ("Voice input is disabled since user's locale =
   en_US is not supported"); the user fixed it by setting English (Australia). Nothing to change in the app.
   Remaining after this: step 5 (release + data reset), only after these are checked on the TV.
+- 17:00 UTC (noon user time): merged and installed fp-next-63 (8008d3e, 1,295 tests): cleaner Sources list (no SD,
+  Best row with reason, 4K IMAX / 4K / 1080p / 720p headers), download audit (one connection is the cause, the app
+  does not hold it back; LoaderRate log line). RUNNING: wf_bf0e15d9-563 (feat/live-overlays: full-screen Left
+  overlay, Multiview start/adding by list or see-through search, rounded pictures; feat/hold-windows: narrow hold
+  windows; then a review of the overlays) and wf_287d266c-59b (feat/pip-16x9: Home's live picture 16:9, the banner
+  narrows, both animate back). Design: Design-References/tivimate-2026-11-20/REQUEST.md. THEN: merge, install, one
+  check pass on the TV, the user looks, then step 5 (release + data reset) on their go-ahead.
