@@ -58,3 +58,8 @@ and continue from the first unfinished step. Update the status lines here as ste
 ## Log
 
 - 05:55 UTC: plan written; step 1-3 agents launched.
+- 06:14 UTC: at 72% of the window with four agents running, the two Fable audits were paused (their work so far
+  saved on `audit/vod` and `audit/live`) so they get an uninterrupted run from the 07:00 reset: relaunch them then
+  with the script `overnight-1-playback-audit-wf_19260f83-8c4.js` (they continue their branches). The Home banner /
+  search-order and Glass Home agents (Opus) keep running (workflow run wf_6bdb89dc-ee8, branch `feat/home-header`
+  and Glass Home's `claude/blissful-mayer-2nf8z9`).
