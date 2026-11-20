@@ -18,6 +18,9 @@ class ByteMeter : TransferListener {
     /** Bytes that have come so far. */
     val bytes: Long get() = total.get()
 
+    /** The same connection's speed while really loading, pauses left out ([LoaderRate]). */
+    val loader = LoaderRate()
+
     override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
 
     override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit

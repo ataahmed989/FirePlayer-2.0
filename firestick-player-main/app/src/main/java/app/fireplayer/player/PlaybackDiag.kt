@@ -34,6 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   film downloads ([DownloadRate]: "down" over all of those seconds, "free" over the ones it loaded with room in the
  *   buffer, "best" the fastest three such seconds in a row so far), the picture, the glass's copies, the TV's refresh
  *   and the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
+ * - 20 s into the film and every minute after, playing or not, the "loader" line: the download's speed while really
+ *   loading, pauses left out ([LoaderRate]), what else on the TV downloaded, and whether a VPN carries it ([NetPath]).
  *
  * Never a link, a title or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats, times
  * and the decoder's name.
@@ -79,6 +81,12 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var decoder = "none"
     // The second before was one of loading with room in the buffer.
     private var wasFree = false
+    // The loader line ([loaderSecond]): seconds since this player's film started, and since when its figures run.
+    private var loaderSeconds = 0
+    private var loaderFrom = 0L
+    // What the TV and the app had received at the last loader line ([NetPath.received]); on the reader's thread.
+    private var receivedBefore: LongArray? = null
+    private var receivedAt = 0L
 
     private val busy = AtomicBoolean(false)
     private var reader: ExecutorService? = null
@@ -90,6 +98,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         counters = null
         decoder = "none"
         download.reset()
+        loaderSeconds = 0
+        loaderFrom = SystemClock.elapsedRealtime()
+        meter.loader.take()
+        onReader {
+            receivedBefore = NetPath.received()
+            receivedAt = SystemClock.elapsedRealtime()
+        }
     }
 
     /** The player was let go: nothing of it is held on to here. */
@@ -121,6 +136,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
         wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
         download.sample(SystemClock.elapsedRealtime(), meter.bytes, free, free && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
+        loaderSecond()
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying
         if (!playing || !Log.isLoggable(TAG, Log.INFO)) {
@@ -153,22 +169,68 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         download.take()
         // The rest is read on its own thread; one at a time, a line left out if the one before hasn't finished.
         if (!busy.compareAndSet(false, true)) return
+        val ran = onReader {
+            try {
+                Log.i(TAG, line.append(' ').append(system()).toString())
+            } finally {
+                busy.set(false)
+            }
+        }
+        if (!ran) busy.set(false)
+    }
+
+    /** Runs [task] on the log's own thread; false when it can't (the screen is going). */
+    private fun onReader(task: () -> Unit): Boolean {
         val pool = reader ?: Executors.newSingleThreadExecutor { r ->
             Thread(r, "FirePlayerDiag").apply {
                 isDaemon = true
                 priority = Thread.MIN_PRIORITY
             }
         }.also { reader = it }
-        try {
-            pool.execute {
-                try {
-                    Log.i(TAG, line.append(' ').append(system()).toString())
-                } finally {
-                    busy.set(false)
-                }
-            }
+        return try {
+            pool.execute(task)
+            true
         } catch (e: RuntimeException) {
-            busy.set(false)
+            false
+        }
+    }
+
+    /**
+     * Once a second: [LOADER_FIRST_S] seconds into the film and every [LOADER_EVERY_S] after, the loader line, so its
+     * real speed can be set beside "down=" and "sustained=" ([LoaderRate], THROUGHPUT.md):
+     * "loader flat=78.3Mb/s/41s net-wait=93% cpu=31% loading=70%/60s got=512.0MB others=0.4Mb/s vpn=none".
+     * flat: Mb/s over the seconds it loaded flat out; net-wait: the share of those spent waiting on the network; cpu: the
+     * loading thread's share of one core then; loading: the share of the minute it loaded at all; got: all that came;
+     * others: what the rest of the TV downloaded meanwhile; vpn: which way the film goes ([NetPath]).
+     */
+    private fun loaderSecond() {
+        val n = ++loaderSeconds
+        if (n < LOADER_FIRST_S || (n - LOADER_FIRST_S) % LOADER_EVERY_S != 0) return
+        val now = SystemClock.elapsedRealtime()
+        val s = meter.loader.take()
+        val windowMs = now - loaderFrom
+        loaderFrom = now
+        if (!Log.isLoggable(TAG, Log.INFO)) return
+        val line = StringBuilder(200).append("loader flat=")
+        if (s.countedNs > 0L) {
+            line.append(mbps(s.mbps)).append('/').append((s.countedNs + 500_000_000L) / 1_000_000_000L).append('s')
+                .append(" net-wait=").append(s.waitPercent).append('%')
+                .append(" cpu=").append(if (s.cpuPercent < 0) "?" else s.cpuPercent.toString() + "%")
+        } else {
+            // Never loaded flat out: the buffer stayed full (or nothing was loading), so the line wasn't put to the test.
+            line.append("none")
+        }
+        line.append(" loading=").append(s.busyPercent(windowMs).coerceAtLeast(0)).append("%/").append((windowMs + 500) / 1000).append('s')
+            .append(" got=").append(mb(s.allBytes))
+        onReader {
+            val after = NetPath.received()
+            val at = SystemClock.elapsedRealtime()
+            val others = receivedBefore?.let { NetPath.othersMbps(it, after, at - receivedAt) } ?: -1.0
+            receivedBefore = after
+            receivedAt = at
+            line.append(" others=").append(if (others < 0.0) "?" else mbps(others))
+                .append(' ').append(NetPath.vpn(app))
+            Log.i(TAG, line.toString())
         }
     }
 
@@ -297,6 +359,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         const val TAG = "FirePlayerDiag"
         /** Seconds between the lines while the film plays. */
         const val LOG_EVERY_S = 10
+        /** The loader line's first, this many seconds after the film's player was built (its first fill), then every minute. */
+        const val LOADER_FIRST_S = 20
+        const val LOADER_EVERY_S = 60
         private const val HEADROOM_AHEAD_S = 10
         private const val AFTER_JUMP_MS = 3_000L
         private val NO_BYTES: () -> Long = { 0L }

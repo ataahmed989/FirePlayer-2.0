@@ -154,9 +154,11 @@ object PlayerFactory {
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(readTimeoutMs)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        // The film's bytes are counted as they come, for the download speed in the log (DownloadRate).
+        // The film's bytes are counted as they come, for the download speed in the log (DownloadRate), and its reads
+        // timed, for the speed while really loading (LoaderRate).
         if (meter != null) httpFactory.setTransferListener(meter)
-        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory, serverSwitch, readOnlyMemory))
+        val network: DataSource.Factory = if (meter != null) LoaderRate.Timed.Factory(httpFactory, meter.loader) else httpFactory
+        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(network, serverSwitch, readOnlyMemory))
     }
 
     /**
@@ -397,6 +399,7 @@ object PlayerFactory {
             plan.tierBytes,
             free,
             serverSwitch,
+            byteMeter?.loader,
         )
 
         val builder = ExoPlayer.Builder(context)
@@ -575,6 +578,8 @@ private class FilmLoadControl(
     private val tierBytes: Int,
     private val startFreeBytes: Long,
     private val serverSwitch: ServerSwitch,
+    /** Told when loading is held back, so the log's loader speed leaves the pause out ([LoaderRate.held]). */
+    private val loaderRate: LoaderRate? = null,
 ) : LoadControl {
 
     /** The film's budget: [plannedBytes], or more once room was made. Set on the main thread, read on the playback thread. */
@@ -801,7 +806,9 @@ private class FilmLoadControl(
             fullPeriod = parameters.mediaPeriodId.periodUid
         }
         val full = cap < tierBytes && allocated >= limit
-        return (wanted && !full).also { loading = it }
+        loading = wanted && !full
+        if (!loading) loaderRate?.held()
+        return loading
     }
 
     /** After a raise, what fit in the smaller budget says nothing about the new one: measured again when next full. */
