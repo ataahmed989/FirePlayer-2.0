@@ -527,6 +527,9 @@ class LivePage(private val activity: Activity, private val host: Host) {
             if (ownChanges > 0) { ownChanges--; return }
             reload(keepFocus = true)
         }
+
+        /** An update let go of the channel for a moment (live/SyncGuard.kt): one plain line over the picture. */
+        override fun onUpdateNotice(text: String) { if (started) showNotice(text) }
     }
 
     /** Changes this page announced ([announce]) that its own listener is still to hear of. */

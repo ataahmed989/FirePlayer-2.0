@@ -258,7 +258,15 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
      * don't wait). One tiny transaction then points the guide at it, and the old generation is deleted in small
      * steps. (Renaming every row from a staging name to the real one rewrote the whole table: minutes on a TV.)
      */
-    fun replaceProgrammes(source: String, url: String, keepFrom: Long, now: Long, fill: ((String, Programme) -> Unit) -> Int): Int {
+    fun replaceProgrammes(
+        source: String,
+        url: String,
+        keepFrom: Long,
+        now: Long,
+        /** Whether a download of this many programmes may replace the stored ones (false: it fails, nothing changes). */
+        accept: (Int) -> Boolean = { true },
+        fill: ((String, Programme) -> Unit) -> Int,
+    ): Int {
         val db = writableDatabase
         val oldGen = epgGen(source)
         val newGen = oldGen + 1
@@ -289,6 +297,7 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
                 }
                 storingNs += System.nanoTime() - s0
             }
+            if (!accept(count)) throw SyncPlan.Empty()
             db.setTransactionSuccessful()
             db.endTransaction()
             val t1 = SystemClock.elapsedRealtime()
@@ -349,10 +358,14 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         }
     }
 
-    fun setEpgStatus(source: String, url: String, status: String, now: Long) {
-        val v = ContentValues().apply { put("url", url); put("status", status); put("last_sync", now) }
+    /**
+     * Records how a source's EPG update went. [syncedAt] null (a failure) leaves the last good update's time and
+     * address as they were, so the guide's "last updated" only moves on success and the source is tried again.
+     */
+    fun setEpgStatus(source: String, url: String, status: String, syncedAt: Long?) {
+        val v = ContentValues().apply { put("status", status); if (syncedAt != null) { put("url", url); put("last_sync", syncedAt) } }
         if (writableDatabase.update("epg_status", v, "source = ?", arrayOf(source)) == 0) {
-            v.put("source", source); v.put("programmes", 0)
+            v.put("source", source); v.put("programmes", 0); v.put("url", url); if (syncedAt == null) v.put("last_sync", 0L)
             writableDatabase.insert("epg_status", null, v)
         }
     }
