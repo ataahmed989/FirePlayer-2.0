@@ -808,8 +808,9 @@ class VodPage(
     }
 
     /**
-     * Watch now: [card]'s title plays as from a Continue card (a film, or the episode of a series played last, from
-     * where it stopped; a series never played opens its title page, which knows its episodes). Details: its title page.
+     * Watch now: [card]'s title plays as from a Continue card (a film, or the episode its series goes on with: the one
+     * played last, from where it stopped, or the next after it once finished, across seasons; a series never played,
+     * or with nothing left to watch, opens its title page, which knows its episodes). Details: its title page.
      */
     private fun onHeaderPick(button: VodHeader.Button, card: Card) {
         val from = Origin.InHeader(button, card.title.id)
@@ -1527,7 +1528,7 @@ class VodPage(
         liveResults = v
         val at = historyList?.let { root.indexOfChild(it) + 1 } ?: root.childCount
         root.addView(v, at, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            topMargin = t.dp(VodSizes.searchListTop())
+            topMargin = t.dp(VodSizes.searchResultsTop(pipOn))
         })
         v.onUp = { searchBar?.focusBar() }
         v.onLeft = { host.focusRail() }
@@ -1996,8 +1997,12 @@ class VodPage(
         if (pipOn && shown) host.pipMoved()
     }
 
-    /** Search: the bar and the history shortened to clear the picture in the top right ([pip]), or full width again. */
+    /**
+     * Search: the bar and the history shortened to clear the picture in the top right ([pip]), and the results (the
+     * rows, Live TV's) starting under it ([VodSizes.searchResultsTop]); or all as they were again.
+     */
     private fun narrowSearch(pip: Boolean) {
+        if (!search) return
         searchBar?.setNarrow(pip)
         historyList?.let { list ->
             val lp = list.layoutParams ?: return@let
@@ -2005,6 +2010,15 @@ class VodPage(
             if (lp.width != w) {
                 lp.width = w
                 list.layoutParams = lp
+            }
+        }
+        column.headerExtra = t.dp(VodSizes.searchResultsTop(pip)) - t.dp(VodSizes.searchListTop())
+        liveResults?.let { v ->
+            val lp = v.layoutParams as? FrameLayout.LayoutParams ?: return@let
+            val top = t.dp(VodSizes.searchResultsTop(pip))
+            if (lp.topMargin != top) {
+                lp.topMargin = top
+                v.layoutParams = lp
             }
         }
     }

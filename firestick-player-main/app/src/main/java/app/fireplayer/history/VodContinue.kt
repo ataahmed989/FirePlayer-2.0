@@ -48,7 +48,7 @@ object VodContinue {
     fun request(context: Context, id: String?, episodeId: String? = null): PlayRequest? {
         val (kind, titleId) = LibraryContinue.parse(id) ?: return null
         val repo = VodRepositories.repository(context)
-        val entry = repo.library.continueEntries().firstOrNull { it.title.kind == kind && it.title.id == titleId } ?: return null
+        val entry = repo.library.continueEntry(kind, titleId) ?: return null
         val episode = if (episodeId == null) entry.episode else {
             if (kind != Kind.SERIES) return null
             LibraryContinue.parseEpisodeId(episodeId) ?: return null
@@ -71,8 +71,7 @@ object VodContinue {
             val (kind, titleId) = LibraryContinue.parse(id) ?: return emptyList()
             if (kind != Kind.SERIES) return emptyList()
             val repo = VodRepositories.repository(context)
-            val entry = repo.library.continueEntries().firstOrNull { it.title.kind == kind && it.title.id == titleId }
-                ?: return emptyList()
+            val entry = repo.library.continueEntry(kind, titleId) ?: return emptyList()
             val got = CountDownLatch(1)
             var details: TitleDetails? = null
             val cancel = repo.details(entry.title) { d, _ ->

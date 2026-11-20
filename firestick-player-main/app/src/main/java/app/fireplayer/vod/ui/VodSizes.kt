@@ -181,15 +181,24 @@ internal object VodSizes {
     // The live picture (automatic picture-in-picture, DECISIONS.md of 2026-11-19). On Home it takes Recent channels'
     // place in a window of its own shape ([PIP_WINDOW_W] x [HEADER_H] at [windowX] (pip), the user's request of
     // 2026-11-20), so a 16:9 channel fills it with no bars; the banner narrows to keep the gap before it. On Search
-    // it's a size smaller: about a quarter of the screen wide, 16:9, in the top right corner beside the page's name,
-    // ending above the history and results ([searchListTop]); the bar and the history are shortened to clear it
-    // ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name).
-    const val SEARCH_PIP_W = 240f
+    // it's 16:9, 352 x 198 dp (the user's "larger" of 2026-11-20; it was 240 wide), in the top right corner beside the
+    // page's name: the pills, the bar and the history beside it, the bar and the history shortened to clear it
+    // ([searchBarW]) by [SEARCH_PIP_GAP] (room for the trash button's name), and the results (rows of posters, Live
+    // TV's channels and programmes) under it, full width ([searchResultsTop]), where a first row of posters still
+    // shows whole, its chosen card grown. Larger, the bar would drop under 400 dp and that grown card would reach on
+    // into the edge a TV may cut off ([TV_SAFE]), which it only just touches now.
+    const val SEARCH_PIP_W = 352f
     const val SEARCH_PIP_H = SEARCH_PIP_W * 9f / 16f
     const val SEARCH_PIP_TOP = NAME_TOP
     const val SEARCH_PIP_GAP = 24f
     /** Page-local left of Search's picture: right-aligned at the page's right margin. */
     fun searchPipX(): Float = SCREEN_W - RAIL - RIGHT_MARGIN - SEARCH_PIP_W
+    /**
+     * Where Search's results start (screen y): under the bar ([searchListTop]), or with the live picture there ([pip])
+     * [SEARCH_GAP] under the picture. The history and "Searching…" stay under the bar, beside the picture.
+     */
+    fun searchResultsTop(pip: Boolean): Float =
+        if (pip) maxOf(searchListTop(), SEARCH_PIP_TOP + SEARCH_PIP_H + SEARCH_GAP) else searchListTop()
     /**
      * The slim strip, shown only while the picture has focus: a pill this tall, inset this much from the box's sides
      * and bottom, over the picture's bottom edge (glass in the glass look, solid in Classic), the channel and programme
