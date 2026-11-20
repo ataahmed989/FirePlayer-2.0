@@ -1,10 +1,12 @@
 package app.fireplayer.vod.ui
 
+
 import android.graphics.RectF
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import app.fireplayer.R
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.shell.Tokens
 import app.fireplayer.vod.Card
@@ -129,7 +131,11 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
     fun close(fade: Boolean = true, focusBack: Boolean = true) = popup.close(fade, focusBack)
 
     private fun listButton(title: Title, inList: Boolean) =
-        HoldPopup.Button(if (inList) "− Remove from list" else "+ Add to list") { toggleList(title) }
+        // The sign is an icon now (the narrow list's options all have one place for it), as on the title page.
+        HoldPopup.Button(
+            if (inList) "Remove from list" else "Add to list",
+            if (inList) R.drawable.ic_check else R.drawable.ic_add,
+        ) { toggleList(title) }
 
     /** + Add to list / − Remove from list: changed at once (the rows too), and the window closes a moment later. */
     private fun toggleList(title: Title) {
