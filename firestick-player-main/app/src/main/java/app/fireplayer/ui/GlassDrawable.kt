@@ -75,7 +75,7 @@ class GlassDrawable(
     private val source: GlassBackdrop.Kind? = when (style) {
         Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> GlassBackdrop.Kind.PANEL
         Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.CHIP, Glass.Kind.MORE_ICON -> GlassBackdrop.Kind.CONTROL
-        Glass.Kind.ROW, Glass.Kind.CELL -> null
+        Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR -> null
     }
     private val windowLike = source == GlassBackdrop.Kind.PANEL
     private val filmAlpha = if (windowLike || calm) 1f else CONTROL_FILM_ALPHA
@@ -520,7 +520,7 @@ internal object GlassBakes {
             Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> if (calm) CALM_WINDOW_SHADOW.reach else PANEL_SHADOW.reach
             Glass.Kind.CHIP -> if (calm) CALM_CHIP_SHADOW.reach else CHIP_SHADOW.reach
             // The selected row's glow stays inside the row: no room may be added around it.
-            Glass.Kind.ROW, Glass.Kind.CELL -> 0f
+            Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR -> 0f
             Glass.Kind.CIRCLE, Glass.Kind.PILL, Glass.Kind.MORE_ICON -> when {
                 focused -> max(FOCUS_GLOW.reach, FOCUS_SHADOW.reach)
                 calm -> CALM_CONTROL_SHADOW.reach
@@ -540,14 +540,18 @@ internal object GlassBakes {
             Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> min(GlassStyle.RADIUS_POPUP * density, half)
             Glass.Kind.CIRCLE, Glass.Kind.MORE_ICON, Glass.Kind.PILL, Glass.Kind.CHIP -> half
             // A pill while one line high; taller rows (search results) keep soft corners instead of round ends.
-            Glass.Kind.ROW, Glass.Kind.CELL -> min(GlassStyle.RADIUS_ROW * density, half)
+            Glass.Kind.ROW -> min(GlassStyle.RADIUS_ROW * density, half)
+            // The Search tab's history pods: fully round ends, a pill whatever their height.
+            Glass.Kind.CELL -> half
+            // The Search tab's bar: the programme cells' own softer corners.
+            Glass.Kind.CELL_BAR -> min(GlassStyle.RADIUS_CELL * density, half)
         }
     }
 
     /**
      * Draws a flat surface of the page ([GlassStyle.Surface]) in [rect], its corners [r] px: its coats of fill, the
      * faint light from above, the hairline all round and the highlight along the top edge, following the corners.
-     * Software drawing into a bitmap that is kept: the guide's stamped patches and [Glass.Kind.CELL] are both made here,
+     * Software drawing into a bitmap that is kept: the guide's stamped patches and [Glass.Kind.CELL] / [Glass.Kind.CELL_BAR] are all made here,
      * so what is one material in [GlassStyle] is one drawing too.
      */
     fun surface(c: Canvas, rect: RectF, r: Float, look: GlassStyle.Surface, density: Float) {
@@ -620,7 +624,7 @@ private class Baker(private val density: Float) {
                 }
             }
             // The cell glass: the very drawing the guide's programme cells are stamped from.
-            kind == Glass.Kind.CELL -> GlassBakes.surface(c, rect, r, GlassStyle.CELL, density)
+            kind == Glass.Kind.CELL || kind == Glass.Kind.CELL_BAR -> GlassBakes.surface(c, rect, r, GlassStyle.CELL, density)
             kind == Glass.Kind.ROW -> {
                 fill(c, rect, r, GlassStyle.ROW_FILL)
                 crescent(c, rect, r, px(0.75f), GlassStyle.ROW_HIGHLIGHT)

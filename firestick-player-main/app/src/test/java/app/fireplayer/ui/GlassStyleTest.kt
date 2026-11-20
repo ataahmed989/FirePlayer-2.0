@@ -24,10 +24,24 @@ class GlassStyleTest {
     }
 
     @Test fun aSearchPodIsARowInTheCellGlass() {
-        // Its own kind, last in the list (the kinds' order is part of the drawings' memory keys).
-        assertEquals(Glass.Kind.entries.last(), Glass.Kind.CELL)
+        // Its own kinds, last in the list (the kinds' order is part of the drawings' memory keys).
+        assertEquals(listOf(Glass.Kind.CELL, Glass.Kind.CELL_BAR), Glass.Kind.entries.takeLast(2))
         // A row either way: it sits on the page with no film of its own, and nothing else is one.
-        assertEquals(listOf(Glass.Kind.ROW, Glass.Kind.CELL), Glass.Kind.entries.filter { Glass.isRow(it) })
+        assertEquals(
+            listOf(Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR),
+            Glass.Kind.entries.filter { Glass.isRow(it) },
+        )
+    }
+
+    @Test fun theSearchBarHasTheCellsSofterCornersAndItsPodsRoundEnds() {
+        val d = 1.5f
+        // A Settings-tab row (PageRow, 44 dp): the pods' ends are fully round, the bar's corners the programme cells' 8 dp.
+        val w = (300 * d).toInt()
+        val h = (PageRow.ROW_DP * d).toInt()
+        assertEquals(h / 2f, GlassBakes.radius(Glass.Kind.CELL, w, h, d), 0.001f)
+        assertEquals(8f, GlassStyle.RADIUS_CELL)
+        assertEquals(GlassStyle.RADIUS_CELL * d, GlassBakes.radius(Glass.Kind.CELL_BAR, w, h, d), 0.001f)
+        assertTrue(GlassBakes.radius(Glass.Kind.CELL_BAR, w, h, d) < h / 2f)
     }
 
     // ---- When the page under a window is copied again ---------------------------------------------------------------

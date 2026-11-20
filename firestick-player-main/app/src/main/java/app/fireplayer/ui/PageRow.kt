@@ -23,7 +23,7 @@ class PageRow(
     context: Context,
     iconRes: Int?,
     val text: TextView = TextView(context),
-    /** The row's glass: [Glass.Kind.ROW], or [Glass.Kind.CELL] for a pod in the cell glass (the Search tab's). */
+    /** The row's glass: [Glass.Kind.ROW], or a cell-glass row for the Search tab ([Glass.Kind.CELL] pods, [Glass.Kind.CELL_BAR] its bar). */
     private val kind: Glass.Kind = Glass.Kind.ROW,
 ) : RowLayout(context, ContextCompat.getColorStateList(context, R.color.sel_text_row)) {
 

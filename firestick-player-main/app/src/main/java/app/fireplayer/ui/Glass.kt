@@ -29,14 +29,16 @@ object Glass {
     @Volatile var dim = 0f
 
     /**
-     * The shapes that can be glass. Each replaces one classic background ([classicRes]). [CELL] is a row in the cell
-     * glass ([GlassStyle.CELL], the material of the guide's programme cells): the Search tab's bar and history pods.
-     * Selected it's the white row, as [ROW]; classic, the solid row.
+     * The shapes that can be glass. Each replaces one classic background ([classicRes]). [CELL] and [CELL_BAR] are
+     * rows in the cell glass ([GlassStyle.CELL], the one material of the guide's programme cells), told apart by their
+     * corners only: [CELL] a pod with round ends (the Search tab's history), [CELL_BAR] a bar with the programme cells'
+     * softer corners ([GlassStyle.RADIUS_CELL]: the Search tab's bar). Selected they're the white row, as [ROW];
+     * classic, the solid row.
      */
-    enum class Kind { PANEL, POPUP, DIALOG_POPUP, CIRCLE, PILL, CHIP, MORE_ICON, ROW, CELL }
+    enum class Kind { PANEL, POPUP, DIALOG_POPUP, CIRCLE, PILL, CHIP, MORE_ICON, ROW, CELL, CELL_BAR }
 
-    /** A row of either glass: it sits on its page or window and has no film of its own. */
-    internal fun isRow(kind: Kind): Boolean = kind == Kind.ROW || kind == Kind.CELL
+    /** A row of any glass: it sits on its page or window and has no film of its own. */
+    internal fun isRow(kind: Kind): Boolean = kind == Kind.ROW || kind == Kind.CELL || kind == Kind.CELL_BAR
 
     /** The background each shape has with the glass look off. */
     fun classicRes(kind: Kind): Int = when (kind) {
@@ -46,7 +48,7 @@ object Glass {
         Kind.PILL -> R.drawable.bg_pill
         Kind.CHIP -> R.drawable.bg_chip
         Kind.MORE_ICON -> R.drawable.bg_more_icon
-        Kind.ROW, Kind.CELL -> R.drawable.bg_row
+        Kind.ROW, Kind.CELL, Kind.CELL_BAR -> R.drawable.bg_row
     }
 
     /**
@@ -77,7 +79,7 @@ object Glass {
             Kind.POPUP, Kind.DIALOG_POPUP -> R.dimen.radius_popup
             Kind.PILL -> R.dimen.radius_pill
             Kind.CHIP -> R.dimen.radius_chip
-            Kind.ROW, Kind.CELL -> R.dimen.radius_row
+            Kind.ROW, Kind.CELL, Kind.CELL_BAR -> R.dimen.radius_row
             Kind.CIRCLE, Kind.MORE_ICON -> return half
         }
         return minOf(res.getDimension(classic), half)

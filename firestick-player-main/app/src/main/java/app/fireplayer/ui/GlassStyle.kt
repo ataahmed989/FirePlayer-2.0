@@ -97,6 +97,11 @@ object GlassStyle {
     const val RADIUS_POPUP = 15f
     /** A row: a pill while one line high, soft corners when taller. */
     const val RADIUS_ROW = 18f
+    /**
+     * The cell glass's softer corners: the guide's programme cells (GuideView's glass radius, 8 dp) and the Search
+     * tab's bar ([Glass.Kind.CELL_BAR]). The history pods under the bar keep fully round ends ([Glass.Kind.CELL]).
+     */
+    const val RADIUS_CELL = 8f
 
     /** The hairline's width, px: [HAIRLINE_DP], a whole pixel at least. */
     fun hairlinePx(density: Float): Float = maxOf(HAIRLINE_DP * density, 1f)
