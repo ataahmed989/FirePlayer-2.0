@@ -230,6 +230,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // This screen's surface shows live again (another instance may have taken it meanwhile).
         player.attach(surface)
         if (rail.selected == NavRail.Tab.LIVE) live.start()
+        armLiveRoom(rail.selected == NavRail.Tab.LIVE, pictureFull)
         vodPages.start()
         // The dimmer may have been changed in the VOD player meanwhile.
         applyLiveDim()
@@ -239,6 +240,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     }
 
     override fun onStop() {
+        armLiveRoom(false, full = false)
         live.stop()
         // The film pages' pictures go, and half the decoded ones kept in memory: a film may be starting in the player.
         vodPages.stop()
@@ -364,6 +366,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPage.visibility = if (tab == NavRail.Tab.SETTINGS) View.VISIBLE else View.GONE
         // Search, Home, Movies, TV Shows or My List (the others hidden, their pictures let go).
         vodPages.show(tab)
+        // Live TV in front a while: what the other tabs left in memory goes (LiveRoom).
+        armLiveRoom(isLive, full = false)
         if (isLive) {
             live.start()
         } else {
@@ -371,6 +375,38 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             live.stop()
             placeVideo(null, 0f, false)
         }
+    }
+
+    /** The picture was full screen when the release below was last set going. */
+    private var roomFull = false
+    private val liveRoom = Runnable { freeLiveRoom() }
+    private val liveRoomStale = Runnable { if (rail.selected == NavRail.Tab.LIVE) app.fireplayer.player.GraphicsTrim.trim() }
+
+    /** Lets go of what's out of sight [LiveRoom.dueMs] after Live TV is in front ([on]) or its picture went [full]. */
+    private fun armLiveRoom(on: Boolean, full: Boolean) {
+        root.removeCallbacks(liveRoom)
+        root.removeCallbacks(liveRoomStale)
+        roomFull = on && full
+        if (on) root.postDelayed(liveRoom, app.fireplayer.playback.LiveRoom.dueMs(full))
+    }
+
+    /**
+     * Live TV's memory (measured: 397 MB, 208 MB of it graphics, with a channel selected): the pages' pictures still
+     * kept in memory, the page glass's copies while the picture is full screen and no window shows, and the graphics
+     * no window draws any more. Nothing on screen goes; it all comes back as it's shown again.
+     */
+    private fun freeLiveRoom() {
+        if (rail.selected != NavRail.Tab.LIVE || isFinishing) return
+        val full = pictureFull
+        val (pictures, bytes) = ImageLoader.trimLarger(app.fireplayer.playback.LiveRoom::isLarge)
+        val glass = full && !overlayOpen() && behind?.trimIfIdle() == true
+        // Android's own trim drops the guide's drawing caches too (drawn again next frame): only under the full-screen
+        // picture. The other way (only what went unused half a minute) is safe with the guide on screen.
+        val trim = app.fireplayer.player.GraphicsTrim
+        val graphics = (full || trim.staleOnly) && trim.trim()
+        // Where Android only lets go of what went unused for half a minute, it's asked again once that's passed.
+        if (graphics && trim.staleOnly) root.postDelayed(liveRoomStale, trim.STALE_MS + 1_000L)
+        android.util.Log.i("FirePlayerLive", app.fireplayer.playback.LiveRoom.line(full, pictures, bytes, glass, graphics))
     }
 
     private fun focusPage() {
@@ -727,6 +763,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         wallpaper.setHole(target, radius, full = videoFull)
         busy.place(target.centerX(), target.centerY(), if (videoFull) 1f else 0f)
         pictureFull = videoFull
+        // Full screen a moment: what's out of sight lets go of its memory (LiveRoom); back in the guide, the tab's wait.
+        if (videoFull != roomFull && rail.selected == NavRail.Tab.LIVE) armLiveRoom(true, videoFull)
         // The full-screen controls' glass shows a copy of the picture: one of it where it is now.
         if (moved && filmOn) film?.frameChanged()
         // Captions only over the full-screen picture (in the miniature they'd be too small to read), and only over
@@ -834,7 +872,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             // may sleep, as a paused film's does.
             // A channel that's down to a try every half minute lets the screen sleep too (it would otherwise hold a
             // still picture on the TV for good).
-            root.keepScreenOn = status.key != null && status.error == null && !status.paused && status.waiting == null
+            root.keepScreenOn = status.key != null && status.error == null && !status.paused && status.waiting == null &&
+                status.refused == null
             film?.playing = status.playing
             showBusy(status)
             if (status.videoSize != lastSize) {
@@ -848,12 +887,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     /** The buffering symbol and its text as [status] and the time so far say; asks itself again when they're next due. */
     private fun showBusy(status: PlayerHost.Status) {
+        val refused = status.refused
         val waiting = status.key != null && status.error == null && !status.paused && !status.playing &&
-            (status.buffering || status.reconnecting)
-        val next = busySigns.update(waiting, status.reconnecting, android.os.SystemClock.uptimeMillis())
+            (status.buffering || status.reconnecting || refused != null)
+        val next = busySigns.update(waiting, status.reconnecting, android.os.SystemClock.uptimeMillis(), refused = refused != null)
         root.removeCallbacks(busyCheck)
         if (next != app.fireplayer.ui.BusySigns.NONE) root.postDelayed(busyCheck, next)
-        busy.show(busySigns.spinner, if (busySigns.text) status.waiting ?: "Reconnecting…" else null)
+        // A channel the provider refused says so in place of "Reconnecting…" (PlayerHost.Status.refused).
+        busy.show(busySigns.spinner, if (busySigns.text) refused ?: status.waiting ?: "Reconnecting…" else null)
     }
 
     /**

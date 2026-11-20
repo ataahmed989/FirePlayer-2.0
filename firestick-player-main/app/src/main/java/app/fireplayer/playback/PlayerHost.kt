@@ -67,6 +67,11 @@ class PlayerHost private constructor(context: Context) {
         val reconnecting: Boolean = false,
         /** Why, and how often it's tried, once the quick tries are used up (to show while [reconnecting]). */
         val waiting: String? = null,
+        /**
+         * The provider says the channel isn't there or isn't allowed ([LiveRefusal]): what to say, at once and in
+         * place of "Reconnecting...", while it's tried again slowly; null otherwise.
+         */
+        val refused: String? = null,
     )
 
     data class Track(val groupIndex: Int, val trackIndex: Int, val label: String, val selected: Boolean)
@@ -101,6 +106,7 @@ class PlayerHost private constructor(context: Context) {
     private val stallWatch = LiveStallWatch()
     private var surface: SurfaceView? = null
     private val reconnect = LiveReconnect()
+    private val refusal = LiveRefusal()
     /** Between a failure and frames playing again. */
     private var reconnecting = false
     private var reconnectingSince = 0L
@@ -399,6 +405,7 @@ class PlayerHost private constructor(context: Context) {
         // Tracks to pick again are only for the same channel reopened by Live TV buffer.
         if (source.key != pickAgainKey) { pickAgainAudio = null; pickAgainCaption = null }
         reconnect.reset()
+        refusal.opened()
         reconnecting = false
         waitReason = null
         error = null
@@ -450,6 +457,7 @@ class PlayerHost private constructor(context: Context) {
         lastState = Player.STATE_IDLE
         timing.clear()
         reconnect.reset()
+        refusal.opened()
         reconnecting = false
         waitReason = null
         error = null
@@ -567,8 +575,12 @@ class PlayerHost private constructor(context: Context) {
                 publish()
                 return
             }
+            // A refusal (404, 403...) is said in plain words and tried again slowly; a server or network error is
+            // "Reconnecting..." as before. The status number only: an error's own text can hold the stream's address.
+            val code = PlayerFactory.httpCodeOf(e)
+            refusal.failed(code)
             // The code's name only: an error's own text can hold the stream's address.
-            reconnectAfter(e.errorCodeName, reason, ended = false)
+            reconnectAfter(if (code != 0) "${e.errorCodeName} $code" else e.errorCodeName, reason, ended = false)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -578,6 +590,8 @@ class PlayerHost private constructor(context: Context) {
                 return
             }
             reconnect.playing(now)
+            if (refusal.shown) Log.i(TAG, "Live recovery: the channel the provider refused (${refusal.code}) plays")
+            refusal.playing()
             if (reconnecting) {
                 Log.i(TAG, "Live recovery: playing again after ${now - reconnectingSince} ms (${reconnect.attempt} tries)")
                 reconnecting = false
@@ -690,7 +704,9 @@ class PlayerHost private constructor(context: Context) {
             reconnecting = true
             reconnectingSince = now
         }
-        val wait = reconnect.failed(now, ended)
+        val quick = reconnect.failed(now, ended)
+        // A refused channel: one quick try, then slowly (LiveRefusal.waitMs); its message stands in for the reason.
+        val wait = if (refusal.shown) refusal.waitMs() else quick
         if (reconnect.slow) waitReason = "$reason\nTrying again every ${LiveReconnect.SLOW_MS / 1000} seconds"
         Log.i(TAG, "Live recovery: $what; try ${reconnect.attempt} in $wait ms")
         main.removeCallbacks(retry)
@@ -719,6 +735,7 @@ class PlayerHost private constructor(context: Context) {
             behindLive = p != null && session.playingKey != null && stillBehind(p),
             reconnecting = reconnecting && session.playingKey != null,
             waiting = waitReason,
+            refused = if (session.playingKey != null && error == null) refusal.message() else null,
         )
     }
 

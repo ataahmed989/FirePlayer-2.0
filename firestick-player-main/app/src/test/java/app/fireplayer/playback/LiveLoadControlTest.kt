@@ -38,7 +38,7 @@ class LiveLoadControlTest {
 
     @Test fun memoryStepsLowerTheCeilingButKeepAFloor() {
         val c = medium()
-        assertEquals(Int.MAX_VALUE, c.capBytes())
+        assertEquals(LiveCushion.NORMAL_BYTES, c.capBytes())
         c.memoryStep = 1
         assertEquals(LiveCushion.SQUEEZE_1_BYTES, c.capBytes())
         c.memoryStep = 2

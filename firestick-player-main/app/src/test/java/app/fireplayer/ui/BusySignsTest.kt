@@ -71,4 +71,17 @@ class BusySignsTest {
         assertFalse(s.text)
         assertTrue(s.spinner)
     }
+
+    @Test fun aRefusedChannelHasItsLineWithTheSymbolNotSecondsLater() {
+        val s = BusySigns()
+        // Shown with the symbol (after 300 ms), no 3 s wait for the reason.
+        assertEquals(300L, s.update(true, true, 0, refused = true))
+        assertTrue(s.text)
+        s.update(true, true, 300, refused = true)
+        assertTrue(s.spinner)
+        // It plays: both gone.
+        s.update(false, false, 400)
+        assertFalse(s.text)
+        assertFalse(s.spinner)
+    }
 }
