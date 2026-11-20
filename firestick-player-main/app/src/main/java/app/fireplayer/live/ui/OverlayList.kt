@@ -324,8 +324,12 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         val x = nameX()
         val cy = if (kind == Kind.CHANNELS) rTop + rowH * NAME_AT else rTop + rowH / 2
         val half = namePaint.fontSpacing / 2
-        out.set(x, cy - half, x + nameRoom(), cy + half)
+        out.set(x, cy - half, x + nameRoomOf(row), cy + half)
     }
+
+    /** The room row [row]'s name has: on the playing channel's, less the ▶ after it. */
+    private fun nameRoomOf(row: Int): Float =
+        if (kind == Kind.CHANNELS && keys.getOrNull(row) == playingKey) (nameRoom() - markerGap - markerW).coerceAtLeast(0f) else nameRoom()
 
     private fun rowX(): Float = padX + rowPad
 
@@ -442,20 +446,25 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
 
         val nx = nameX()
         val room = nameRoom()
+        // The name's own room (the ▶ after the playing one's), as the scrolling copy over it has ([nameBox]).
+        val ownRoom = nameRoomOf(r)
+        var nameEnd = nx + ownRoom
         if (r != marqueeRow) {
             namePaint.typeface = t.regular
             namePaint.color = if (onPill || playing) t.accent else t.text
-            val name = names[r] ?: TextUtils.ellipsize(ch.name, namePaint, (room - if (playing) markerGap + markerW else 0f).coerceAtLeast(0f), TextUtils.TruncateAt.END)
+            val name = names[r] ?: TextUtils.ellipsize(ch.name, namePaint, ownRoom, TextUtils.TruncateAt.END)
                 .also { names[r] = it; nameW[r] = namePaint.measureText(it, 0, it.length) }
             canvas.drawText(name, 0, name.length, nx, baseline(nameCy, namePaint), namePaint)
-            if (playing) {
-                val mx = nx + nameW[r] + markerGap
-                val s = t.dpf(5f)
-                marker.reset()
-                marker.moveTo(mx, nameCy - s); marker.lineTo(mx + s * 1.6f, nameCy); marker.lineTo(mx, nameCy + s); marker.close()
-                fill.color = t.accent
-                canvas.drawPath(marker, fill)
-            }
+            nameEnd = nx + nameW[r]
+        }
+        // The ▶ after the playing channel's name (after the room its name scrolls in, while it scrolls).
+        if (playing) {
+            val mx = nameEnd + markerGap
+            val s = t.dpf(5f)
+            marker.reset()
+            marker.moveTo(mx, nameCy - s); marker.lineTo(mx + s * 1.6f, nameCy); marker.lineTo(mx, nameCy + s); marker.close()
+            fill.color = t.accent
+            canvas.drawPath(marker, fill)
         }
 
         val p = nowOf(key)?.takeIf { it.isOn(now) }
