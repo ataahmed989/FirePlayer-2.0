@@ -673,11 +673,13 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /**
      * The tab is left for another ([keepPlaying]: its channel plays on in the picture on Home or Search). Full screen
      * is left first, quietly, so the tab comes back to its guide (it used to come back to an empty full screen).
+     * True when the channel plays on.
      */
-    fun leave(keepPlaying: Boolean) {
-        if (!started) return
+    fun leave(keepPlaying: Boolean): Boolean {
+        if (!started) return false
         if (fullScreen) quitFullScreen()
         stop(keepPlaying && player.currentKey != null)
+        return keeping
     }
 
     /**

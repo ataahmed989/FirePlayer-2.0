@@ -186,7 +186,7 @@ class VodPage(
         // The banner's words keep clear of its top while the page hides a little of it (My List's holds still).
         if (!myList && !search) header.setHiddenTop(it)
         // The live picture goes up and down with the banner (or the bar), frame by frame (translations only).
-        if (pipOn) {
+        if (pipOn && shown) {
             pipBox?.translationY = -it
             host.pipFollow(-it)
         }
@@ -303,8 +303,8 @@ class VodPage(
         root.addView(viewport, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             topMargin = t.dp(if (myList) VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_TOP)
         })
-        // The live picture's box, over the rows (which never reach it) and under the page's windows. Laid out while
-        // hidden, so the picture's place is known the moment it comes.
+        // The live picture's box, over the rows (which never reach it) and under the page's windows; the picture's
+        // place is its margins ([pipSpot]).
         pipBox?.let { box ->
             box.visibility = View.INVISIBLE
             val w = if (search) VodSizes.SEARCH_PIP_W else VodSizes.WINDOW_W
@@ -316,9 +316,6 @@ class VodPage(
             box.onButton = { host.pipButton(it) }
             box.onOut = { pipOut(it) }
             box.onStripShown = { host.pipStripShown() }
-            box.addOnLayoutChangeListener { _, l, tp, r, b, ol, ot, or, ob ->
-                if (pipOn && (l != ol || tp != ot || r != or || b != ob)) host.pipMoved()
-            }
         }
         historyList?.let { list ->
             root.addView(list, FrameLayout.LayoutParams(t.dp(VodSizes.searchBarW()), ViewGroup.LayoutParams.MATCH_PARENT).apply {
@@ -1777,23 +1774,21 @@ class VodPage(
     }
 
     /**
-     * Where the live picture goes: its box on screen with the page at rest (the shell moves it with the page itself,
-     * [pipShift]), in the window's coordinates; null while it isn't on this page or not laid out yet.
+     * Where the live picture goes: its box with the page at rest (the shell moves it with the page itself, [pipShift]),
+     * in this page's coordinates, from the box's own layout (known before any layout pass); null while it isn't here.
      */
     fun pipSpot(): RectF? {
         val box = pipBox ?: return null
-        if (!pipOn || box.width == 0 || box.height == 0) return null
-        val at = IntArray(2)
-        box.getLocationInWindow(at)
-        val base = IntArray(2)
-        root.rootView.getLocationInWindow(base)
-        val x = (at[0] - base[0]).toFloat()
-        val y = at[1] - base[1] - box.translationY
-        return RectF(x, y, x + box.width, y + box.height)
+        if (!pipOn) return null
+        val lp = box.layoutParams as FrameLayout.LayoutParams
+        return RectF(lp.leftMargin.toFloat(), lp.topMargin.toFloat(), (lp.leftMargin + lp.width).toFloat(), (lp.topMargin + lp.height).toFloat())
     }
 
     /** The picture's corners: the box's (Recent channels' window shape). */
-    fun pipRadius(): Float = pipBox?.let { Glass.cornerRadius(ctx, Glass.Kind.PANEL, it.width, it.height) } ?: 0f
+    fun pipRadius(): Float = pipBox?.let {
+        val lp = it.layoutParams
+        Glass.cornerRadius(ctx, Glass.Kind.PANEL, lp.width, lp.height)
+    } ?: 0f
 
     /** How far the page has moved the picture's box from its place now (px, 0 at rest, less while the rows are up). */
     fun pipShift(): Float = if (pipOn) -pageSpring.value else 0f

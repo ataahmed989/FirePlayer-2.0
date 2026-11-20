@@ -125,7 +125,10 @@ class PipBox(context: Context, private val t: Tokens) : FrameLayout(context) {
     fun takeFocus(): Boolean {
         if (visibility != VISIBLE) return false
         for (v in buttons.values) v.isFocusable = true
-        return buttons[PipRules.ARRIVES_ON]?.requestFocus() == true
+        if (buttons[PipRules.ARRIVES_ON]?.requestFocus() == true) return true
+        // Not shown after all: the hidden strip stays out of focus's way.
+        for (v in buttons.values) v.isFocusable = false
+        return false
     }
 
     /** The strip goes at once (the box hides, or the picture went). */
