@@ -124,3 +124,7 @@ and continue from the first unfinished step. Update the status lines here as ste
   timing lines; a pause the player makes itself is shown; new setting Live TV > Playback > "Play the last channel on
   opening", On by default). The film audit only finished its memory part (steps 2-6 of its brief not started).
   Built as fp-next-59; install when the TV is idle. Next: 1b+1c+1d.
+- 13:45 UTC: sources work merged (a86c69d: IMAX/IMX/open matte first, StremThru Torz, debrid-neutral, host log
+  line; 1,196 tests) and INSTALLED on the TV as fp-next-60 while it was asleep (not woken). The TorBox check on The
+  Odyssey waits until the TV is on and idle (it plays sound: do not wake the TV to do it). Step 4 running (workflow
+  run wf_e0829f9c-b3b: Multiview -> PiP -> review; branches feat/multiview, feat/pip, feat/mvpip-review).
