@@ -77,17 +77,30 @@ class HoldPopupTest {
         assertTrue(p.up(false))
     }
 
-    // ---- Where the small window goes (HoldPlace) --------------------------------------------------------------------
+    // ---- Where the hold window goes (HoldPlace) ----------------------------------------------------------------------
 
-    @Test fun itSitsBesideTheRowCentredOnIt() {
-        assertEquals(328f, HoldPlace.x(anchorRight = 320f, width = 200f, gap = 8f, left = 0f, right = 960f), 0f)
+    @Test fun itSitsBesideTheItemToItsRightCentredOnIt() {
+        // A guide row's name (40..320): the window starts 8 past its right edge, centred on it.
+        assertEquals(328f, HoldPlace.x(anchorLeft = 40f, anchorRight = 320f, width = 180f, gap = 8f, left = 0f, right = 960f), 0f)
         assertEquals(250f, HoldPlace.y(anchorCenterY = 300f, height = 100f, top = 0f, bottom = 540f), 0f)
+        assertEquals(1, HoldPlace.side(x = 328f, width = 180f, anchorLeft = 40f, anchorRight = 320f))
+        // Exactly touching the area's right edge still fits on the right.
+        assertEquals(328f, HoldPlace.x(anchorLeft = 40f, anchorRight = 320f, width = 620f, gap = 8f, left = 0f, right = 948f), 0f)
     }
 
-    @Test fun itMovesLeftWhenThereIsNoRoomBesideTheRow() {
-        assertEquals(560f, HoldPlace.x(anchorRight = 700f, width = 400f, gap = 8f, left = 0f, right = 960f), 0f)
+    @Test fun nearTheRightEdgeItFlipsToTheItemsLeft() {
+        // A poster at 760..900: no room on its right (908 + 180 > 948), so 8 left of it.
+        assertEquals(572f, HoldPlace.x(anchorLeft = 760f, anchorRight = 900f, width = 180f, gap = 8f, left = 12f, right = 948f), 0f)
+        assertEquals(-1, HoldPlace.side(x = 572f, width = 180f, anchorLeft = 760f, anchorRight = 900f))
+    }
+
+    @Test fun withNoRoomOnEitherSideItSitsOverTheItemOnScreen() {
+        // A history row as wide as the page: over its right end, inside the area.
+        val x = HoldPlace.x(anchorLeft = 20f, anchorRight = 940f, width = 180f, gap = 8f, left = 12f, right = 948f)
+        assertEquals(768f, x, 0f)
+        assertEquals(0, HoldPlace.side(x, width = 180f, anchorLeft = 20f, anchorRight = 940f))
         // Never past the left edge, even when wider than the area.
-        assertEquals(12f, HoldPlace.x(anchorRight = 700f, width = 2000f, gap = 8f, left = 12f, right = 960f), 0f)
+        assertEquals(12f, HoldPlace.x(anchorLeft = 600f, anchorRight = 700f, width = 2000f, gap = 8f, left = 12f, right = 948f), 0f)
     }
 
     @Test fun itStaysInsideTheAreaTopAndBottom() {
@@ -97,6 +110,25 @@ class HoldPopupTest {
         assertEquals(430f, HoldPlace.y(anchorCenterY = 520f, height = 100f, top = 230f, bottom = 530f), 0f)
         // Taller than the area: from its top.
         assertEquals(230f, HoldPlace.y(anchorCenterY = 400f, height = 400f, top = 230f, bottom = 530f), 0f)
+    }
+
+    // ---- How big it is (HoldSize) ----------------------------------------------------------------------------------
+
+    @Test fun itIsAsWideAsItsWidestLineAndItsRoom() {
+        // "Mark watched up to here" 160 wide, 12 of room: 172, no empty room beside the words.
+        assertEquals(172f, HoldSize.width(content = 160f, padding = 12f, min = 150f, max = 240f), 0f)
+    }
+
+    @Test fun aShortListIsStillAColumnAndALongTitleWraps() {
+        // "Remove" alone: the narrowest window.
+        assertEquals(150f, HoldSize.width(content = 60f, padding = 12f, min = 150f, max = 240f), 0f)
+        // A long channel name: the widest, its title on two lines.
+        assertEquals(240f, HoldSize.width(content = 400f, padding = 12f, min = 150f, max = 240f), 0f)
+    }
+
+    @Test fun aNarrowAreaWinsOverTheNarrowest() {
+        assertEquals(120f, HoldSize.width(content = 60f, padding = 12f, min = 150f, max = 120f), 0f)
+        assertEquals(0f, HoldSize.width(content = 60f, padding = 12f, min = 150f, max = -5f), 0f)
     }
 
     // ---- Move to top and Hide group (GroupEdits) -----------------------------------------------------------------

@@ -140,8 +140,8 @@ object RowGroups {
         view.setPadding(l, t, r, b)
     }
 
-    /** The selected look alone, glass or classic: the card draws the rest. */
-    private fun focusOnly(context: Context): Drawable =
+    /** The selected look alone, glass or classic: the card (or a hold window, HoldShape) draws the rest. */
+    internal fun focusOnly(context: Context): Drawable =
         if (Glass.on) {
             (Glass.drawable(context, Glass.Kind.ROW) as GlassDrawable).apply { focusOnly = true }
         } else {
