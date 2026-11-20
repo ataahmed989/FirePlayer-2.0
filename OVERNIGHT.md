@@ -31,6 +31,12 @@ and continue from the first unfinished step. Update the status lines here as ste
    must appear quickly.
    Branches: `audit/vod`, `audit/live` (Fable), Glass Home memory in `/home/user/glass-home-firetv`.
    Status: started.
+1b. **Sources order (the user, 02:10 their time): "I want 4k imax (open matte) ratio files to be at the top of the
+   sources list."** After `audit/vod` is merged (same files: `vod/sources/*`): a 4K (2160p) release marked IMAX or
+   open matte (release-name words such as IMAX, "Open Matte", OpenMatte, Open.Matte) ranks above every other source,
+   in the Sources list and therefore as the best source, as long as it is one this TV can play and is not marked
+   troubled; among themselves, and for everything else, today's order stays. Parser words and the rule as pure,
+   unit-tested logic. Status: not started.
 2. **Movies & TV Shows search:** the row holding the best match comes first (a show: TV Shows first; a film: Movies).
    Branch `feat/home-header` (with step 3). Status: MERGED (2850d18), tests pass; NOT yet tried on the TV (search a
    show, e.g. "breaking bad": TV Shows first; a film, e.g. "dune": Movies first).
