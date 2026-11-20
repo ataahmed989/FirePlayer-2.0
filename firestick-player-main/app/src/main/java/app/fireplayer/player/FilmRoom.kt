@@ -33,8 +33,12 @@ import java.util.concurrent.TimeUnit
  */
 object FilmRoom {
     private const val TAG = "FirePlayer"
-    /** After collecting, the pictures' own memory is freed by Android's clean-up thread: the free memory is read after it. */
-    const val SETTLE_MS = 150L
+    /**
+     * After collecting, the pictures' own memory is freed by Android's clean-up thread, a moment later. The free
+     * memory is read at once, and again this long after (ms), the film being told at the last: the most seen to
+     * have come back counts, so the film's decoder taking its frames between two readings hides only what came after.
+     */
+    private val READ_AFTER_MS = longArrayOf(0L, 60L, 150L)
 
     /** The film player on screen, as this needs it. */
     interface Film {
@@ -83,13 +87,19 @@ object FilmRoom {
                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
             }
             val took = SystemClock.elapsedRealtime() - askedAt
-            main.postDelayed({
-                val now = film
-                // Another film player than the one asked about (or none then): how much came back for it can't be said.
-                val gain = if (asker != null && now === asker) FilmMemory.roomGained(before, freeFor(app, asker)) else 0L
-                Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
-                now?.roomMade(askedAt, gain)
-            }, SETTLE_MS)
+            // On the main thread only.
+            var gain = 0L
+            for ((i, after) in READ_AFTER_MS.withIndex()) {
+                main.postDelayed({
+                    val now = film
+                    // Another film player than the one asked about (or none then): how much came back for it can't be said.
+                    if (asker != null && now === asker) gain = maxOf(gain, FilmMemory.roomGained(before, freeFor(app, asker)))
+                    if (i == READ_AFTER_MS.lastIndex) {
+                        Log.i(TAG, "Memory let go of collected in $took ms" + if (gain > 0L) ": ${gain shr 20} MiB back for the film" else "")
+                        now?.roomMade(askedAt, gain)
+                    }
+                }, after)
+            }
         }
     }
 

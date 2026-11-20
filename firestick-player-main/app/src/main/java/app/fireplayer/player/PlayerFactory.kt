@@ -572,7 +572,10 @@ private class FilmLoadControl(
     @Volatile private var budgetBytes = plannedBytes
     /** How far the buffer is squeezed now ([squeeze]). Main thread. */
     private var step = 0
-    /** What was seen to come back to the TV since the player was built ([roomMade]), in bytes. Main thread. */
+    /**
+     * The most seen to come back to the TV at one time since the player was built ([roomMade]), in bytes. The most,
+     * not the sum: two collections close together can each see part of the same memory come back. Main thread.
+     */
     private var gainedBytes = 0L
 
     /** The film's budget now, in bytes. */
@@ -799,7 +802,7 @@ private class FilmLoadControl(
      * thread; gives back the new budget in bytes, or 0 when it stays.
      */
     fun roomMade(freeBytes: Long, gained: Long): Int {
-        if (gained > 0L) gainedBytes += gained
+        if (gained > gainedBytes) gainedBytes = gained
         val now = budgetBytes
         val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes, startFreeBytes, gainedBytes)
         if (next <= now) return 0
