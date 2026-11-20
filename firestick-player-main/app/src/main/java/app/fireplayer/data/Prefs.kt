@@ -74,6 +74,14 @@ class Prefs(context: Context) {
         get() = sp.getInt("auto_countdown", 10)
         set(v) = sp.edit().putInt("auto_countdown", v).apply()
 
+    /**
+     * Settings › Playback › When a film keeps buffering: the name of a [app.fireplayer.vod.play.WhenBuffering]
+     * ("ASK" until it's set).
+     */
+    var whenBuffering: String
+        get() = sp.getString("when_buffering", null) ?: "ASK"
+        set(v) = sp.edit().putString("when_buffering", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()

@@ -678,6 +678,13 @@ interface SourceSession {
     /** Whether an automatic switch is allowed at [now] (elapsedRealtime ms); after the last one, a note points to Next source. */
     fun maySwitch(now: Long): Boolean
 
+    /**
+     * The best source, by "Best for this TV", that needs no more than [maxMbps] on average and isn't the one playing:
+     * what a film that keeps stalling for want of download speed is switched to ([app.fireplayer.vod.play.FilmSupply]).
+     * Only sources that may be picked by themselves, whose rate is known. Null when there is none.
+     */
+    fun lighter(maxMbps: Double): PlaybackSource? = null
+
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 

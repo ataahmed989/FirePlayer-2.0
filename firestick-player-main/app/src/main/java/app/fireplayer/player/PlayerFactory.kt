@@ -91,6 +91,8 @@ object PlayerFactory {
         private val roomer: (Long, Long) -> Int = { _, _ -> 0 },
         /** The film's budget now, in bytes (what it fills to when not squeezed); 0 when not known. */
         val budgetBytes: () -> Int = { 0 },
+        /** How the film is arriving and stalling, for the log and the supply check ([FilmFlow]); null for none. */
+        val flow: () -> FilmFlow? = { null },
     ) {
         /**
          * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
@@ -417,7 +419,7 @@ object PlayerFactory {
                 .setMediaSourceFactory(sources)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
-            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget })
+            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget }, { loadControl.flow })
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -441,13 +443,13 @@ object PlayerFactory {
         // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
         // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
         val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
-        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget })
+        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget }, { loadControl.flow })
     }
 
     /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */
     private fun backCapped(sources: MediaSource.Factory, plan: FilmBufferPlan, loadControl: FilmLoadControl): MediaSource.Factory =
         if (plan.backCapBytes <= 0L) sources
-        else BackCappedSources(sources, plan.backCapBytes, plan.backBufferMs * 1000L) { loadControl.allocatedBytes }
+        else BackCappedSources(sources, plan.backCapBytes, plan.backBufferMs * 1000L, { loadControl.allocatedBytes }, { loadControl.stalledLately() })
 
     private fun keptBehind(sources: MediaSource.Factory, plan: FilmBufferPlan): () -> Long =
         (sources as? BackCappedSources)?.let { capped -> { capped.keptBehindMs } } ?: { plan.backBufferMs.toLong() }
@@ -548,8 +550,9 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
  * It measures how fast the film arrives, in seconds of film per second. When the connection brings it faster than it
  * plays, playback starts (or restarts) after a second or a few. When it only just keeps up, or falls behind (a
  * high-quality film on a slower line), playback waits for enough to then play a minute without stopping, instead of
- * starting at once and stopping again every few seconds. Stalls that keep coming also make the next wait longer
- * (4, 10, then 20 seconds).
+ * starting at once and stopping again every few seconds. Stalls that keep coming in the same film also make the next
+ * wait longer, up to all of the film that fits in this TV's memory ([StallCushion]), and leave less of the memory to
+ * what's kept behind ([stalledLately], [BackBuffer.keepUs]).
  *
  * While the TV is short of memory the buffer fills to less than its budget ([squeeze]), and the memory it lets go of
  * is freed instead of kept for reuse. [allocator] is [inner]'s, owned by [PlayerFactory.build] for that.
@@ -591,9 +594,17 @@ private class FilmLoadControl(
     // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
     private var trimmedAt = 0L
 
-    // When recent stalls began (elapsedRealtime), on the playback thread only.
-    private val stalls = ArrayDeque<Long>()
+    // This film's stalls so far, on the playback thread only.
+    private val stalls = StallCount()
     private var stallId = C.TIME_UNSET
+    private var stallLogged = C.TIME_UNSET
+
+    /** How the film is arriving and stalling as of the last check, for the main thread ([FilmFlow]). */
+    @Volatile var flow: FilmFlow? = null
+        private set
+
+    /** The film has stalled lately: less is kept behind ([BackBuffer.keepUs]). Playback thread. */
+    fun stalledLately(): Boolean = stalls.count(SystemClock.elapsedRealtime()) > 0
 
     private val window = Timeline.Window()
     private val period = Timeline.Period()
@@ -651,24 +662,44 @@ private class FilmLoadControl(
             // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
             if (rate == null) 10_000_000L else maxOf(START_US, cushionFor(rate))
         } else {
-            if (parameters.lastRebufferRealtimeMs != stallId) {
-                stallId = parameters.lastRebufferRealtimeMs
-                stalls.addLast(now)
-            }
-            while (stalls.isNotEmpty() && now - stalls.first() > STALL_MEMORY_MS) stalls.removeFirst()
-            val afterStallUs = when (stalls.size) {
-                0, 1 -> 4_000_000L
-                2 -> 10_000_000L
-                else -> 20_000_000L
-            }
-            maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
+            StallCushion.wantedUs(stallsNow(parameters, now), rate)
         }
-        // Never for all that fits in this TV's memory: half of it, where that's a few seconds of a high-quality film.
-        val neededUs = FilmMemory.waitUs(wantedUs, room, if (parameters.rebuffering) FilmMemory.STALL_WAIT_LEAST_US else START_US)
+        // Never for all that fits in this TV's memory at a start or after a jump: half of it, where that's a few
+        // seconds of a high-quality film. After a stall, more of it with each stall in the same film (StallCushion).
+        val neededUs = if (parameters.rebuffering) StallCushion.waitUs(stallsNow(parameters, now), wantedUs, room)
+        else FilmMemory.waitUs(wantedUs, room, START_US)
+        if (parameters.rebuffering && stallLogged != stallId) {
+            stallLogged = stallId
+            // Once per stall. No links, no titles.
+            Log.i(PlaybackDiag.TAG, "stall " + stallsNow(parameters, now) + " in this film: playing on with " +
+                neededUs / 1000 + "ms ahead (wanted " + wantedUs / 1000 + "ms, " +
+                (if (room > 0) "" + room / 1000 + "ms fit" else "what fits isn't measured: the full buffer ends the wait") +
+                ", arriving at " + (rate?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: "?") + "x)")
+        }
+        noteFlow(rate, now, if (parameters.rebuffering) neededUs / 1000 else -1L)
         // Whichever comes first ends the wait: enough film, or full memory.
         val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)
         wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
         return buffered >= neededUs
+    }
+
+    /** Keeps [flow] up to date; a new one only when something in it changed. [stallWaitMs] under 0: as it was. */
+    private fun noteFlow(measured: Float?, now: Long, stallWaitMs: Long) {
+        // To a hundredth: it moves a little with every check.
+        val rate = measured?.let { (it * 100f).toInt() / 100f }
+        val was = flow
+        val wait = if (stallWaitMs >= 0) stallWaitMs else was?.stallWaitMs ?: 0L
+        val count = stalls.count(now)
+        if (was == null || was.fillRate != rate || was.stalls != count || was.stallWaitMs != wait) flow = FilmFlow(rate, count, wait)
+    }
+
+    /** How many stalls this film has had, this one counted once (Media3 names each by when it began). */
+    private fun stallsNow(parameters: LoadControl.Parameters, now: Long): Int {
+        if (parameters.lastRebufferRealtimeMs != stallId) {
+            stallId = parameters.lastRebufferRealtimeMs
+            return stalls.stalled(now)
+        }
+        return stalls.count(now).coerceAtLeast(1)
     }
 
     private fun loadedToEnd(parameters: LoadControl.Parameters): Boolean {
@@ -684,14 +715,7 @@ private class FilmLoadControl(
     /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
     private fun fillRate(): Float? = if (loadingMs < MEASURE_MS) null else loadedUs / 1000f / loadingMs
 
-    /** How much to have before playing so it then plays [SMOOTH_US] without stopping, at [rate]. */
-    private fun cushionFor(rate: Float): Long = when {
-        rate >= 1.3f -> 0L
-        // Only just keeping up: room for the connection's ups and downs.
-        rate >= 1f -> 8_000_000L
-        // Falling behind by (1 - rate) every second.
-        else -> (SMOOTH_US * (1f - rate)).toLong().coerceAtMost(MAX_CUSHION_US)
-    }
+    private fun cushionFor(rate: Float): Long = StallCushion.forRate(rate)
 
     /**
      * Follows how far the loaded film reaches, counting only time spent loading, and starts over after a jump.
@@ -758,6 +782,7 @@ private class FilmLoadControl(
         // Media3's own rule stops at the tier's size (and at two minutes ahead); the budget, when free memory holds it
         // under that, and the lower cap while squeezed, stop it here.
         val wanted = inner.shouldContinueLoading(parameters)
+        noteFlow(fillRate(), lastAtMs, -1L)
         val cap = capBytes
         val budget = budgetBytes
         if (cap < budget) freeLetGo(cap)
@@ -856,13 +881,10 @@ private class FilmLoadControl(
 
     private companion object {
         const val TRIM_EVERY_MS = 1_000L
-        const val STALL_MEMORY_MS = 5 * 60_000L
         const val START_US = 1_000_000L
         // Loading time needed before the speed is trusted.
         const val MEASURE_MS = 700L
         const val RATE_MEMORY_MS = 30_000L
-        const val SMOOTH_US = 60_000_000L
-        const val MAX_CUSHION_US = 30_000_000L
         const val SWITCH_AFTER_MS = 10_000L
         const val MOVE_COVER_US = 15_000_000L
     }

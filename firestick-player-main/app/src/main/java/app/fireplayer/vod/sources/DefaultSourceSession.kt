@@ -23,6 +23,7 @@ import app.fireplayer.vod.SourceSession
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StallWatch
 import app.fireplayer.vod.StartAt
+import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.Step
 import java.util.EnumMap
 import java.util.EnumSet
@@ -194,6 +195,17 @@ internal class DefaultSourceSession(
 
     override fun maySwitch(now: Long): Boolean =
         startedOnce && switches < MAX_SWITCHES && now - lastSwitchAt >= SWITCH_GAP_MS
+
+    override fun lighter(maxMbps: Double): PlaybackSource? {
+        val current = playing?.key
+        // In "Best for this TV" order: the first that fits is the best that fits. One this TV likely can't play only
+        // when nothing else does.
+        val fits = (list ?: return null).sources.filter { s ->
+            val avg = s.facts.avgMbps
+            s.automatic && usable(s) && s.key != current && avg != null && avg > 0.0 && avg <= maxMbps
+        }
+        return fits.firstOrNull { it.fit != TvFit.LIKELY_NOT } ?: fits.firstOrNull()
+    }
 
     override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel =
         repo.lookUp(SourceTarget(target.title, next), LookupWhy.NEXT_EPISODE, null, onList)

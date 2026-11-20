@@ -79,6 +79,24 @@ class SourcePlayback(
 
         /** One line for the log about a recovery ("stall 9 s, nothing arriving: same source reopened"): no links, no titles. */
         fun log(text: String) = Unit
+
+        /** Settings › Playback › When a film keeps buffering. */
+        fun whenBuffering(): WhenBuffering = WhenBuffering.ASK
+
+        /** What the player measured of the film's download ([FilmSupply.Reading]); null when it measured nothing. */
+        fun supply(): FilmSupply.Reading? = null
+
+        /** What the viewer answered for this film when it kept buffering before; null when never asked. */
+        fun stallChoice(): StallChoice? = null
+
+        /** Remembers [choice] for this film. */
+        fun rememberStallChoice(choice: StallChoice) = Unit
+
+        /**
+         * A film kept stalling while the download sustained [mbps], about what the film needs: kept, so "Best for this
+         * TV" stops picking files this connection can't keep up with ([app.fireplayer.vod.sources.LineRate]).
+         */
+        fun lineShort(mbps: Double) = Unit
     }
 
     /** The source playing (or being opened), and the add-on offer it came from. */
@@ -110,6 +128,15 @@ class SourcePlayback(
     /** A stall's first aid: the same source opened again before any switch ([StallAid]). */
     private val aid = StallAid()
     private var stalledAt = 0L
+    /** The source the viewer picked by hand (a Sources row): never switched away from without asking or the setting. */
+    private var pickedKey: String? = request.chosen?.key
+    /** A question about the stalls is on screen: the stall watch waits for its answer. */
+    private var asking = false
+    /** The source playing was found too heavy for the connection, and that was dealt with (asked, switched or noted). */
+    private var supplyDone = false
+    /** Asked once in this play whether to leave a source the viewer picked. */
+    private var plainAsked = false
+    private var keepLogged = false
     /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
     private var netWait: Cancel? = null
 
@@ -145,6 +172,7 @@ class SourcePlayback(
 
     /** A row picked in the player's Sources panel; [beginning] from its start (held OK › Play from beginning). */
     fun pick(source: PlaybackSource, beginning: Boolean) {
+        pickedKey = source.key
         if (source.readiness == Readiness.NOT_READY) {
             fromBeginning = beginning
             opening?.cancel()
@@ -195,6 +223,8 @@ class SourcePlayback(
         }
         fromBeginning = false
         stopped = false
+        // Another file: whether the connection keeps up with it is judged afresh.
+        if (current?.key != o.source.key) supplyDone = false
         current = o.source
         offer = o.offer
         playing = false
@@ -326,8 +356,105 @@ class SourcePlayback(
         aid.reset()
     }
 
+    /**
+     * The stall rules call for a switch. What happens goes by Settings › Playback › When a film keeps buffering
+     * ([WhenBuffering]) and by why it stalls:
+     * - Keep trying, or "Keep this source" answered for this film before: nothing.
+     * - The connection brings the film no faster than it plays ([FilmSupply.short]): the next source in the list is
+     *   most often the same film at the same size, and stalls the same. The best source this connection keeps up with
+     *   is offered instead, once (or switched to with a note, by the setting or the film's remembered answer).
+     * - Else, a source the viewer picked by hand is only left when they say so (asked once); one FirePlayer picked
+     *   itself moves on to the next source, as before.
+     */
     private fun checkStalls(now: Long) {
-        if (stallSwitching || !session.stalls.shouldSwitch(now)) return
+        if (stallSwitching || asking || !session.stalls.shouldSwitch(now)) return
+        val s = current ?: return
+        val mode = host.whenBuffering()
+        val choice = host.stallChoice()
+        if (mode == WhenBuffering.KEEP || choice == StallChoice.KEEP) {
+            if (!keepLogged) {
+                keepLogged = true
+                host.log("stalls past the limit: staying on this source (" +
+                    (if (mode == WhenBuffering.KEEP) "the setting says keep trying" else "kept when asked for this film") + ")")
+            }
+            return
+        }
+        val reading = host.supply()
+        if (FilmSupply.short(s.facts.avgMbps, reading)) {
+            shortSupply(s, reading, mode == WhenBuffering.LIGHTER || choice == StallChoice.LIGHTER)
+            return
+        }
+        if (s.key == pickedKey && mode == WhenBuffering.ASK) {
+            askToLeave()
+            return
+        }
+        switchForStalls(now)
+    }
+
+    /** [s] needs more than the connection brings: the best source it keeps up with, asked for or switched to. */
+    private fun shortSupply(s: PlaybackSource, reading: FilmSupply.Reading?, unasked: Boolean) {
+        if (supplyDone) return
+        supplyDone = true
+        reading?.lineMbps?.let { host.lineShort(it) }
+        val lighter = FilmSupply.ceilingMbps(reading)?.let { session.lighter(it) }
+        host.log("stalls past the limit and the connection is short: the source needs " + mbps(s.facts.avgMbps) +
+            ", the download sustains " + mbps(reading?.lineMbps) + ", arriving at " +
+            (reading?.fillRate?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: "?") + "x; " +
+            (lighter?.let { "a lighter source is ready at " + mbps(it.facts.avgMbps) } ?: "no lighter source is ready"))
+        if (lighter == null) {
+            host.notice(FilmSupply.noneNote(reading))
+            return
+        }
+        if (unasked) {
+            host.log("switching to the lighter source without asking")
+            host.notice(FilmSupply.switchedNote(reading))
+            stallSwitching = true
+            open(lighter, OpenWhy.STALLS)
+            return
+        }
+        asking = true
+        host.ask(
+            FilmSupply.question(s.facts.avgMbps, reading, lighter),
+            listOf(
+                FilmSupply.SWITCH to {
+                    asking = false
+                    host.rememberStallChoice(StallChoice.LIGHTER)
+                    host.log("asked: switching to the lighter source")
+                    open(lighter, OpenWhy.USER)
+                },
+                FilmSupply.KEEP to {
+                    asking = false
+                    host.rememberStallChoice(StallChoice.KEEP)
+                    host.log("asked: keeping this source")
+                },
+            ),
+            // Back: not now. Nothing is remembered, and it isn't asked again in this play.
+            onDismiss = { asking = false },
+        )
+    }
+
+    /** A source the viewer picked keeps pausing, though the connection is fast enough for it: asked once. */
+    private fun askToLeave() {
+        if (plainAsked) return
+        plainAsked = true
+        asking = true
+        host.log("stalls past the limit on a source picked by hand: asking before any switch")
+        host.ask(
+            FilmSupply.PLAIN_QUESTION,
+            listOf(
+                FilmSupply.TRY_NEXT to {
+                    asking = false
+                    nextSource()
+                },
+                FilmSupply.KEEP to { asking = false },
+            ),
+            onDismiss = { asking = false },
+        )
+    }
+
+    private fun mbps(v: Double?): String = v?.let { "" + Math.round(it) + " Mb/s" } ?: "an unknown rate"
+
+    private fun switchForStalls(now: Long) {
         if (session.maySwitch(now)) {
             // A try that found nothing to switch to is not repeated at once.
             if (now - stallTryAt < STALL_RETRY_MS) return

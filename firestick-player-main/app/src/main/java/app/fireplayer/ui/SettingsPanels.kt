@@ -170,6 +170,7 @@ class SettingsPanels(
                 resumeRow(this)
                 matchFrameRateRow(this)
                 passthroughRow(this)
+                whenBufferingRow(this)
                 // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
                 liveBufferRow(this, activity)
                 skipIntroSection(this)
@@ -387,6 +388,19 @@ class SettingsPanels(
     private fun passthroughRow(panel: SidePanel): Unit = with(panel) {
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
+        }
+    }
+
+    /**
+     * What a film from the add-ons does when it keeps stopping to load ([app.fireplayer.vod.play.WhenBuffering]):
+     * asks once (the answer is kept for that film), switches to the best source this connection keeps up with, or
+     * stays on the source chosen. Read by the player each time the stall rules call for a switch.
+     */
+    private fun whenBufferingRow(panel: SidePanel): Unit = with(panel) {
+        val modes = app.fireplayer.vod.play.WhenBuffering.entries
+        val now = app.fireplayer.vod.play.WhenBuffering.named(prefs.whenBuffering)
+        choice(SettingsCategory.WHEN_BUFFERING, modes.map { it.label }, modes.indexOf(now)) {
+            prefs.whenBuffering = modes[it].name
         }
     }
 
