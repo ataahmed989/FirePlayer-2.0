@@ -432,6 +432,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private var pipVeiled = false
     /** A held Back opened the picture full screen: its release does nothing more. */
     private var pipBackHeld = false
+    /** The playing channel's failure the picture's page has said (once per failure). */
+    private var pipErrorSaid: String? = null
     /** Whether a SurfaceView follows its view's transforms here (Android 7 and later): else the picture waits at rest. */
     private val canFollow = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
 
@@ -1156,6 +1158,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 status.refused == null
             film?.playing = status.playing
             showBusy(status)
+            // The live picture on Home or Search can't play its channel (a picture this TV can't decode, say): the
+            // page says so once (Live TV's own page, which would, is away).
+            val error = status.error
+            if (error == null) pipErrorSaid = null
+            else if (pipOn && error != pipErrorSaid) {
+                pipErrorSaid = error
+                vodPages.current?.showNotice(error)
+            }
             if (status.videoSize != lastSize) {
                 lastSize = status.videoSize
                 layoutVideo()

@@ -44,7 +44,6 @@ class PipBox(context: Context, private val t: Tokens) : FrameLayout(context) {
     private val buttons = PipRules.Button.entries.associateWith { ImageView(context) }
     private var stripOn = false
     private var okDown: PipRules.Button? = null
-    private var muted = false
     private val rise = t.dpf(VodSizes.PIP_STRIP_RISE)
     private val stripCheck = Runnable { if (!hasFocus()) showStrip(false) }
 
@@ -114,7 +113,6 @@ class PipBox(context: Context, private val t: Tokens) : FrameLayout(context) {
 
     /** Volume shows the picture's sound off ([muted]) or on. */
     fun setMuted(muted: Boolean) {
-        this.muted = muted
         buttons[PipRules.Button.VOLUME]?.apply {
             setImageResource(if (muted) R.drawable.ic_audio_off else R.drawable.ic_audio)
             contentDescription = if (muted) "Sound off" else "Sound on"

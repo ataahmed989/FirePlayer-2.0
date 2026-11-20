@@ -349,7 +349,7 @@ class RecentWindow(context: Context, private val t: Tokens) : LinearLayout(conte
             firstWanted = false
             val waiting = firstFallback
             firstFallback = null
-            val here = lines.any { it.isFocused } || waiting?.isFocused == true
+            val here = lines.firstOrNull()?.isFocused == true || waiting?.isFocused == true
             if (here && channels.isNotEmpty()) {
                 chosen = 0
                 scrollTo(0, animate = false)
