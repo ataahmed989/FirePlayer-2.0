@@ -54,3 +54,17 @@ Also from the mock-ups, unchanged: the picture on Search sits in the top right c
 smaller (about a quarter of the screen wide), with the bar and history shortened to clear it; results keep their
 place. The Search button at the top of the "Search and App Settings" window, and of the Live TV settings window, opens
 the matching kind of search (agreed earlier).
+
+## Later the same evening (the user)
+
+> Option 1: Slim strip (different look for glass and non glass) that appears when the live picture is
+> selected/focused (smooth animation when it appears). No slip should appear if the Picture is not focused/selected.
+> We might scrap the whole PIP if its not conventional, but at least we will keep the recent channels list. I honestly
+> want to fix any Live TV channel playback issues and build the multiview options
+
+- Answer 2 is confirmed as read: **no strip unless the picture is focused**; it eases in on focus.
+- **The live picture is on hold** and may be dropped. It is not built until the user says so. The Recent channels
+  list stays either way.
+- **Order now:** finish tuning round 1, then Search (both kinds, with the Search button in the settings windows),
+  then Live TV playback fixes and Multiview (design-brief.md: inside the Live player, up to three channels, sound
+  from the focused one, within the provider's connection limit), its options to be agreed first.
