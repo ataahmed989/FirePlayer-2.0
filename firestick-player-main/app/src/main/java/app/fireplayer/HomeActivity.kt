@@ -916,6 +916,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             return true
         }
         if (event.action == KeyEvent.ACTION_DOWN && rail.selected == NavRail.Tab.LIVE) live.noteKey()
+        // Channel ▲ / ▼ change the playing channel wherever it plays ("Channel buttons only"; a dialog keeps them).
+        if (rail.selected == NavRail.Tab.LIVE && live.channelKey(event)) return true
         // Live TV (full screen, guide gestures) next, unless the settings window is open over it.
         if (!panel.isOpen && rail.selected == NavRail.Tab.LIVE && !rail.hasFocus() && live.dispatchKey(event)) return true
         // A film page's own Back (its small window, See all) before the shell's.

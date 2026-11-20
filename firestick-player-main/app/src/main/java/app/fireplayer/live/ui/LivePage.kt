@@ -645,6 +645,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post {
                 if (serial != reloadSerial || released) return@post
                 playlists = pls
+                // The playlists changed (or the tab came back): the playing group's order is read again.
+                invalidateZap()
                 // A first guide import can take minutes on a big provider: until it lands, empty rows say so.
                 guide.loadingPlaylists = if (sync.busy) pls.map { it.id }.filter { it !in withGuide }.toSet() else emptySet()
                 val first = !loaded
@@ -697,6 +699,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private fun showChannels(s: GuideScope, list: List<Channel>, focus: ChannelKey?, enterGrid: Boolean) {
         shownScope = s
         loadingScope = null
+        // The playing group's own list, just read: kept for Channel ▲ / ▼ (no read of its own).
+        if (s == zapScope && list.any { it.key.toString() == player.currentKey }) { zapList = list; zapReading = null }
         guide.clearProgrammes()
         guide.setChannels(list, focus ?: ChannelKey.parse(player.currentKey) ?: prefs.focus)
         if (list.isEmpty()) {
@@ -830,7 +834,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (channel.key.toString() == player.playingKey && player.status().error == null) {
             toFull()
         } else {
-            tune(channel)
+            tune(channel, from = shownScope)
         }
     }
 
@@ -838,7 +842,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
      * Plays [channel]. [pressedAt] is when the key that asked for it went down (for the log of how long it took to
      * show): the last key here unless it's given, when that was a moment ago.
      */
-    private fun tune(channel: Channel, known: Playlist? = null, pressedAt: Long = recentKey()): Boolean {
+    private fun tune(channel: Channel, known: Playlist? = null, pressedAt: Long = recentKey(), from: GuideScope? = null): Boolean {
         // Whatever a held key was heading for is overtaken.
         main.removeCallbacks(tunePending)
         zapPending = null
@@ -850,6 +854,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         }
         prefs.lastChannel = channel.key
         playingChannel = channel
+        noteZapGroup(channel, from)
         // A channel change from elsewhere closes a small window still open.
         popup.close()
         bg { db.noteRecent(channel.key, System.currentTimeMillis()) }
@@ -1097,36 +1102,136 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val tunePending = Runnable {
         val ch = zapPending ?: return@Runnable
         zapPending = null
-        if (fullScreen && started && tune(ch)) zapped(ch) else refreshControls()
+        if (started && fullScreen == zapPendingFull && tune(ch, from = zapScope)) zapped(ch) else refreshControls()
+    }
+
+    /** Whether the held key's [zapPending] was reached in full screen (else in the guide): opened only there. */
+    private var zapPendingFull = false
+
+    // ---- The playing channel's group (Channel ▲ / ▼ move within it, TUNING-1.md section 4) ------------------------
+
+    /** The list the playing channel was started from (or last played from), and its channels in the guide's order. */
+    private var zapScope: GuideScope? = null
+    /** [zapScope]'s channels, read once and kept until the group or a playlist changes; null until read. */
+    private var zapList: List<Channel>? = null
+    /** The channel whose group is being read now (else null), and how far presses meanwhile asked to go. */
+    private var zapReading: ChannelKey? = null
+    private var zapQueued = 0
+    private var zapSerial = 0
+
+    /**
+     * [channel] plays, started from the guide's list [from] (null: from somewhere without a list). Its group is that
+     * list; else the one it was last played from; else its own group in its playlist.
+     */
+    private fun noteZapGroup(channel: Channel, from: GuideScope?) {
+        val list = zapList
+        when {
+            // Picked in the guide's list: that list is the group, already read.
+            from != null && from == shownScope && guide.channelList().any { it.key == channel.key } -> {
+                zapScope = from; zapList = guide.channelList(); zapReading = null; zapQueued = 0; ++zapSerial
+            }
+            // Moving within the group already read.
+            from != null && from == zapScope && list != null && list.any { it.key == channel.key } -> Unit
+            else -> { zapScope = null; zapList = null; resolveZap(channel, from) }
+        }
+        zapScope?.let { prefs.setZapGroupOf(channel.key, it) }
+    }
+
+    /** The group's list may have changed (a playlist read again, a favorite, a group hidden): it is read again. */
+    private fun invalidateZap() {
+        val ch = playingChannel?.takeIf { it.key.toString() == player.currentKey } ?: return
+        zapList = null
+        resolveZap(ch, zapScope)
+    }
+
+    /** Reads [channel]'s group off the key path: the first of [ZapOrder.candidates] that still holds it. */
+    private fun resolveZap(channel: Channel, from: GuideScope?) {
+        val serial = ++zapSerial
+        zapReading = channel.key
+        val last = prefs.zapGroupOf(channel.key)
+        val key = channel.key
+        bg {
+            for (s in ZapOrder.candidates(from, last, key.playlistId, channel.groupId)) {
+                val list = runCatching { db.channels(s) }.getOrNull() ?: continue
+                if (list.none { it.key == key }) continue
+                main.post {
+                    if (serial != zapSerial || released) return@post
+                    zapReading = null
+                    zapScope = s
+                    zapList = list
+                    prefs.setZapGroupOf(key, s)
+                    // Presses that came while it was read now act, from the channel playing.
+                    val q = zapQueued
+                    zapQueued = 0
+                    if (q != 0 && started && player.currentKey == key.toString()) zap(q)
+                }
+                return@bg
+            }
+            main.post { if (serial == zapSerial) { zapReading = null; zapQueued = 0 } }
+        }
     }
 
     /**
-     * The next channel down the guide's list ([delta] +1) or the one before (-1), round at the ends. A press opens it
-     * at once. A [held] key runs on through the channels: each is named at once, and only the one it stops on is
-     * opened (a stream opened for every channel passed would be thrown away again, and providers count connections).
+     * The next channel down the playing channel's group ([delta] +1) or the one before (-1), in the guide's order,
+     * round at the ends. A press opens it at once. A [held] key runs on through the channels: each is named at once,
+     * and only the one it stops on is opened (a stream opened for every channel passed would be thrown away again,
+     * and providers count connections). Nothing playing: the guide's list, as before.
      */
     private fun zap(delta: Int, held: Boolean = false) {
-        val list = guide.channelList()
-        if (list.isEmpty()) return
+        val playing = player.currentKey != null
+        val list = if (playing) zapList else guide.channelList()
+        if (list == null) {
+            // The group is still being read (just after a channel or playlist change): the press waits for it.
+            if (zapReading != null) zapQueued += delta
+            else playingChannel?.takeIf { it.key.toString() == player.currentKey }?.let { zapQueued += delta; resolveZap(it, zapScope) }
+            return
+        }
         val from = zapPending?.key ?: ChannelKey.parse(player.currentKey)
-        val cur = list.indexOfFirst { it.key == from }
-        val next = list[Math.floorMod((if (cur < 0) 0 else cur) + delta, list.size)]
+        val next = ZapOrder.next(list, from, delta) { it.key } ?: return
+        Log.i(TAG, "Live TV: channel ${if (delta > 0) "up" else "down"} to ${next.number} in ${zapScope?.javaClass?.simpleName ?: "the guide's list"} (${list.size} channels)")
         main.removeCallbacks(tunePending)
         if (held) {
             zapPending = next
-            refreshControls()
-            showZapInfo()
+            zapPendingFull = fullScreen
+            if (fullScreen) {
+                refreshControls()
+                showZapInfo()
+            }
             main.postDelayed(tunePending, ZAP_SETTLE_MS)
             return
         }
-        if (tune(next)) zapped(next)
+        if (tune(next, from = if (playing) zapScope else shownScope)) zapped(next)
     }
 
     private fun zapped(next: Channel) {
+        // In the guide its focus stays where the viewer is; the playing mark and the miniature follow by themselves.
+        if (!fullScreen) return
         zappedInFull = true
         guide.focusChannel(next.key)
         refreshControls()
+        // The controls up: they stay, showing the new channel, with their full time again.
+        if (controls.controlsShown) bumpControls()
         showZapInfo()
+    }
+
+    /**
+     * The remote's Channel ▲ / ▼ wherever live TV plays, with Remote › "Channel ▲▼" set to "Channel buttons only":
+     * in the guide, in full screen with the controls up, on the rail and under a window, but never while a dialog
+     * (the parental PIN, a question) or a text field has the keys. The one entry point: the activity calls it first
+     * while the Live TV tab shows, and a live picture on another page can call it the same way. True when used.
+     */
+    fun channelKey(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (code != KeyEvent.KEYCODE_CHANNEL_UP && code != KeyEvent.KEYCODE_CHANNEL_DOWN) return false
+        if (!started || released || !prefs.channelButtonsOnly || player.currentKey == null) return false
+        if (FireDialog.isShowing(activity) || activity.currentFocus is android.widget.EditText) return false
+        if (event.action != KeyEvent.ACTION_DOWN) return true
+        keyAt = event.eventTime
+        scheduleIdle()
+        // The controls up stay up while the key is held (a held key's channel is opened only when it lets up).
+        if (fullScreen && controls.controlsShown) bumpControls()
+        zap(if (code == KeyEvent.KEYCODE_CHANNEL_UP) +1 else -1, event.repeatCount > 0)
+        return true
     }
 
     /** The channel's name and programme at the top for a moment (unless the controls are up anyway). */
@@ -1265,6 +1370,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 .onFailure { Log.w(TAG, "Favorite not stored: ${it.javaClass.simpleName}") }
             main.post {
                 if (released) return@post
+                // The playing group may be Favorites, or hold a copy of this channel: read again.
+                invalidateZap()
                 if (s is GuideScope.Favorites && scope == s || loadingScope != null) {
                     // The Favorites list gains or loses the row; a list read before the write is read again. Focus stays
                     // where it was, or on the row next to a removed one.
@@ -1399,6 +1506,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
      */
     private fun announce(playlistId: String, stored: Boolean) {
         if (stored && started) ownChanges++
+        // A group moved or hidden: the playing group's order is read again.
+        invalidateZap()
         sync.changed(playlistId)
     }
 
@@ -1706,6 +1815,17 @@ class LivePrefs(context: Context) {
     var lastChannel: ChannelKey?
         get() = ChannelKey.parse(sp.getString("last_channel", null))
         set(v) = sp.edit().putString("last_channel", v?.toString()).apply()
+
+    /**
+     * The list (group) [key] was last played from, for Channel ▲ / ▼: kept per channel, so the last channel's group
+     * holds after a restart and a channel started from Home's Recent channels goes on in the group it was played from.
+     */
+    fun zapGroupOf(key: ChannelKey): GuideScope? = GuideScope.decode(sp.getString("zap_group:$key", null))
+
+    fun setZapGroupOf(key: ChannelKey, scope: GuideScope) {
+        val v = scope.encode()
+        if (sp.getString("zap_group:$key", null) != v) sp.edit().putString("zap_group:$key", v).apply()
+    }
 
     /** Remote › "Channel ▲▼": false = D-pad + channel buttons (default), true = Channel buttons only. */
     var channelButtonsOnly: Boolean
