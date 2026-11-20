@@ -87,6 +87,11 @@ object FilmRoom {
                 Log.w(TAG, "Couldn't collect memory let go of: ${e.javaClass.simpleName}")
             }
             val took = SystemClock.elapsedRealtime() - askedAt
+            if (!forFilm) {
+                // The film's own memory given back: nothing to tell it.
+                Log.i(TAG, "Memory let go of collected in $took ms")
+                return@execute
+            }
             // On the main thread only.
             var gain = 0L
             for ((i, after) in READ_AFTER_MS.withIndex()) {
