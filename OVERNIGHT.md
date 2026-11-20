@@ -17,6 +17,10 @@ and continue from the first unfinished step. Update the status lines here as ste
 - Agents: build agents on Opus to save usage, except where the user said Fable (step 1). WIP commits every ~20 min.
 - The TV tunnel and port forward stop after 2 hours: restart both before installing.
 
+- **Hard rule (the user, 01:05 their time): "I want to keep glass home's quick return and quick functionality
+  though".** Glass Home must come back as instantly as today and stay as quick: nothing its screen needs on return
+  may be released. A Glass Home change that cannot be shown to keep that is not shipped.
+
 ## Steps
 
 1. **Playback audit (Fable) + guide loading + playback settings.** Audit Live TV and film playback and make watching
