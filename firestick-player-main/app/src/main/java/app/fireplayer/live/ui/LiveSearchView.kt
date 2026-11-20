@@ -110,6 +110,19 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         show(null)
     }
 
+    /**
+     * The results are measured at their full height, as a scrolling list is: they are usually taller than the page,
+     * and measured to fit it the rows past its bottom were given no room (the list was cut short and moving down it
+     * scrolled everything away).
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        content.measure(
+            MeasureSpec.makeMeasureSpec(measuredWidth, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+        )
+    }
+
     private fun head(words: String) = t.label(context, VodSizes.LIVE_HEAD).apply {
         text = words
         gravity = Gravity.CENTER_VERTICAL
